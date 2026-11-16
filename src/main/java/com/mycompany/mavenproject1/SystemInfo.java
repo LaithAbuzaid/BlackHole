@@ -1,0 +1,16 @@
+package com.mycompany.mavenproject1;
+
+public class SystemInfo {
+
+    public SystemInfo() {
+    }
+
+    public static String javaVersion() {
+        return System.getProperty("java.version");
+    }
+
+    public static String javafxVersion() {
+        return System.getProperty("javafx.version");
+    }
+
+}
