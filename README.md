@@ -11,6 +11,8 @@ The engine combines an exact Cartesian Kerr-Schild null geodesic black hole ray-
   - Exact outer horizon $r_+ = M + \sqrt{M^2 - a^2}$ and Bardeen-Press-Teukolsky prograde ISCO $r_{\text{ISCO}}(a)$.
   - Dual observer frames (`[F]`): **Static Shell Observer** and horizon-penetrating **Free-Fall Observer** (Doran / Kerr-Schild frame supporting travel inside $r_+$ down to $r \approx 0.25\,M$).
   - Volumetric accretion disk with GPU-baked `128³` periodic 3D noise, cubic Hermite equatorial crossings ($n=0, 1, \ge 2$), cooler outer absorbing dust lanes, plunging-region filaments, exact covariant Doppler beaming & blackbody spectrum, and collimated bipolar synchrotron jets (`[J]`).
+- **Interactive Black Hole Dive / Plunge Simulator (`[P]`)**:
+  - Physically grounded Doran / Kerr-Schild horizon-penetrating free-fall plunge across $r_+$ ($\beta_{\text{in}} = \sqrt{2Mr/(r^2+a^2)} = c$ at $r_+$) with full 360° independent free-look, live proper time ($\tau$) vs. diverging distant coordinate time ($t_\infty \to \text{INF}$), tidal gradient ($2M/r^3$), relativistic skybox blueshift, Kerr inner Cauchy horizon ($r_-$) mass-inflation flash, Schwarzschild anisotropic tidal optical spaghettification, and synchronized audio.
 - **Traversable Wormhole Mode (`[W]` — Exact Morris-Thorne / Interstellar Metric)**:
   - Dual GPU-baked `1024×1024×6` mipmapped HDR cubemaps: **Universe A** (Milky Way & spiral galaxies) and **Universe B** (golden-amber & teal emission nebula, dense star clusters, and a banded ringed gas giant near the throat axis).
   - Exact Dneg / Morris-Thorne RK4 geodesic integrator with live sliders for throat radius $\rho$, throat half-length $a$, and lensing width $M_w$, `textureGrad` ray differentials, and smooth throat flight (`Scroll`, `Up`/`Down`, or `[FLY THROUGH]`) across $l = 0$.
@@ -53,6 +55,7 @@ mvn clean javafx:run
 
 | Key | Action |
 |---|---|
+| `P` | Start / Abort / Replay Black Hole Plunge Dive (`r_+` → Interior) |
 | `W` | Toggle Spacetime Mode: **Black Hole** ↔ **Traversable Wormhole** |
 | `E` | Spawn & Shred a 65,536-particle star (Tidal Disruption Event) |
 | `A` | Toggle Procedural Relativistic Audio (`lwjgl-openal`) |

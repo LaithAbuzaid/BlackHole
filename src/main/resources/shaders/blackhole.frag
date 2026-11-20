@@ -9,11 +9,18 @@ uniform vec3 uCamRight;
 uniform vec3 uCamUp;
 uniform samplerCube uSkybox;
 uniform sampler3D uNoiseVol;
+uniform sampler2D uBlackbodyLut;
 uniform float uSpinA;
+uniform float uHorizonR;
+uniform float uInnerHorizonR;
+uniform float uIscoR;
 uniform float uDiskTempScale;
 uniform float uDiskDensity;
 uniform float uJetPower;
 uniform float uTanHalfFov;
+uniform float uCauchyFlash;
+uniform float uSpaghettify;
+uniform float uSingularityFade;
 uniform int uDoppler;
 uniform int uLensing;
 uniform int uShowDisk;
@@ -27,41 +34,60 @@ uniform int uAdaptiveAa;
 const float PI = 3.14159265359;
 const float M_BH = 1.0;
 const float R_DISK_OUT = 24.0;
-const int MAX_STEPS = 210;
+const float R_SHELL = 27.5;
+const int MAX_STEPS = 180;
 
 // ============================================================================
-// EXACT KERR-SCHILD METRIC & PROGRADE ISCO
+// SAFE MATH & PRECOMPUTED 512x1 BLACKBODY LUT
+// ============================================================================
+
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+    float len2 = dot(v, v);
+    return (len2 > 1e-12) ? (v * inversesqrt(len2)) : fallback;
+}
+
+float safeAtan2(float y, float x) {
+    return (abs(x) + abs(y) > 1e-6) ? atan(y, x) : 0.0;
+}
+
+vec3 sanitizeHdr(vec3 c) {
+    bvec3 bad = bvec3(isnan(c.x) || isinf(c.x),
+                      isnan(c.y) || isinf(c.y),
+                      isnan(c.z) || isinf(c.z));
+    c = mix(c, vec3(0.0), bad);
+    return clamp(c, vec3(0.0), vec3(48.0));
+}
+
+// Single-cycle hardware lookup into precomputed 512x1 sqrt-spaced Planckian RGB16F LUT (900K..38000K)
+vec3 sampleBlackbody(float tempKelvin) {
+    float norm = clamp((tempKelvin - 900.0) * (1.0 / 37100.0), 0.0, 1.0);
+    return texture(uBlackbodyLut, vec2(sqrt(norm), 0.5)).rgb;
+}
+
+// Interleaved Gradient Noise (Jimenez 2014) for artifact-free volumetric step dithering
+float interleavedGradientNoise(vec2 px) {
+    return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
+// ============================================================================
+// EXACT KERR-SCHILD METRIC & ANALYTIC HAMILTONIAN DERIVATIVES
 // ============================================================================
 
 // Exact spheroidal Kerr radius solving r^4 - (R^2 - a^2)r^2 - a^2 y^2 = 0
-float kerrRadius(vec3 x, float a) {
+float kerrRadius(vec3 x, float a2) {
     float R2 = dot(x, x);
-    float a2 = a * a;
     float b = R2 - a2;
     float disc = max(0.0, b * b + 4.0 * a2 * x.y * x.y);
     float r2 = 0.5 * (b + sqrt(disc));
-    return sqrt(max(1e-6, r2));
+    return sqrt(max(1e-4, r2));
 }
 
-// Exact Bardeen-Press-Teukolsky prograde ISCO radius in units of M = 1
-float progradeIsco(float a) {
-    float aClamped = clamp(a, 0.0, 0.999);
-    float oneMinusA2 = max(1e-7, 1.0 - aClamped * aClamped);
-    float cbrt1mA2 = pow(oneMinusA2, 1.0 / 3.0);
-    float cbrt1pA = pow(1.0 + aClamped, 1.0 / 3.0);
-    float cbrt1mA = pow(max(1e-7, 1.0 - aClamped), 1.0 / 3.0);
-    float z1 = 1.0 + cbrt1mA2 * (cbrt1pA + cbrt1mA);
-    float z2 = sqrt(3.0 * aClamped * aClamped + z1 * z1);
-    return 3.0 + z2 - sqrt(max(0.0, (3.0 - z1) * (3.0 + z1 + 2.0 * z2)));
-}
-
-void kerrMetricHL(vec3 x, float a, out float r, out float H, out vec3 lVec) {
-    r = kerrRadius(x, a);
+void kerrMetricHL(vec3 x, float a, float a2, out float r, out float H, out vec3 lVec) {
+    r = kerrRadius(x, a2);
     float r2 = r * r;
-    float a2 = a * a;
-    float D = r2 * r2 + a2 * x.y * x.y;
-    H = (M_BH * r2 * r) / max(1e-8, D);
-    float invS = 1.0 / (r2 + a2);
+    float D = max(1e-5, r2 * r2 + a2 * x.y * x.y);
+    H = (M_BH * r2 * r) / D;
+    float invS = 1.0 / max(1e-4, r2 + a2);
     lVec = vec3(
         (r * x.x + a * x.z) * invS,
         x.y / r,
@@ -70,16 +96,16 @@ void kerrMetricHL(vec3 x, float a, out float r, out float H, out vec3 lVec) {
 }
 
 // Exact analytic Hamiltonian derivatives for H_ham = 0.5 * (-pt^2 + |p|^2 - 2 H (-pt + l.p)^2) = 0
-// with ingoing Kerr-Schild l_mu = (+1, l), l^mu = (-1, l), g^{mu nu} = eta^{mu nu} - 2 H l^mu l^nu.
 // Guaranteed d(H_ham)/d(lambda) == 0 identically (zero radial repulsion cusps).
-void hamiltonDeriv(vec3 x, vec3 p, float pt, float a, out vec3 dx, out vec3 dp) {
-    float r = kerrRadius(x, a);
+// Lean signature minimizes GPU register pressure inside the geodesic integration loop.
+float hamiltonDeriv(vec3 x, vec3 p, float pt, float a, float a2,
+                    out vec3 dx, out vec3 dp) {
+    float r = kerrRadius(x, a2);
     float r2 = r * r;
-    float a2 = a * a;
-    float D = max(1e-8, r2 * r2 + a2 * x.y * x.y);
+    float D = max(1e-5, r2 * r2 + a2 * x.y * x.y);
     float invD = 1.0 / D;
     float H = (M_BH * r2 * r) * invD;
-    float S = r2 + a2;
+    float S = max(1e-4, r2 + a2);
     float invS = 1.0 / S;
 
     vec3 lVec = vec3(
@@ -91,17 +117,12 @@ void hamiltonDeriv(vec3 x, vec3 p, float pt, float a, out vec3 dx, out vec3 dp) 
     float lp = dot(lVec, p);
     float q = -pt + lp;
 
-    // dx/dlambda = dH_ham / dp = p - 2 H q l
     dx = p - (2.0 * H * q) * lVec;
 
-    // Analytic grad r
     vec3 gradR = (r * invD) * vec3(r2 * x.x, S * x.y, r2 * x.z);
-
-    // Analytic grad H
     vec3 gradH = (r2 * (3.0 * a2 * x.y * x.y - r2 * r2) * gradR
                 - vec3(0.0, 2.0 * a2 * r2 * r * x.y, 0.0)) * (invD * invD);
 
-    // Analytic grad (l . p)
     float xpZp = x.x * p.x + x.z * p.z;
     float zpxXpz = x.z * p.x - x.x * p.z;
     vec3 directLP = vec3(
@@ -113,32 +134,31 @@ void hamiltonDeriv(vec3 x, vec3 p, float pt, float a, out vec3 dx, out vec3 dp) 
                 - (x.y * p.y) / r2;
     vec3 gradLP = directLP + dlpDr * gradR;
 
-    // dp/dlambda = -dH_ham / dx = q^2 grad(H) + 2 H q grad(l . p)
     dp = (q * q) * gradH + (2.0 * H * q) * gradLP;
+    return r;
 }
 
-// Reuses k1=(dxNow, dpNow) from current state (FSAL-style): 3 evals for RK4 in strong field (r<=9M),
-// 1 eval for RK2 midpoint in weak asymptotic field (r>9M) — 2x-3x faster with full RK4 accuracy!
-void geodesicStep(inout vec3 x, inout vec3 p, float h, float pt, float a, float rNow,
-                  inout vec3 dxNow, inout vec3 dpNow) {
+// FSAL-style RK4 in strong field (r <= 5.5M), RK2 midpoint in weak field (r > 5.5M)
+float geodesicStep(inout vec3 x, inout vec3 p, float h, float pt, float a, float a2, float rNow,
+                   inout vec3 dxNow, inout vec3 dpNow) {
     vec3 k1x = dxNow;
     vec3 k1p = dpNow;
     vec3 k2x, k2p;
-    hamiltonDeriv(x + (0.5 * h) * k1x, p + (0.5 * h) * k1p, pt, a, k2x, k2p);
+    hamiltonDeriv(x + (0.5 * h) * k1x, p + (0.5 * h) * k1p, pt, a, a2, k2x, k2p);
 
-    if (rNow > 9.0) {
+    if (rNow > 5.5) {
         x += h * k2x;
         p += h * k2p;
-        hamiltonDeriv(x, p, pt, a, dxNow, dpNow);
+        return hamiltonDeriv(x, p, pt, a, a2, dxNow, dpNow);
     } else {
         vec3 k3x, k3p, k4x, k4p;
-        hamiltonDeriv(x + (0.5 * h) * k2x, p + (0.5 * h) * k2p, pt, a, k3x, k3p);
-        hamiltonDeriv(x + h * k3x, p + h * k3p, pt, a, k4x, k4p);
+        hamiltonDeriv(x + (0.5 * h) * k2x, p + (0.5 * h) * k2p, pt, a, a2, k3x, k3p);
+        hamiltonDeriv(x + h * k3x, p + h * k3p, pt, a, a2, k4x, k4p);
 
         float h6 = h * (1.0 / 6.0);
         x += h6 * (k1x + 2.0 * k2x + 2.0 * k3x + k4x);
         p += h6 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
-        hamiltonDeriv(x, p, pt, a, dxNow, dpNow);
+        return hamiltonDeriv(x, p, pt, a, a2, dxNow, dpNow);
     }
 }
 
@@ -180,33 +200,25 @@ vec3 intersectEquatorialHermite(vec3 x0, vec3 dx0, vec3 x1, vec3 dx1, float h, o
 }
 
 // ============================================================================
-// PLANCKIAN BLACKBODY SPECTRUM & SKYBOX SAMPLING
+// SKYBOX SAMPLING WITH FREE-FALL RELATIVISTIC BLUESHIFT & OPTIONAL GRID
 // ============================================================================
 
-vec3 blackbody(float tempKelvin) {
-    float t = clamp(tempKelvin, 950.0, 34000.0) / 100.0;
-    vec3 col;
-    if (t <= 66.0) {
-        col.r = 1.0;
-        col.g = clamp((99.4708025861 * log(max(1.0, t)) - 161.1195681661) / 255.0, 0.0, 1.0);
-    } else {
-        col.r = clamp((329.698727446 * pow(t - 60.0, -0.1332047592)) / 255.0, 0.0, 1.0);
-        col.g = clamp((288.1221695283 * pow(t - 60.0, -0.0755148492)) / 255.0, 0.0, 1.0);
-    }
-    if (t >= 66.0) {
-        col.b = 1.0;
-    } else if (t <= 19.0) {
-        col.b = 0.0;
-    } else {
-        col.b = clamp((138.5177312231 * log(t - 10.0) - 305.0447927307) / 255.0, 0.0, 1.0);
-    }
-    return pow(col, vec3(2.2));
-}
-
-vec3 sampleSkyWithGrid(vec3 dir, vec3 ddx, vec3 ddy) {
+vec3 sampleSkyWithGrid(vec3 dir, vec3 ddx, vec3 ddy, float skyShiftG) {
     vec3 sky = textureGrad(uSkybox, dir, ddx, ddy).rgb;
+
+    // Relativistic headlight frequency shift for plunging Doran free-fall observer
+    if (uFreeFall == 1 && abs(skyShiftG - 1.0) > 0.02) {
+        vec3 blueTint = vec3(0.62, 0.86, 1.48);
+        vec3 redTint = vec3(1.32, 0.72, 0.44);
+        vec3 shiftTint = (skyShiftG >= 1.0)
+                ? mix(vec3(1.0), blueTint, clamp((skyShiftG - 1.0) * 0.55, 0.0, 1.0))
+                : mix(vec3(1.0), redTint, clamp((1.0 - skyShiftG) * 1.15, 0.0, 1.0));
+        float intensityScale = clamp(pow(skyShiftG, 1.65), 0.25, 3.6);
+        sky *= shiftTint * intensityScale;
+    }
+
     if (uShowGrid == 1) {
-        float lon = atan(dir.z, dir.x);
+        float lon = safeAtan2(dir.z, dir.x);
         float lat = asin(clamp(dir.y, -1.0, 1.0));
 
         float gridSpacing = PI / 12.0;
@@ -225,28 +237,24 @@ vec3 sampleSkyWithGrid(vec3 dir, vec3 ddx, vec3 ddy) {
 }
 
 // ============================================================================
-// EXACT RELATIVISTIC DOPPLER FACTOR FOR DISK & PLUNGE STREAM
+// EXACT RELATIVISTIC DOPPLER FACTOR FOR DISK & PLUNGE STREAMS
 // ============================================================================
 
-float computeDiskDopplerG(vec3 hitP, vec3 pCov, float pt, float obsFreq, float r, float iscoR, float a, bool inPlunge) {
+float computeDiskDopplerG(vec3 hitP, vec3 pCov, float pt, float obsFreq,
+                          float r, float H, vec3 lVec, bool inPlunge) {
     if (uDoppler == 0) return 1.0;
 
-    float rEff = max(iscoR, r);
-    float omegaK = 1.0 / (pow(rEff, 1.5) + a);
+    float rEff = max(uIscoR, r);
+    float omegaK = 1.0 / (rEff * sqrt(rEff) + uSpinA);
     vec3 vOrb = omegaK * vec3(-hitP.z, 0.0, hitP.x);
 
     if (inPlunge) {
-        float rPlus = 1.0 + sqrt(max(0.0, 1.0 - a * a));
-        float plungeFrac = clamp((iscoR - r) / max(0.05, iscoR - rPlus), 0.0, 1.0);
+        float plungeFrac = clamp((uIscoR - r) / max(0.05, uIscoR - uHorizonR), 0.0, 1.0);
         float rho = max(1e-4, length(hitP.xz));
         vec3 radIn = vec3(-hitP.x / rho, 0.0, -hitP.z / rho);
         float vInMag = 0.52 * sqrt(plungeFrac);
         vOrb = vOrb * (1.0 + 0.25 * plungeFrac) + radIn * vInMag;
     }
-
-    float rDummy, H;
-    vec3 lVec;
-    kerrMetricHL(hitP, a, rDummy, H, lVec);
 
     float lv = dot(lVec, vOrb);
     float normSq = 1.0 - dot(vOrb, vOrb) - 2.0 * H * (1.0 + lv) * (1.0 + lv);
@@ -264,27 +272,34 @@ struct RayResult {
     vec3 accumColor;
     float transmittance;
     vec3 exitDir;
+    float skyShiftG;
+    float rayPt;
     bool escaped;
     bool photonRingZone;
 };
 
-RayResult traceGeodesic(vec2 pixelCoord) {
+RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
+                        float rCam, float Hcam, vec3 lCam, float ign) {
     vec2 ndc = (pixelCoord / uResolution) * 2.0 - 1.0;
     float aspect = uResolution.x / uResolution.y;
 
-    vec3 vLocal = normalize(uCamForward
-                          + ndc.x * aspect * uTanHalfFov * uCamRight
-                          + ndc.y * uTanHalfFov * uCamUp);
+    vec3 vLocal = safeNormalize(uCamForward
+                              + ndc.x * aspect * uTanHalfFov * uCamRight
+                              + ndc.y * uTanHalfFov * uCamUp, uCamForward);
 
-    float a = clamp(uSpinA, 0.0, 0.998);
-    float rPlus = 1.0 + sqrt(max(0.0, 1.0 - a * a));
-    float iscoR = progradeIsco(a);
+    // Schwarzschild interior anisotropic tidal optical stretching (spaghettification as r -> 0)
+    if (uSpaghettify > 0.001) {
+        vec3 eRad = safeNormalize(uCamPos, vec3(0.0, 0.0, 1.0));
+        float radComp = dot(vLocal, eRad);
+        vec3 vRad = radComp * eRad;
+        vec3 vTrans = vLocal - vRad;
+        float stretch = 1.0 + 3.4 * uSpaghettify;
+        float squeeze = 1.0 - 0.62 * uSpaghettify;
+        vLocal = safeNormalize(vRad * stretch + vTrans * squeeze, vLocal);
+    }
 
-    vec3 x = uCamPos;
-    float rCam, Hcam;
-    vec3 lCam;
-    kerrMetricHL(x, a, rCam, Hcam, lCam);
-
+    float rPlus = uHorizonR;
+    float iscoR = uIscoR;
     float rEscape = max(44.0, rCam + 10.0);
 
     vec3 p;
@@ -318,11 +333,29 @@ RayResult traceGeodesic(vec2 pixelCoord) {
     res.accumColor = vec3(0.0);
     res.transmittance = 1.0;
     res.exitDir = vLocal;
+    res.skyShiftG = (uFreeFall == 1) ? clamp(1.0 / max(0.14, pt), 0.38, 3.80) : 1.0;
+    res.rayPt = pt;
     res.escaped = false;
     res.photonRingZone = false;
 
+    // Inside r_+, backward-traced rays with pt <= 0 can never escape to exterior infinity
     if (uLensing == 1 && startedInside && pt <= 0.0) {
         res.escaped = false;
+        return res;
+    }
+
+    // Analytic weak-field empty-space shortcut for far-field corner rays outside gravitational shell
+    vec3 x = uCamPos;
+    float bProj = dot(-x, vLocal);
+    float bSq = max(0.0, dot(x, x) - bProj * bProj);
+    if (uLensing == 1 && rCam > R_SHELL + 1.0 && (bProj <= 0.0 || bSq > 32.0 * 32.0)) {
+        float b = sqrt(max(1.0, bSq));
+        vec3 bVec = x + vLocal * max(0.0, bProj);
+        float defl = (bProj > 0.0)
+                ? (4.0 / b + 11.78097 / (b * b))
+                : (2.0 * max(0.0, 1.0 - dot(safeNormalize(x, vec3(0, 0, 1)), vLocal)) / max(1.0, rCam));
+        res.exitDir = safeNormalize(vLocal - safeNormalize(bVec, vec3(0.0, 1.0, 0.0)) * defl, vLocal);
+        res.escaped = true;
         return res;
     }
 
@@ -334,30 +367,44 @@ RayResult traceGeodesic(vec2 pixelCoord) {
     vec3 dxNow = vLocal;
     vec3 dpNow = vec3(0.0);
     if (uLensing == 1) {
-        hamiltonDeriv(x, p, pt, a, dxNow, dpNow);
+        r = hamiltonDeriv(x, p, pt, a, a2, dxNow, dpNow);
+
+        // Single analytic leapfrog advance across empty exterior space to R_SHELL (27.5 M)
+        if (rCam > R_SHELL + 1.5 && bProj > 0.0 && bSq < R_SHELL * R_SHELL) {
+            float tSkip = max(0.0, bProj - sqrt(max(0.0, R_SHELL * R_SHELL - bSq))) * 0.92;
+            if (tSkip > 1.0) {
+                float speed0 = max(1.0, length(dxNow));
+                float hSkip = tSkip / speed0;
+                r = geodesicStep(x, p, hSkip, pt, a, a2, r, dxNow, dpNow);
+            }
+        }
     }
+
+    bool jetsActive = (uShowJets == 1 && uJetPower > 0.005);
 
     for (int step = 0; step < MAX_STEPS; step++) {
         float speed = length(dxNow);
         float pNorm = length(p);
+        float radialOut = dot(x, dxNow);
 
-        if (r > rEscape && dot(x, dxNow) > 0.0) {
-            res.exitDir = normalize(dxNow);
+        if (r > rEscape && radialOut > 0.0) {
+            res.exitDir = safeNormalize(dxNow, vLocal);
             res.escaped = true;
             break;
         }
         if (res.transmittance < 0.008) {
-            res.exitDir = normalize(dxNow);
+            res.exitDir = safeNormalize(dxNow, vLocal);
             res.escaped = true;
             break;
         }
 
         if (uLensing == 1) {
-            if (r < 0.14 || pNorm > 75.0) {
+            // True interior cutoff (r < 0.08M) with zero artificial walls at r_+ for plunging observers
+            if (r < 0.08 || pNorm > 85.0) {
                 captured = true;
                 break;
             }
-            if (!startedInside && r <= rPlus * 1.015 && dot(x, dxNow) < 0.0) {
+            if (!startedInside && r <= rPlus * 1.014 && radialOut < 0.0) {
                 captured = true;
                 break;
             }
@@ -370,20 +417,33 @@ RayResult traceGeodesic(vec2 pixelCoord) {
         float distHorizon = abs(r - rPlus);
         float dsCoord;
         if (r < rPlus) {
-            dsCoord = clamp(0.075 * r, 0.018, 0.12);
-        } else if (r > R_DISK_OUT + 2.0) {
-            dsCoord = clamp(0.18 * distHorizon, 0.55, 3.60);
+            dsCoord = clamp(0.075 * r, 0.015, 0.12);
+        } else if (r > R_DISK_OUT + 1.5) {
+            dsCoord = (radialOut > 0.0)
+                    ? clamp(0.36 * r, 1.60, 8.50)
+                    : clamp(0.26 * distHorizon, 0.80, 4.80);
         } else {
-            float diskGuide = 0.58 + abs(x.y) * 0.62;
-            dsCoord = clamp(min(0.115 * distHorizon + 0.032, diskGuide), 0.028, 2.50);
+            float absY = abs(x.y);
+            float diskGuide = (absY > 2.0) ? 3.50 : (0.58 + absY * 0.72);
+            float fieldScale = (r > 5.5) ? (0.165 * distHorizon + 0.042) : (0.118 * distHorizon + 0.032);
+            dsCoord = clamp(min(fieldScale, diskGuide), 0.030, 3.20);
         }
 
-        if (uShowJets == 1 && uJetPower > 0.005) {
+        if (jetsActive) {
             float absY = abs(x.y);
-            float rhoAxis = length(x.xz);
-            if (absY > rPlus * 1.2 && absY < 34.0 && rhoAxis < 3.4) {
-                dsCoord = min(dsCoord, 0.30 + rhoAxis * 0.22);
+            if (absY > rPlus * 1.2 && absY < 34.0) {
+                float rhoAxis = length(x.xz);
+                if (rhoAxis < 3.4) {
+                    dsCoord = min(dsCoord, 0.36 + rhoAxis * 0.25);
+                }
             }
+        }
+
+        // Per-pixel IGN dithering eliminates volumetric slab/jet and grazing-angle banding
+        if (step == 0) {
+            dsCoord *= (0.60 + 0.40 * ign);
+        } else if (startedInside && abs(x.y) < 0.85) {
+            dsCoord *= (0.84 + 0.32 * fract(ign + float(step) * 0.618034));
         }
 
         vec3 prevX = x;
@@ -393,12 +453,11 @@ RayResult traceGeodesic(vec2 pixelCoord) {
         float hStep;
         if (uLensing == 1) {
             hStep = dsCoord / max(1.0, max(speed, pNorm * 0.45));
-            geodesicStep(x, p, hStep, pt, a, r, dxNow, dpNow);
-            r = kerrRadius(x, a);
+            r = geodesicStep(x, p, hStep, pt, a, a2, r, dxNow, dpNow);
         } else {
             hStep = dsCoord;
             x += dxNow * hStep;
-            r = kerrRadius(x, a);
+            r = kerrRadius(x, a2);
         }
 
         float segLen = length(x - prevX);
@@ -407,11 +466,11 @@ RayResult traceGeodesic(vec2 pixelCoord) {
         totalDeflection += length(cross(prevX, x)) / (lenPrev * lenCur);
 
         if (uLensing == 1) {
-            if (r < 0.14 || length(p) > 75.0) {
+            if (r < 0.08 || length(p) > 85.0) {
                 captured = true;
                 break;
             }
-            if (!startedInside && r <= rPlus * 1.015 && dot(x, dxNow) < 0.0) {
+            if (!startedInside && r <= rPlus * 1.014 && dot(x, dxNow) < 0.0) {
                 captured = true;
                 break;
             }
@@ -424,106 +483,112 @@ RayResult traceGeodesic(vec2 pixelCoord) {
         // VOLUMETRIC ACCRETION DISK, ABSORBING DUST LANES & PLUNGE STREAMS
         // --------------------------------------------------------------------
         if (uShowDisk == 1 && r > rPlus * 1.03 && r <= R_DISK_OUT + 1.5) {
-            float slabHalfH = 0.040 * pow(max(0.0, r - iscoR), 0.76) + 0.024;
             bool crossed = (prevX.y > 0.0 && x.y <= 0.0) || (prevX.y < 0.0 && x.y >= 0.0);
-            bool inSlab = (!crossed) && (abs(x.y) < slabHalfH) && (r <= R_DISK_OUT);
+            if (crossed || abs(x.y) < 0.52) {
+                float slabHalfH = 0.040 * pow(max(0.0, r - iscoR), 0.76) + 0.024;
+                bool inSlab = (!crossed) && (abs(x.y) < slabHalfH) && (r <= R_DISK_OUT);
 
-            if (crossed || inSlab) {
-                vec3 hitP;
-                vec3 hitPCov;
-                float stepWeight;
-                if (crossed) {
-                    float tHit;
-                    hitP = intersectEquatorialHermite(prevX, prevDx, x, dxNow, hStep, tHit);
-                    hitPCov = mix(prevP, p, tHit);
-                    stepWeight = 0.68;
-                    diskCrossings++;
-                } else {
-                    hitP = x;
-                    hitPCov = p;
-                    float vProf = exp(-(hitP.y * hitP.y) / max(1e-5, slabHalfH * slabHalfH * 0.36));
-                    stepWeight = min(0.28, segLen * 0.58) * vProf;
-                }
-
-                float hitR = kerrRadius(hitP, a);
-                if (hitR > rPlus * 1.04 && hitR <= R_DISK_OUT) {
-                    float phi = atan(hitP.z, hitP.x);
-                    bool inPlunge = (hitR < iscoR);
-
-                    float uNorm = clamp((hitR - iscoR) / max(0.1, R_DISK_OUT - iscoR), 0.0, 1.0);
-                    float density = 0.0;
-                    float structure = 0.5;
-                    float dustLaneFactor = 0.0;
-
-                    if (inPlunge) {
-                        float plungeU = clamp((hitR - rPlus * 1.04) / max(0.05, iscoR - rPlus * 1.04), 0.0, 1.0);
-                        float spiral = phi - uTime * 2.2 + 5.2 * log(max(0.06, plungeU));
-                        vec3 volCoord = vec3(cos(spiral) * 0.28, hitP.y * 0.65, sin(spiral) * 0.28);
-                        float stream = texture(uNoiseVol, volCoord).r;
-                        float filament = pow(max(0.0, sin(spiral * 3.0 + stream * 5.8)), 3.5);
-                        float fadeHorizon = smoothstep(0.0, 0.38, plungeU);
-                        density = filament * fadeHorizon * 0.48 * uDiskDensity;
-                        structure = 0.45 + 0.55 * filament;
+                if (crossed || inSlab) {
+                    vec3 hitP;
+                    vec3 hitPCov;
+                    float stepWeight;
+                    if (crossed) {
+                        float tHit;
+                        hitP = intersectEquatorialHermite(prevX, prevDx, x, dxNow, hStep, tHit);
+                        hitPCov = mix(prevP, p, tHit);
+                        stepWeight = 0.68;
+                        diskCrossings++;
                     } else {
-                        float omegaVis = 2.05 * pow(max(1.0, iscoR) / hitR, 1.38);
-                        float logSpiral = phi - uTime * omegaVis + 7.8 * log(hitR / max(1.0, iscoR));
-
-                        vec3 volCoord = vec3(
-                            cos(logSpiral) * (0.24 + uNorm * 0.68),
-                            hitP.y * 0.55 - uTime * 0.018,
-                            sin(logSpiral) * (0.24 + uNorm * 0.68) + uNorm * 0.85
-                        );
-                        float turb = texture(uNoiseVol, volCoord).r;
-                        float turbFine = texture(uNoiseVol, volCoord * 2.35 + vec3(0.41, -0.19, 0.27)).r;
-
-                        float mainWaves = 0.5 + 0.5 * sin(uNorm * 68.0 + turb * 7.8);
-                        float fineThreads = 0.5 + 0.5 * cos(uNorm * 165.0 - turbFine * 10.5 + logSpiral * 2.0);
-                        structure = 0.56 * mainWaves + 0.44 * fineThreads;
-
-                        float dustNoise = texture(uNoiseVol, volCoord * 1.35 + vec3(0.17, 0.62, -0.33)).r;
-                        dustLaneFactor = smoothstep(0.22, 0.80, uNorm) * smoothstep(0.38, 0.70, dustNoise);
-
-                        float innerRamp = smoothstep(0.0, 0.032, uNorm);
-                        float outerFade = pow(max(0.0, 1.0 - uNorm), 1.45);
-                        float iscoPeak = exp(-pow((uNorm - 0.028) / 0.055, 2.0)) * 0.68;
-
-                        density = max(0.0, (structure * 1.08 + iscoPeak) * innerRamp * outerFade) * uDiskDensity;
+                        hitP = x;
+                        hitPCov = p;
+                        float vProf = exp(-(hitP.y * hitP.y) / max(1e-5, slabHalfH * slabHalfH * 0.36));
+                        stepWeight = min(0.28, segLen * 0.58) * vProf;
                     }
 
-                    if (density > 0.0025) {
-                        float gFactor = computeDiskDopplerG(hitP, hitPCov, pt, obsFreq, hitR, iscoR, a, inPlunge);
+                    float hitR, hitH;
+                    vec3 hitL;
+                    kerrMetricHL(hitP, a, a2, hitR, hitH, hitL);
 
-                        vec3 emitCol;
-                        float intensityBoost;
-                        if (uOrderVis == 1) {
-                            if (diskCrossings <= 1 && totalDeflection < PI * 0.95) {
-                                emitCol = vec3(1.00, 0.56, 0.14);
-                            } else if (diskCrossings == 2 || totalDeflection < PI * 1.95) {
-                                emitCol = vec3(0.14, 0.88, 1.00);
-                            } else {
-                                emitCol = vec3(1.00, 0.18, 0.76);
-                            }
-                            intensityBoost = 1.0;
+                    if (hitR > rPlus * 1.04 && hitR <= R_DISK_OUT) {
+                        float phi = safeAtan2(hitP.z, hitP.x);
+                        bool inPlunge = (hitR < iscoR);
+
+                        float uNorm = clamp((hitR - iscoR) / max(0.1, R_DISK_OUT - iscoR), 0.0, 1.0);
+                        float density = 0.0;
+                        float structure = 0.5;
+                        float dustLaneFactor = 0.0;
+
+                        if (inPlunge) {
+                            float plungeU = clamp((hitR - rPlus * 1.04) / max(0.05, iscoR - rPlus * 1.04), 0.0, 1.0);
+                            float spiral = phi - uTime * 2.2 + 5.2 * log(max(0.06, plungeU));
+                            vec3 volCoord = vec3(cos(spiral) * 0.28, hitP.y * 0.65, sin(spiral) * 0.28);
+                            float stream = texture(uNoiseVol, volCoord).r;
+                            float filament = pow(max(0.0, sin(spiral * 3.0 + stream * 5.8)), 3.5);
+                            float fadeHorizon = smoothstep(0.0, 0.38, plungeU);
+                            density = filament * fadeHorizon * 0.48 * uDiskDensity;
+                            structure = 0.45 + 0.55 * filament;
                         } else {
-                            float effR = max(iscoR * 0.95, hitR);
-                            float baseTemp = (11800.0 * uDiskTempScale)
-                                           * pow(max(1.0, iscoR) / effR, 0.72)
-                                           * (0.64 + 0.56 * structure);
-                            baseTemp *= (1.0 - 0.55 * dustLaneFactor);
+                            float omegaVis = 2.05 * pow(max(1.0, iscoR) / hitR, 1.38);
+                            float logSpiral = phi - uTime * omegaVis + 7.8 * log(hitR / max(1.0, iscoR));
 
-                            float obsTemp = baseTemp * gFactor;
-                            emitCol = blackbody(obsTemp);
+                            vec3 volCoord = vec3(
+                                cos(logSpiral) * (0.24 + uNorm * 0.68),
+                                hitP.y * 0.55 - uTime * 0.018,
+                                sin(logSpiral) * (0.24 + uNorm * 0.68) + uNorm * 0.85
+                            );
+                            float turb = texture(uNoiseVol, volCoord).r;
+                            float turbFine = texture(uNoiseVol, volCoord * 2.35 + vec3(0.41, -0.19, 0.27)).r;
 
-                            float g4 = gFactor * gFactor * gFactor * gFactor;
-                            intensityBoost = g4 / (1.0 + 0.34 * g4);
+                            float mainWaves = 0.5 + 0.5 * sin(uNorm * 68.0 + turb * 7.8);
+                            float fineThreads = 0.5 + 0.5 * cos(uNorm * 165.0 - turbFine * 10.5 + logSpiral * 2.0);
+                            structure = 0.56 * mainWaves + 0.44 * fineThreads;
+
+                            if (uNorm > 0.22) {
+                                float dustNoise = texture(uNoiseVol, volCoord * 1.35 + vec3(0.17, 0.62, -0.33)).r;
+                                dustLaneFactor = smoothstep(0.22, 0.80, uNorm) * smoothstep(0.38, 0.70, dustNoise);
+                            }
+
+                            float innerRamp = smoothstep(0.0, 0.032, uNorm);
+                            float outerFade = pow(max(0.0, 1.0 - uNorm), 1.45);
+                            float iscoPeak = exp(-pow((uNorm - 0.028) / 0.055, 2.0)) * 0.68;
+
+                            density = max(0.0, (structure * 1.08 + iscoPeak) * innerRamp * outerFade) * uDiskDensity;
                         }
 
-                        float emitSuppression = 1.0 - 0.76 * dustLaneFactor;
-                        float emission = density * intensityBoost * emitSuppression * stepWeight * 0.92;
-                        float opacity = clamp(density * stepWeight * (0.58 + 1.40 * uNorm + 1.55 * dustLaneFactor), 0.0, 0.96);
+                        if (density > 0.0025) {
+                            float gFactor = computeDiskDopplerG(hitP, hitPCov, pt, obsFreq, hitR, hitH, hitL, inPlunge);
 
-                        res.accumColor += res.transmittance * emission * emitCol;
-                        res.transmittance *= (1.0 - opacity);
+                            vec3 emitCol;
+                            float intensityBoost;
+                            if (uOrderVis == 1) {
+                                if (diskCrossings <= 1 && totalDeflection < PI * 0.95) {
+                                    emitCol = vec3(1.00, 0.56, 0.14);
+                                } else if (diskCrossings == 2 || totalDeflection < PI * 1.95) {
+                                    emitCol = vec3(0.14, 0.88, 1.00);
+                                } else {
+                                    emitCol = vec3(1.00, 0.18, 0.76);
+                                }
+                                intensityBoost = 1.0;
+                            } else {
+                                float effR = max(iscoR * 0.95, hitR);
+                                float baseTemp = (11800.0 * uDiskTempScale)
+                                               * pow(max(1.0, iscoR) / effR, 0.72)
+                                               * (0.64 + 0.56 * structure);
+                                baseTemp *= (1.0 - 0.55 * dustLaneFactor);
+
+                                emitCol = sampleBlackbody(baseTemp * gFactor);
+
+                                float g4 = gFactor * gFactor * gFactor * gFactor;
+                                intensityBoost = g4 / (1.0 + 0.34 * g4);
+                            }
+
+                            float emitSuppression = 1.0 - 0.76 * dustLaneFactor;
+                            float emission = density * intensityBoost * emitSuppression * stepWeight * 0.92;
+                            float opacity = clamp(density * stepWeight * (0.58 + 1.40 * uNorm + 1.55 * dustLaneFactor), 0.0, 0.96);
+
+                            res.accumColor += res.transmittance * emission * emitCol;
+                            res.transmittance *= (1.0 - opacity);
+                        }
                     }
                 }
             }
@@ -532,7 +597,7 @@ RayResult traceGeodesic(vec2 pixelCoord) {
         // --------------------------------------------------------------------
         // COLLIMATED BIPOLAR RELATIVISTIC SYNCHROTRON JETS (+/- Y AXIS)
         // --------------------------------------------------------------------
-        if (uShowJets == 1 && uJetPower > 0.005) {
+        if (jetsActive) {
             float absY = abs(x.y);
             if (absY > rPlus * 1.45 && absY < 34.0) {
                 float rFunnel = (0.28 + 0.15 * a) * pow(1.0 + absY * 0.22, 0.52);
@@ -541,7 +606,6 @@ RayResult traceGeodesic(vec2 pixelCoord) {
                     float jetSign = (x.y >= 0.0) ? 1.0 : -1.0;
                     float uJet = rho / max(0.05, rFunnel);
 
-                    // Luminous core spine + edge-brightened parabolic synchrotron sheath
                     float spine = exp(-uJet * uJet * 6.0) * 1.05;
                     float sheath = exp(-pow((uJet - 0.76) / 0.28, 2.0)) * 0.70;
                     float radialProfile = spine + sheath;
@@ -549,7 +613,7 @@ RayResult traceGeodesic(vec2 pixelCoord) {
                     float baseLaunch = smoothstep(rPlus * 1.45, rPlus * 3.10, absY);
                     float topFade = exp(-absY * 0.034);
 
-                    float phiJet = atan(x.z, x.x);
+                    float phiJet = safeAtan2(x.z, x.x);
                     float helixPhase = phiJet * 2.0 - jetSign * (absY * (1.05 + 1.15 * a) - uTime * 5.2);
                     vec3 jetNoiseCoord = vec3(
                         x.x * 0.20,
@@ -567,19 +631,18 @@ RayResult traceGeodesic(vec2 pixelCoord) {
                         if (uDoppler == 1) {
                             float betaJet = 0.78;
                             vec3 vJet = vec3(0.0, jetSign * betaJet, 0.0);
-                            float rJ, HJ;
+                            float rJ, Hj;
                             vec3 lJ;
-                            kerrMetricHL(x, a, rJ, HJ, lJ);
+                            kerrMetricHL(x, a, a2, rJ, Hj, lJ);
                             float lvJ = dot(lJ, vJet);
-                            float normJ = 1.0 - betaJet * betaJet - 2.0 * HJ * (1.0 + lvJ) * (1.0 + lvJ);
+                            float normJ = 1.0 - betaJet * betaJet - 2.0 * Hj * (1.0 + lvJ) * (1.0 + lvJ);
                             float utJ = inversesqrt(max(0.05, normJ));
                             float emitFreqJ = utJ * (pt + dot(p, vJet));
                             gJet = clamp(obsFreq / max(0.08, emitFreqJ), 0.18, 3.20);
                         }
 
-                        // 18000K - 28000K blue-white synchrotron plasma emission
                         float synchTemp = (18000.0 + 10000.0 * jFine) * clamp(gJet, 0.55, 1.85);
-                        vec3 synchCol = mix(blackbody(synchTemp), vec3(0.36, 0.70, 1.58), 0.42);
+                        vec3 synchCol = mix(sampleBlackbody(synchTemp), vec3(0.36, 0.70, 1.58), 0.42);
 
                         float g3 = gJet * gJet * gJet;
                         float jetBoost = g3 / (1.0 + 0.22 * g3);
@@ -599,13 +662,43 @@ RayResult traceGeodesic(vec2 pixelCoord) {
         res.escaped = false;
     }
 
-    // Trigger extra AA only on genuine multi-order photon rings (never across solid black shadow interior)
-    res.photonRingZone = (diskCrossings >= 2) || (res.escaped && totalDeflection > 1.85);
+    res.photonRingZone = (diskCrossings >= 3) || (res.escaped && totalDeflection > 2.35);
     return res;
 }
 
+vec3 applyInteriorClimax(vec3 col, float rayPt) {
+    // Kerr Inner Cauchy Horizon (r_-) Mass-Inflation Blueshift Flash:
+    // Infinitely blueshifted external radiation piles up along the horizon caustic boundary (rayPt ~ 0)
+    // as an intense electric blue-white celestial ring rather than washing out the viewport to flat white.
+    if (uCauchyFlash > 0.001) {
+        float sharpRing = exp(-pow(rayPt / (0.045 + 0.055 * uCauchyFlash), 2.0));
+        float coronaHalo = exp(-pow(rayPt / (0.18 + 0.16 * uCauchyFlash), 2.0));
+        vec3 coreCol = vec3(0.88, 0.96, 1.65);
+        vec3 haloCol = vec3(0.24, 0.62, 1.55);
+        col += coreCol * sharpRing * uCauchyFlash * 5.8
+             + haloCol * coronaHalo * uCauchyFlash * 1.35
+             + haloCol * (uCauchyFlash * uCauchyFlash * 0.14);
+    }
+
+    // Schwarzschild Singularity Impact Fade (r -> 0)
+    if (uSingularityFade > 0.001 && uCauchyFlash < 0.05) {
+        col *= (1.0 - clamp(uSingularityFade, 0.0, 1.0));
+    }
+
+    return sanitizeHdr(col);
+}
+
 void main() {
-    RayResult primary = traceGeodesic(gl_FragCoord.xy);
+    float a = clamp(uSpinA, 0.0, 0.998);
+    float a2 = a * a;
+
+    // Hoisted camera metric evaluation: computed ONCE per pixel instead of 4x during AA
+    float rCam, Hcam;
+    vec3 lCam;
+    kerrMetricHL(uCamPos, a, a2, rCam, Hcam, lCam);
+
+    float ign = interleavedGradientNoise(gl_FragCoord.xy);
+    RayResult primary = traceGeodesic(gl_FragCoord.xy, a, a2, rCam, Hcam, lCam, ign);
 
     // Hardware 2x2 quad derivatives evaluated unconditionally in uniform control flow
     vec3 rawDdx = dFdx(primary.exitDir);
@@ -618,19 +711,23 @@ void main() {
 
     vec3 c0 = primary.accumColor;
     if (primary.escaped && primary.transmittance > 0.005) {
-        c0 += primary.transmittance * sampleSkyWithGrid(primary.exitDir, ddx, ddy);
+        c0 += primary.transmittance * sampleSkyWithGrid(primary.exitDir, ddx, ddy, primary.skyShiftG);
     }
+    c0 = applyInteriorClimax(c0, primary.rayPt);
 
-    // Edge-aware adaptive AA mask: shadow silhouette edge, photon ring, high-contrast disk/jet/star edges
+    // Edge-aware adaptive AA mask in perceptual tone-mapped luma space:
+    // preserves 4x AA on shadow silhouette, photon ring, Einstein ring, stars & crisp edges
+    // while avoiding redundant 4x oversampling on smooth HDR mid-disk regions.
     float escMask = primary.escaped ? 1.0 : 0.0;
     bool shadowEdge = fwidth(escMask) > 0.01;
     float luma0 = dot(c0, vec3(0.2126, 0.7152, 0.0722));
-    float edgeContrast = fwidth(luma0);
+    float percLuma = luma0 / (1.0 + luma0);
+    float edgeContrast = fwidth(percLuma);
 
     bool needsAa = shadowEdge
                 || primary.photonRingZone
-                || (primary.escaped && dirGrad > 0.055)
-                || (edgeContrast > 0.15);
+                || (primary.escaped && dirGrad > 0.080)
+                || (edgeContrast > 0.055);
 
     if (uAdaptiveAa == 0 || !needsAa) {
         FragColor = vec4(c0, 1.0);
@@ -649,13 +746,14 @@ void main() {
     vec3 subDdy = ddy * 0.5;
 
     for (int s = 0; s < 3; s++) {
-        RayResult sub = traceGeodesic(gl_FragCoord.xy + r2Offsets[s]);
+        float subIgn = fract(ign + 0.3183098 * float(s + 1));
+        RayResult sub = traceGeodesic(gl_FragCoord.xy + r2Offsets[s], a, a2, rCam, Hcam, lCam, subIgn);
         vec3 cs = sub.accumColor;
         if (sub.escaped && sub.transmittance > 0.005) {
-            cs += sub.transmittance * sampleSkyWithGrid(sub.exitDir, subDdx, subDdy);
+            cs += sub.transmittance * sampleSkyWithGrid(sub.exitDir, subDdx, subDdy, sub.skyShiftG);
         }
-        sum += cs;
+        sum += applyInteriorClimax(cs, sub.rayPt);
     }
 
-    FragColor = vec4(sum * 0.25, 1.0);
+    FragColor = vec4(sanitizeHdr(sum * 0.25), 1.0);
 }

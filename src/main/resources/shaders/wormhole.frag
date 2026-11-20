@@ -6,23 +6,39 @@ uniform vec3 uCamRadial;   // Unit radial direction e_r on the wormhole celestia
 uniform vec3 uCamForward;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
-uniform samplerCube uSkyboxA; // Universe A (l > 0): Milky Way & spiral galaxies
-uniform samplerCube uSkyboxB; // Universe B (l < 0): Golden-amber/teal nebula & ringed gas giant
-uniform float uWormholeL;     // Signed proper distance l_cam in [-35, +35]
-uniform float uWormholeRho;   // Throat radius rho
-uniform float uWormholeA;     // Throat half-length a
-uniform float uWormholeM;     // Lensing transition width M_w
+uniform samplerCube uSkyboxA;
+uniform samplerCube uSkyboxB;
+uniform float uWormholeL;
+uniform float uWormholeRho;
+uniform float uWormholeA;
+uniform float uWormholeM;
 uniform float uTanHalfFov;
 uniform int uShowGrid;
 uniform int uAdaptiveAa;
 
 const float PI = 3.14159265359;
-const int MAX_STEPS = 220;
+const int MAX_STEPS = 200;
+
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+    float len2 = dot(v, v);
+    return (len2 > 1e-12) ? (v * inversesqrt(len2)) : fallback;
+}
+
+float safeAtan2(float y, float x) {
+    return (abs(x) + abs(y) > 1e-6) ? atan(y, x) : 0.0;
+}
+
+vec3 sanitizeHdr(vec3 c) {
+    bvec3 bad = bvec3(isnan(c.x) || isinf(c.x),
+                      isnan(c.y) || isinf(c.y),
+                      isnan(c.z) || isinf(c.z));
+    c = mix(c, vec3(0.0), bad);
+    return clamp(c, vec3(0.0), vec3(48.0));
+}
 
 // Exact Dneg / Interstellar Morris-Thorne shape function r(l) and dr/dl
-void wormholeMetric(float l, out float r, out float drdl) {
+void wormholeMetric(float l, float mw, out float r, out float drdl) {
     float absL = abs(l);
-    float mw = max(0.08, uWormholeM);
     float x = max(0.0, (2.0 * (absL - uWormholeA)) / (PI * mw));
     float atanX = atan(x);
     r = max(0.15, uWormholeRho + mw * (x * atanX - 0.5 * log(1.0 + x * x)));
@@ -30,9 +46,9 @@ void wormholeMetric(float l, out float r, out float drdl) {
     drdl = (2.0 / PI) * atanX * sgn;
 }
 
-void wormholeDeriv(float l, float vl, float H, out float dl, out float dvl, out float dphi) {
+void wormholeDeriv(float l, float vl, float H, float mw, out float dl, out float dvl, out float dphi) {
     float r, drdl;
-    wormholeMetric(l, r, drdl);
+    wormholeMetric(l, mw, r, drdl);
     float invR2 = 1.0 / (r * r);
     dl = vl;
     dvl = (H * H * invR2 / r) * drdl;
@@ -43,73 +59,57 @@ struct WormholeRay {
     vec3 exitDir;
     float endL;
     float totalPhi;
-    bool crossedThroat;
 };
 
-WormholeRay traceWormholeRay(vec2 pixelCoord) {
+WormholeRay traceWormholeRay(vec2 pixelCoord, vec3 eR, float r0, float mw, float lEscape) {
     vec2 ndc = (pixelCoord / uResolution) * 2.0 - 1.0;
     float aspect = uResolution.x / uResolution.y;
 
-    vec3 dRay = normalize(uCamForward
-                        + ndc.x * aspect * uTanHalfFov * uCamRight
-                        + ndc.y * uTanHalfFov * uCamUp);
+    vec3 dRay = safeNormalize(uCamForward
+                            + ndc.x * aspect * uTanHalfFov * uCamRight
+                            + ndc.y * uTanHalfFov * uCamUp, uCamForward);
 
-    vec3 eR = normalize(uCamRadial);
     float cosTheta = clamp(dot(dRay, eR), -1.0, 1.0);
     vec3 tanVec = dRay - cosTheta * eR;
     float sinTheta = length(tanVec);
     vec3 ePhi = (sinTheta > 1e-6) ? (tanVec / sinTheta) : vec3(0.0);
-
-    float r0, dr0;
-    wormholeMetric(uWormholeL, r0, dr0);
 
     float l = uWormholeL;
     float vl = cosTheta;
     float H = r0 * sinTheta;
     float phi = 0.0;
 
-    float lEscape = max(42.0, abs(uWormholeL) + 22.0);
-    bool startPos = (uWormholeL >= 0.0);
-    bool crossed = false;
-
     for (int step = 0; step < MAX_STEPS; step++) {
         if (abs(l) > lEscape && (l * vl > 0.0)) {
             break;
         }
 
-        // Adaptive step size: fine resolution inside/near throat, rapid integration in flat space
         float distThroat = max(0.0, abs(l) - uWormholeA);
-        float h = clamp(0.065 * distThroat + 0.065 * uWormholeRho, 0.04, 2.20);
+        float h = clamp(0.075 * distThroat + 0.070 * uWormholeRho, 0.045, 2.50);
 
         float k1l, k1v, k1p;
-        wormholeDeriv(l, vl, H, k1l, k1v, k1p);
+        wormholeDeriv(l, vl, H, mw, k1l, k1v, k1p);
 
         float k2l, k2v, k2p;
-        wormholeDeriv(l + 0.5 * h * k1l, vl + 0.5 * h * k1v, H, k2l, k2v, k2p);
+        wormholeDeriv(l + 0.5 * h * k1l, vl + 0.5 * h * k1v, H, mw, k2l, k2v, k2p);
 
         float k3l, k3v, k3p;
-        wormholeDeriv(l + 0.5 * h * k2l, vl + 0.5 * h * k2v, H, k3l, k3v, k3p);
+        wormholeDeriv(l + 0.5 * h * k2l, vl + 0.5 * h * k2v, H, mw, k3l, k3v, k3p);
 
         float k4l, k4v, k4p;
-        wormholeDeriv(l + h * k3l, vl + h * k3v, H, k4l, k4v, k4p);
+        wormholeDeriv(l + h * k3l, vl + h * k3v, H, mw, k4l, k4v, k4p);
 
         float h6 = h * (1.0 / 6.0);
         l += h6 * (k1l + 2.0 * k2l + 2.0 * k3l + k4l);
         vl += h6 * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
         phi += h6 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
-
-        if ((l >= 0.0) != startPos) {
-            crossed = true;
-        }
     }
 
-    // Orientation-preserving 3D exit direction continuous across l = 0
     float sgnL = (l >= 0.0) ? 1.0 : -1.0;
     WormholeRay res;
-    res.exitDir = normalize(sgnL * cos(phi) * eR + sin(phi) * ePhi);
+    res.exitDir = safeNormalize(sgnL * cos(phi) * eR + sin(phi) * ePhi, dRay);
     res.endL = l;
     res.totalPhi = phi;
-    res.crossedThroat = crossed;
     return res;
 }
 
@@ -120,7 +120,7 @@ vec3 sampleUniverse(WormholeRay ray, vec3 ddx, vec3 ddy) {
 
     if (uShowGrid == 1) {
         vec3 dir = ray.exitDir;
-        float lon = atan(dir.z, dir.x);
+        float lon = safeAtan2(dir.z, dir.x);
         float lat = asin(clamp(dir.y, -1.0, 1.0));
 
         float gridSpacing = PI / 12.0;
@@ -137,16 +137,21 @@ vec3 sampleUniverse(WormholeRay ray, vec3 ddx, vec3 ddy) {
         col += vec3(1.00, 0.56, 0.18) * max(equator, prime) * 0.85;
     }
 
-    // Subtle physical caustic shimmer right along multi-winding Einstein ring near throat rim
     float rimCaustic = smoothstep(2.6, 5.8, ray.totalPhi) * 0.08;
     col += vec3(0.75, 0.90, 1.15) * rimCaustic;
-    return col;
+    return sanitizeHdr(col);
 }
 
 void main() {
-    WormholeRay primary = traceWormholeRay(gl_FragCoord.xy);
+    // Hoist per-frame camera wormhole invariants out of AA loop
+    vec3 eR = safeNormalize(uCamRadial, vec3(0.0, 0.0, 1.0));
+    float mw = max(0.08, uWormholeM);
+    float r0, dr0;
+    wormholeMetric(uWormholeL, mw, r0, dr0);
+    float lEscape = max(42.0, abs(uWormholeL) + 22.0);
 
-    // Uniform-control-flow screen-space ray differentials for sharp textureGrad mipmapping
+    WormholeRay primary = traceWormholeRay(gl_FragCoord.xy, eR, r0, mw, lEscape);
+
     vec3 rawDdx = dFdx(primary.exitDir);
     vec3 rawDdy = dFdy(primary.exitDir);
     float dirGrad = length(rawDdx) + length(rawDdy);
@@ -170,7 +175,6 @@ void main() {
         return;
     }
 
-    // Edge-aware Adaptive 4x R2 stratified AA along Einstein ring & portal rim
     vec2 r2Offsets[3] = vec2[](
         vec2( 0.254878,  0.069840),
         vec2(-0.490245, -0.360319),
@@ -182,9 +186,9 @@ void main() {
     vec3 subDdy = ddy * 0.5;
 
     for (int s = 0; s < 3; s++) {
-        WormholeRay sub = traceWormholeRay(gl_FragCoord.xy + r2Offsets[s]);
+        WormholeRay sub = traceWormholeRay(gl_FragCoord.xy + r2Offsets[s], eR, r0, mw, lEscape);
         sum += sampleUniverse(sub, subDdx, subDdy);
     }
 
-    FragColor = vec4(sum * 0.25, 1.0);
+    FragColor = vec4(sanitizeHdr(sum * 0.25), 1.0);
 }

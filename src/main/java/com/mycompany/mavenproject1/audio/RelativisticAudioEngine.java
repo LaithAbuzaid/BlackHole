@@ -24,6 +24,7 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  *   <li>Gravitational redshift sub-bass drone tracking {@code sqrt(1 - r_+ / r_cam)}</li>
  *   <li>Doppler-panned filtered stereo accretion disk plasma roar</li>
  *   <li>High-energy crackling plasma swell during active TDE tidal shredding</li>
+ *   <li>Interior plunge blueshift harmonic shimmer &amp; silence cutoff at singularity impact</li>
  *   <li>Ethereal harmonic wormhole chord sweeping in pitch and stereo width across {@code l = 0}</li>
  * </ul>
  * Falls back gracefully to a silent no-op if no OpenAL audio device is available.</p>
@@ -51,9 +52,11 @@ public final class RelativisticAudioEngine implements AutoCloseable {
     private volatile boolean paused = false;
     private volatile float gravRedshift = 0.95f;
     private volatile float diskEnergy = 1.0f;
-    private volatile float dopplerPan = -0.35f; // -1 left (approaching side), +1 right
+    private volatile float dopplerPan = -0.35f;
     private volatile float tdeShearEnergy = 0.0f;
     private volatile float wormholeL = 13.5f;
+    private volatile float interiorShimmer = 0.0f;
+    private volatile float singularitySilence = 0.0f;
 
     public void start() {
         try {
@@ -99,10 +102,21 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         this.tdeShearEnergy = tdeShear;
         this.wormholeL = (float) camera.currentWormholeL();
 
-        double rCam = Math.max(0.25, camera.currentKerrRadius());
+        double rCam = Math.max(0.08, camera.currentKerrRadius());
         double rPlus = state.outerHorizonRadius();
-        double lapse = Math.sqrt(Math.max(0.08, 1.0 - Math.min(0.92, rPlus / Math.max(rPlus * 1.04, rCam))));
-        this.gravRedshift = (float) lapse;
+        if (rCam <= rPlus) {
+            // Deep sub-bass floor inside event horizon + rising crystalline blueshift shimmer
+            this.gravRedshift = 0.08f;
+            float depth = (float) Math.min(1.0, Math.max(0.0, (rPlus - rCam) / Math.max(0.25, rPlus)));
+            this.interiorShimmer = Math.min(1.0f, 0.25f + depth * 0.60f + state.cauchyFlashIntensity * 0.85f);
+        } else {
+            double lapse = Math.sqrt(Math.max(0.08, 1.0 - Math.min(0.92, rPlus / Math.max(rPlus * 1.04, rCam))));
+            this.gravRedshift = (float) lapse;
+            this.interiorShimmer = state.plungeActive ? (float) Math.max(0.0, (1.0 - lapse) * 0.25) : 0.0f;
+        }
+
+        // Smooth silence cutoff on Schwarzschild singularity impact (r -> 0)
+        this.singularitySilence = (state.cauchyFlashIntensity > 0.1f) ? 0.0f : state.singularityFade;
 
         if (state.showDisk) {
             float proximity = (float) Math.min(1.8, 22.0 / Math.max(5.0, rCam));
@@ -111,7 +125,6 @@ public final class RelativisticAudioEngine implements AutoCloseable {
             this.diskEnergy = 0.0f;
         }
 
-        // Approaching Doppler side lies to the left (-X in screen space) when Kerr prograde disk is viewed edge-on
         this.dopplerPan = state.dopplerEnabled ? -0.45f * (0.4f + 0.6f * state.effectiveSpin()) : 0.0f;
     }
 
@@ -123,19 +136,18 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         ShortBuffer pcmBuf = MemoryUtil.memAllocShort(FRAMES_PER_BUFFER * 2);
         int[] unqueued = new int[1];
 
-        // Continuous oscillator & filter state
         double subPhase = 0.0;
         double subHarmPhase = 0.0;
         double lfoPhase = 0.0;
+        double shimPhaseA = 0.0;
+        double shimPhaseB = 0.0;
         double[] whPhases = new double[4];
 
-        // Stereo pink/bandpass noise filter states
         double lpL = 0.0, lpR = 0.0;
         double bpL = 0.0, bpR = 0.0;
         double crackleEnv = 0.0;
         long rng = 0x9E3779B97F4A7C15L;
 
-        // Smoothed audio parameters to guarantee click-free transitions
         double smGain = 0.0;
         double smWhMix = 0.0;
         double smRedshift = 0.95;
@@ -143,14 +155,16 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         double smPan = -0.35;
         double smTde = 0.0;
         double smWhL = 13.5;
+        double smShimmer = 0.0;
+        double smSilence = 0.0;
 
         try {
-            // Prime initial queue
             for (int i = 0; i < BUFFER_COUNT; i++) {
-                fillBuffer(pcmBuf, whPhases,
-                        subPhase, subHarmPhase, lfoPhase,
-                        lpL, lpR, bpL, bpR, crackleEnv, rng,
-                        smGain, smWhMix, smRedshift, smDisk, smPan, smTde, smWhL);
+                pcmBuf.clear();
+                for (int s = 0; s < FRAMES_PER_BUFFER * 2; s++) {
+                    pcmBuf.put((short) 0);
+                }
+                pcmBuf.flip();
                 alBufferData(buffers[i], AL_FORMAT_STEREO16, pcmBuf, SAMPLE_RATE);
                 alSourceQueueBuffers(source, buffers[i]);
             }
@@ -173,6 +187,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                 double targetPan = dopplerPan;
                 double targetTde = tdeShearEnergy;
                 double targetWhL = wormholeL;
+                double targetShimmer = interiorShimmer;
+                double targetSilence = singularitySilence;
 
                 while (processed-- > 0 && running) {
                     alSourceUnqueueBuffers(source, unqueued);
@@ -180,7 +196,6 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                     pcmBuf.clear();
 
                     for (int f = 0; f < FRAMES_PER_BUFFER; f++) {
-                        // Exponential per-sample smoothing (~25ms time constant)
                         smGain += (targetGain - smGain) * 0.0009;
                         smWhMix += (targetWhMix - smWhMix) * 0.0007;
                         smRedshift += (targetRedshift - smRedshift) * 0.0006;
@@ -188,20 +203,21 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         smPan += (targetPan - smPan) * 0.0006;
                         smTde += (targetTde - smTde) * 0.0012;
                         smWhL += (targetWhL - smWhL) * 0.0008;
+                        smShimmer += (targetShimmer - smShimmer) * 0.0008;
+                        smSilence += (targetSilence - smSilence) * 0.0010;
 
-                        // Fast xorshift64 white noise [-1, +1]
                         rng ^= (rng << 13);
                         rng ^= (rng >>> 7);
                         rng ^= (rng << 17);
                         double whiteL = ((rng & 0xFFFFL) / 32768.0) - 1.0;
                         double whiteR = (((rng >>> 16) & 0xFFFFL) / 32768.0) - 1.0;
 
-                        // --- LAYER 1: BLACK HOLE GRAVITATIONAL SUB-BASS DRONE ---
+                        // LAYER 1: Gravitational Redshift Sub-Bass Drone
                         lfoPhase += twoPi * 0.14 * invSr;
                         if (lfoPhase > twoPi) lfoPhase -= twoPi;
                         double lfo = 0.85 + 0.15 * Math.sin(lfoPhase);
 
-                        double droneHz = 28.0 + 36.0 * smRedshift; // Drops smoothly toward 28 Hz near r_+
+                        double droneHz = 26.0 + 38.0 * smRedshift;
                         subPhase += twoPi * droneHz * invSr;
                         if (subPhase > twoPi) subPhase -= twoPi;
                         subHarmPhase += twoPi * (droneHz * 1.498) * invSr;
@@ -209,9 +225,9 @@ public final class RelativisticAudioEngine implements AutoCloseable {
 
                         double drone = (Math.sin(subPhase) * 0.65
                                 + Math.sin(subPhase * 2.0) * 0.22
-                                + Math.sin(subHarmPhase) * 0.14) * lfo * (0.48 + 0.35 * (1.0 - smRedshift));
+                                + Math.sin(subHarmPhase) * 0.14) * lfo * (0.48 + 0.38 * (1.0 - smRedshift));
 
-                        // --- LAYER 2: ACCRETION DISK DOPPLER-PANNED STEREO ROAR ---
+                        // LAYER 2: Accretion Disk Doppler-Panned Stereo Roar
                         double cutoff = 0.018 + 0.025 * Math.min(1.5, smDisk);
                         lpL += cutoff * (whiteL - lpL);
                         lpR += cutoff * (whiteR - lpR);
@@ -226,7 +242,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         double diskL = roarRawL * diskScale * panL;
                         double diskR = roarRawR * diskScale * panR;
 
-                        // --- LAYER 3: TDE CRACKLING HIGH-ENERGY PLASMA SWELL ---
+                        // LAYER 3: TDE Crackling High-Energy Plasma Swell
                         double sparkTrig = (((rng >>> 32) & 0xFFFFL) / 65535.0);
                         if (sparkTrig > (0.9965 - 0.012 * smTde)) {
                             crackleEnv = Math.min(1.0, crackleEnv + 0.55 * smTde);
@@ -235,13 +251,24 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         double crackleL = (whiteL * crackleEnv * 0.48 + Math.sin(subHarmPhase * 3.0) * smTde * 0.18);
                         double crackleR = (whiteR * crackleEnv * 0.48 + Math.cos(subHarmPhase * 3.01) * smTde * 0.18);
 
-                        double bhL = drone + diskL + crackleL;
-                        double bhR = drone + diskR + crackleR;
+                        // LAYER 4: Interior Horizon Blueshift & Cauchy Mass-Inflation Shimmer
+                        double shimHz = 520.0 + 1650.0 * smShimmer * smShimmer;
+                        shimPhaseA += twoPi * shimHz * invSr;
+                        if (shimPhaseA > twoPi) shimPhaseA -= twoPi;
+                        shimPhaseB += twoPi * (shimHz * 1.253) * invSr;
+                        if (shimPhaseB > twoPi) shimPhaseB -= twoPi;
+                        double shimGain = smShimmer * 0.34;
+                        double shimL = (Math.sin(shimPhaseA) * 0.6 + Math.sin(shimPhaseB * 1.5) * 0.4) * shimGain;
+                        double shimR = (Math.cos(shimPhaseA * 1.003) * 0.6 + Math.sin(shimPhaseB) * 0.4) * shimGain;
 
-                        // --- LAYER 4: WORMHOLE ETHEREAL HARMONIC THROAT CHORD ---
+                        double bhEnv = Math.max(0.0, 1.0 - smSilence);
+                        double bhL = (drone + diskL + crackleL + shimL) * bhEnv;
+                        double bhR = (drone + diskR + crackleR + shimR) * bhEnv;
+
+                        // LAYER 5: Wormhole Ethereal Harmonic Throat Chord
                         double throatProx = Math.exp(-(smWhL * smWhL) / 28.0);
                         double universeShift = 1.0 + 0.12 * Math.tanh(-smWhL * 0.15);
-                        double baseWhHz = (130.81 + 48.0 * throatProx) * universeShift; // C3 sweeping through throat
+                        double baseWhHz = (130.81 + 48.0 * throatProx) * universeShift;
 
                         double whL = 0.0;
                         double whR = 0.0;
@@ -257,16 +284,11 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                             whL += sig * amp * (1.0 - 0.35 * spread);
                             whR += sig * amp * (1.0 + 0.35 * spread);
                         }
-                        // Shimmering throat air halo
                         whL += (lpL * 0.28) * (0.25 + 0.75 * throatProx);
                         whR += (lpR * 0.28) * (0.25 + 0.75 * throatProx);
 
-                        // Crossfade Black Hole <-> Wormhole + soft limiter
-                        double outL = (bhL * (1.0 - smWhMix) + whL * smWhMix) * smGain;
-                        double outR = (bhR * (1.0 - smWhMix) + whR * smWhMix) * smGain;
-
-                        outL = Math.tanh(outL);
-                        outR = Math.tanh(outR);
+                        double outL = Math.tanh((bhL * (1.0 - smWhMix) + whL * smWhMix) * smGain);
+                        double outR = Math.tanh((bhR * (1.0 - smWhMix) + whR * smWhMix) * smGain);
 
                         pcmBuf.put((short) (outL * 32000.0));
                         pcmBuf.put((short) (outR * 32000.0));
@@ -286,18 +308,6 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         } finally {
             MemoryUtil.memFree(pcmBuf);
         }
-    }
-
-    private static void fillBuffer(ShortBuffer pcmBuf, double[] whPhases,
-                                   double subPhase, double subHarmPhase, double lfoPhase,
-                                   double lpL, double lpR, double bpL, double bpR, double crackleEnv, long rng,
-                                   double smGain, double smWhMix, double smRedshift, double smDisk,
-                                   double smPan, double smTde, double smWhL) {
-        pcmBuf.clear();
-        for (int i = 0; i < FRAMES_PER_BUFFER * 2; i++) {
-            pcmBuf.put((short) 0);
-        }
-        pcmBuf.flip();
     }
 
     @Override

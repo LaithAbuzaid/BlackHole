@@ -18,8 +18,9 @@ import static org.lwjgl.opengl.GL11.glGetString;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * Main GLFW / OpenGL 4.3 Core application lifecycle, input routing, procedural
- * OpenAL audio synchronization, and zero-allocation real-time render loop.
+ * Main GLFW / OpenGL 4.3 Core application lifecycle, input routing, Doran plunge
+ * simulator controls, procedural OpenAL audio synchronization, and zero-allocation
+ * real-time render loop.
  */
 public final class Application {
 
@@ -91,7 +92,7 @@ public final class Application {
 
                 ShaderProgram.checkGlError("Application.startup");
                 System.out.println("[BlackHole] OpenGL " + glVersion + " | GPU: " + glRenderer
-                        + " | Compute TDE, Dual Cubemaps & Shaders validated.");
+                        + " | Plunge Simulator, Compute TDE, Blackbody LUT & Dual Cubemaps validated.");
 
                 runRenderLoop(renderer, uiRenderer, gpuTimers);
             }
@@ -117,9 +118,11 @@ public final class Application {
         while (!glfwWindowShouldClose(window)) {
             long frameStartNano = System.nanoTime();
 
+            boolean resizedThisFrame = false;
             if (framebufferResized) {
                 renderer.resize(windowW, windowH);
                 framebufferResized = false;
+                resizedThisFrame = true;
             }
 
             if (pendingClearStars) {
@@ -137,7 +140,7 @@ public final class Application {
             telemetry.wallFrameMs = telemetry.wallFrameMs * 0.88f + rawWallMs * 0.12f;
             lastFrameNano = frameStartNano;
 
-            boolean telemetryTick = false;
+            boolean telemetryTick = resizedThisFrame;
             frameCounter++;
             if (frameStartNano - fpsTimerNano >= 250_000_000L) {
                 telemetry.currentFps = (float) (frameCounter * 1_000_000_000.0 / (frameStartNano - fpsTimerNano));
@@ -162,10 +165,10 @@ public final class Application {
             telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
             audio.updatePhysics(state, camera, renderer.tdeShearEnergy());
 
-            // Pass 4: Glassmorphic Hardware Profiler & Controls HUD (Always GPU-timed for query sync)
+            // Pass 4: Glassmorphic Hardware Profiler & Controls HUD (250ms cached telemetry formatting)
             gpuTimers.beginUi();
             if (state.showUi) {
-                hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, state, camera, telemetry);
+                hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, telemetryTick, state, camera, telemetry);
             } else {
                 hud.clearHitBoxes();
             }
@@ -183,7 +186,15 @@ public final class Application {
 
     private void triggerAction(int actionId) {
         switch (actionId) {
+            case HudOverlay.ACT_PLUNGE -> {
+                if (state.plungeActive && !state.plungeEnded) {
+                    camera.abortPlunge(state);
+                } else {
+                    camera.startPlunge(state);
+                }
+            }
             case HudOverlay.ACT_WORMHOLE -> {
+                state.clearPlungeTelemetry();
                 state.wormholeMode = !state.wormholeMode;
                 if (state.wormholeMode) {
                     camera.applyWormholeUniverseA();
@@ -220,14 +231,17 @@ public final class Application {
             case HudOverlay.ACT_PAUSE -> state.paused = !state.paused;
             case HudOverlay.ACT_TOGGLE_PANEL -> state.controlsExpanded = !state.controlsExpanded;
             case HudOverlay.PRESET_EDGE -> {
+                state.clearPlungeTelemetry();
                 state.autoOrbit = false;
                 camera.applyPresetGargantuaEdge();
             }
             case HudOverlay.PRESET_POLE -> {
+                state.clearPlungeTelemetry();
                 state.autoOrbit = false;
                 camera.applyPresetPolarVortex();
             }
             case HudOverlay.PRESET_RING -> {
+                state.clearPlungeTelemetry();
                 state.autoOrbit = false;
                 camera.applyPresetPhotonRing();
             }
@@ -305,7 +319,7 @@ public final class Application {
             }
 
             if (draggingCamera) {
-                camera.orbitBy(xpos - anchorX, ypos - anchorY);
+                camera.orbitBy(xpos - anchorX, ypos - anchorY, state);
                 anchorX = xpos;
                 anchorY = ypos;
             }
@@ -328,6 +342,7 @@ public final class Application {
             switch (key) {
                 case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(win, true);
                 case GLFW_KEY_H -> state.showUi = !state.showUi;
+                case GLFW_KEY_P -> triggerAction(HudOverlay.ACT_PLUNGE);
                 case GLFW_KEY_W -> triggerAction(HudOverlay.ACT_WORMHOLE);
                 case GLFW_KEY_E -> triggerAction(HudOverlay.ACT_SHRED_STAR);
                 case GLFW_KEY_A -> triggerAction(HudOverlay.ACT_AUDIO);
