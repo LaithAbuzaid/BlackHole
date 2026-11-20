@@ -405,9 +405,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
         }
         timers.endRay();
 
-        // PASS 1B: OpenGL 4.3 Compute TDE + Additive HDR Sprites (matching Halton jitter, preserves .a hitDist)
+        // PASS 1B: OpenGL 4.3 Compute TDE + Volumetric Lensed Plasma Ribbons (matching Halton jitter, preserves .a hitDist)
         timers.beginTde();
-        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, jitterX, jitterY, state, camera);
+        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
         timers.endTde();
 
         // PASS 1C + 2 + 2B + 3: Relativistic TAA Resolve + Karis Bloom + Anamorphic Flare + ACES Composite

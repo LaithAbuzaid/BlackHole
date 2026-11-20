@@ -37,7 +37,6 @@ public final class TidalDisruptionSystem implements AutoCloseable {
 
     // Pre-allocated off-heap staging buffers (zero heap allocation on spawn or readback)
     private final FloatBuffer spawnStaging;
-    private final IntBuffer zeroCounters;
     private final IntBuffer readCounters;
 
     // Cached uniform locations
@@ -52,6 +51,8 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private final int uRendCamRight;
     private final int uRendCamUp;
     private final int uRendBlackbodyLut;
+    private final int uRendNoiseVol;
+    private final int uRendTime;
     private final int uRendTanHalfFov;
     private final int uRendSpinA;
     private final int uRendHorizonR;
@@ -88,8 +89,6 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         this.spawnStaging = MemoryUtil.memAllocFloat(PARTICLES_PER_STAR * FLOATS_PER_PARTICLE);
-        this.zeroCounters = MemoryUtil.memAllocInt(2);
-        this.zeroCounters.put(0, 0).put(1, 0);
         this.readCounters = MemoryUtil.memAllocInt(2);
 
         this.uCompParticleCount = computeProgram.uniformLocation("uParticleCount");
@@ -103,6 +102,8 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         this.uRendCamRight = renderProgram.uniformLocation("uCamRight");
         this.uRendCamUp = renderProgram.uniformLocation("uCamUp");
         this.uRendBlackbodyLut = renderProgram.uniformLocation("uBlackbodyLut");
+        this.uRendNoiseVol = renderProgram.uniformLocation("uNoiseVol");
+        this.uRendTime = renderProgram.uniformLocation("uTime");
         this.uRendTanHalfFov = renderProgram.uniformLocation("uTanHalfFov");
         this.uRendSpinA = renderProgram.uniformLocation("uSpinA");
         this.uRendHorizonR = renderProgram.uniformLocation("uHorizonR");
@@ -226,11 +227,11 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     }
 
     /**
-     * Dispatches the OpenGL 4.3 compute solver and renders active HDR particle sprites
-     * directly into the currently bound {@code hdrFbo}.
+     * Dispatches the OpenGL 4.3 compute solver and renders active HDR volumetric
+     * velocity-stretched plasma ribbons directly into the currently bound {@code hdrFbo}.
      */
     public void updateAndRender(int width, int height, double dt, boolean readbackCounters,
-                                int blackbodyLutTex, float jitterX, float jitterY,
+                                int blackbodyLutTex, int noise3dTex, float jitterX, float jitterY,
                                 SimulationState state, CameraController camera) {
         if (!hasAnyParticles || state.wormholeMode) {
             shearEnergy *= 0.92f;
@@ -269,9 +270,8 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             }
         }
 
-        // 2. Volumetric Additive HDR Sprite Render Pass directly into hdrFbo
+        // 2. Volumetric Instanced Velocity-Stretched HDR Plasma Ribbon Pass directly into hdrFbo
         // Preserve hdrFbo.a (world hitDist) via separate alpha blend for exact TAA parallax reprojection.
-        glEnable(GL_PROGRAM_POINT_SIZE);
         glEnable(GL_BLEND);
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
 
@@ -282,11 +282,16 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
         glUniform1i(uRendBlackbodyLut, 0);
 
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_3D, noise3dTex);
+        glUniform1i(uRendNoiseVol, 1);
+
         glUniform2f(uRendResolution, width, height);
         glUniform3f(uRendCamPos, camera.posX, camera.posY, camera.posZ);
         glUniform3f(uRendCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
         glUniform3f(uRendCamRight, camera.rightX, camera.rightY, camera.rightZ);
         glUniform3f(uRendCamUp, camera.upX, camera.upY, camera.upZ);
+        glUniform1f(uRendTime, (float) state.simTime);
         glUniform1f(uRendTanHalfFov, (float) Math.tan(Math.toRadians(state.fovDeg)));
         glUniform1f(uRendSpinA, state.effectiveSpin());
         glUniform1f(uRendHorizonR, (float) state.outerHorizonRadius());
@@ -294,11 +299,10 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glUniform2f(uRendJitter, jitterX, jitterY);
 
         glBindVertexArray(emptyVao);
-        glDrawArrays(GL_POINTS, 0, TOTAL_PARTICLES);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, TOTAL_PARTICLES);
         glBindVertexArray(0);
 
         glDisable(GL_BLEND);
-        glDisable(GL_PROGRAM_POINT_SIZE);
     }
 
     public int activeParticleCount() {
@@ -349,7 +353,6 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     @Override
     public void close() {
         MemoryUtil.memFree(spawnStaging);
-        MemoryUtil.memFree(zeroCounters);
         MemoryUtil.memFree(readCounters);
         glDeleteBuffers(particleSsbo);
         glDeleteBuffers(counterSsbo);

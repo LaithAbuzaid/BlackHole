@@ -88,9 +88,10 @@ void main() {
             vel *= inversesqrt(v2) * 0.948;
         }
 
-        // Tidal shear shock heating near periapsis (~ 2M / r^3 * |v|^2) + gradual radiative cooling
+        // Tidal shear + periapsis nozzle-compression shock heating (~ 2M / r^3 * |v|^2) + radiative cooling
         float tidalGrad = 2.0 / max(2.2, r * r * r);
-        float shearHeat = tidalGrad * (0.35 + v2) * 54000.0 * dtSub;
+        float nozzleShock = 1.0 + 1.35 * exp(-pos.y * pos.y * 3.2) * smoothstep(7.8, 2.6, r);
+        float shearHeat = tidalGrad * (0.35 + v2) * nozzleShock * 54000.0 * dtSub;
         float radCool = max(0.0, temp - 3600.0) * 0.14 * dtSub;
         temp = clamp(temp + shearHeat - radCool, 2600.0, 42000.0);
     }

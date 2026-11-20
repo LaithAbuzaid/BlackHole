@@ -3,36 +3,58 @@ package io.github.laithabuzaid.blackhole.ui;
 import io.github.laithabuzaid.blackhole.graphics.ShaderProgram;
 import org.lwjgl.system.MemoryUtil;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
+import java.util.zip.InflaterInputStream;
 
 import static org.lwjgl.opengl.GL33.*;
 
 /**
- * Single-batch OpenGL 3.3 SDF rounded-glass and crisp bitmap font renderer.
+ * Single-batch OpenGL 3.3 SDF rounded-glass and resolution-independent 3-channel
+ * MTSDF (Multi-Channel + True Signed Distance Field) typography renderer.
  *
- * <p>Covers the complete ASCII printable range (32..126) plus the degree symbol
- * ({@code °}) and renders {@link CharSequence} directly so callers can draw
- * dynamic HUD strings with zero heap allocations per frame.</p>
+ * <p>Loads the pre-baked JetBrains Mono Medium MTSDF atlas covering printable ASCII
+ * (32..126) plus degree ({@code °}) and bullet ({@code •}) with zero external runtime
+ * dependencies and zero heap allocations per frame.</p>
  */
 public final class UiRenderer implements AutoCloseable {
 
     private static final int MAX_QUADS = 6144;
     private static final int FLOATS_PER_VERT = 14; // pos(2) + uv(2) + color(4) + rect(4) + params(2)
+    private static final int MTSDF_MAGIC = 0x4D545344; // 'MTSD'
+    private static final String MTSDF_RESOURCE = "/fonts/jetbrains_mono_mtsdf.bin";
 
     private final ShaderProgram shader;
     private final int uResolutionLoc;
     private final int uFontTexLoc;
+    private final int uFontUnitRangeLoc;
     private final int vao;
     private final int vbo;
     private final int fontTex;
     private final FloatBuffer vertexBuffer;
     private int quadCount = 0;
 
+    // MTSDF Atlas Metrics loaded from binary header
+    private final int fontAtlasW;
+    private final int fontAtlasH;
+    private final int fontCols;
+    private final int fontCellW;
+    private final int fontCellH;
+    private final float fontUnitRangeX;
+    private final float fontUnitRangeY;
+    private final float fontCapTopNorm;
+    private final float fontCapHeightNorm;
+    private final float fontAdvNorm;
+
     public UiRenderer() {
         this.shader = ShaderProgram.fromResources("/shaders/ui/hud.vert", "/shaders/ui/hud.frag");
         this.uResolutionLoc = shader.uniformLocation("uResolution");
         this.uFontTexLoc = shader.uniformLocation("uFontTex");
+        this.uFontUnitRangeLoc = shader.uniformLocation("uFontUnitRange");
 
         this.vao = glGenVertexArrays();
         this.vbo = glGenBuffers();
@@ -55,7 +77,20 @@ public final class UiRenderer implements AutoCloseable {
         glBindVertexArray(0);
 
         this.vertexBuffer = MemoryUtil.memAllocFloat(MAX_QUADS * 6 * FLOATS_PER_VERT);
-        this.fontTex = createBitmapFontTexture();
+
+        MtsdfAtlas atlas = loadMtsdfFontAtlas();
+        this.fontTex = atlas.textureId;
+        this.fontAtlasW = atlas.atlasW;
+        this.fontAtlasH = atlas.atlasH;
+        this.fontCols = atlas.cols;
+        this.fontCellW = atlas.cellW;
+        this.fontCellH = atlas.cellH;
+        this.fontUnitRangeX = (2.0f * atlas.pxRange) / atlas.atlasW;
+        this.fontUnitRangeY = (2.0f * atlas.pxRange) / atlas.atlasH;
+        this.fontCapTopNorm = atlas.capTopNorm;
+        this.fontCapHeightNorm = atlas.capHeightNorm;
+        this.fontAdvNorm = atlas.advNorm;
+
         ShaderProgram.checkGlError("UiRenderer.init");
     }
 
@@ -65,6 +100,7 @@ public final class UiRenderer implements AutoCloseable {
         shader.use();
         glUniform2f(uResolutionLoc, width, height);
         glUniform1i(uFontTexLoc, 0);
+        glUniform2f(uFontUnitRangeLoc, fontUnitRangeX, fontUnitRangeY);
     }
 
     public void end() {
@@ -135,10 +171,21 @@ public final class UiRenderer implements AutoCloseable {
 
     public void drawText(CharSequence text, float x, float y, float scale,
                          float r, float g, float b, float a) {
+        float advance = 8.0f * scale;
+        // Render true JetBrains Mono aspect ratio with clean aerospace HUD tracking inside 8*scale column
+        float fontAdvance = 7.20f * scale;
+        float cellScreenW = fontAdvance / fontAdvNorm;
+        float cellScreenH = cellScreenW * ((float) fontCellH / fontCellW);
+
+        // Align glyph cap-height center to y + 3.6*scale for exact button/slider/header centering
+        float capCenterY = y + 3.6f * scale;
+        float y0 = capCenterY - (fontCapTopNorm + fontCapHeightNorm * 0.5f) * cellScreenH;
+        float y1 = y0 + cellScreenH;
+        float xPadOffset = (advance - cellScreenW) * 0.5f;
+
+        float invAtlasW = 1.0f / fontAtlasW;
+        float invAtlasH = 1.0f / fontAtlasH;
         float cursorX = x;
-        float snappedY = (float) Math.floor(y);
-        float glyphW = 8f * scale;
-        float glyphH = 8f * scale;
         int len = text.length();
 
         for (int i = 0; i < len; i++) {
@@ -156,23 +203,26 @@ public final class UiRenderer implements AutoCloseable {
             }
 
             if (idx != 0) {
-                float u0 = idx / 97.0f;
-                float u1 = (idx + 1) / 97.0f;
-                float x0 = cursorX;
-                float y0 = snappedY;
-                float x1 = cursorX + glyphW;
-                float y1 = snappedY + glyphH;
+                int col = idx % fontCols;
+                int row = idx / fontCols;
+                float u0 = (col * fontCellW + 0.5f) * invAtlasW;
+                float u1 = ((col + 1) * fontCellW - 0.5f) * invAtlasW;
+                float v0 = (row * fontCellH + 0.5f) * invAtlasH;
+                float v1 = ((row + 1) * fontCellH - 0.5f) * invAtlasH;
 
-                putVert(x0, y0, u0, 0f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
-                putVert(x0, y1, u0, 1f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
-                putVert(x1, y1, u1, 1f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+                float x0 = cursorX + xPadOffset;
+                float x1 = x0 + cellScreenW;
 
-                putVert(x0, y0, u0, 0f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
-                putVert(x1, y1, u1, 1f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
-                putVert(x1, y0, u1, 0f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+                putVert(x0, y0, u0, v0, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+                putVert(x0, y1, u0, v1, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+                putVert(x1, y1, u1, v1, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+
+                putVert(x0, y0, u0, v0, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+                putVert(x1, y1, u1, v1, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
+                putVert(x1, y0, u1, v0, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
                 quadCount++;
             }
-            cursorX += glyphW;
+            cursorX += advance;
         }
     }
 
@@ -221,148 +271,62 @@ public final class UiRenderer implements AutoCloseable {
         shader.close();
     }
 
-    /** Complete 8x8 bitmap font atlas covering printable ASCII 32..126 + degree (°) + bullet (•). */
-    private static int createBitmapFontTexture() {
-        String[] g = new String[97];
-        // Space (32)
-        g[' ' - 32] = "......../......../......../......../......../......../......../........";
+    private record MtsdfAtlas(int textureId, int atlasW, int atlasH, int cols, int cellW, int cellH,
+                              float pxRange, float capTopNorm, float capHeightNorm, float advNorm) {
+    }
 
-        // Punctuation & Symbols (33..47)
-        g['!' - 32] = "...##.../..####../..####../...##.../...##.../......../...##.../........";
-        g['"' - 32] = ".##..##./.##..##./.##..##./......../......../......../......../........";
-        g['#' - 32] = ".##..##./.##..##./########/.##..##./########/.##..##./.##..##./........";
-        g['$' - 32] = "...##.../.#######/##.##.../.######./...##.##/#######./...##.../........";
-        g['%' - 32] = "##...##./##..##../....##../...##.../..##..../.##..##./##...##./........";
-        g['&' - 32] = "..####../.##..##./..####../.###.##./##..###./##...##./.#####.#/........";
-        g['\'' - 32] = "...##.../...##.../..##..../......../......../......../......../........";
-        g['(' - 32] = "....##../...##.../..##..../..##..../..##..../...##.../....##../........";
-        g[')' - 32] = "..##..../...##.../....##../....##../....##../...##.../..##..../........";
-        g['*' - 32] = "......../..#..#../...##.../########/...##.../..#..#../......../........";
-        g['+' - 32] = "......../...##.../..######/..######/...##.../......../......../........";
-        g[',' - 32] = "......../......../......../......../......../...##.../..##..../........";
-        g['-' - 32] = "......../......../......../.######./.######./......../......../........";
-        g['.' - 32] = "......../......../......../......../......../..###.../..###.../........";
-        g['/' - 32] = "......##/.....##./....##../...##.../..##..../.##...../##....../........";
+    private static MtsdfAtlas loadMtsdfFontAtlas() {
+        InputStream raw = UiRenderer.class.getResourceAsStream(MTSDF_RESOURCE);
+        if (raw == null) {
+            throw new IllegalStateException("Missing MTSDF font atlas resource: " + MTSDF_RESOURCE);
+        }
+        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(raw))) {
+            int magic = dis.readInt();
+            if (magic != MTSDF_MAGIC) {
+                throw new IllegalStateException("Invalid MTSDF font atlas magic: 0x" + Integer.toHexString(magic));
+            }
+            int atlasW = dis.readUnsignedShort();
+            int atlasH = dis.readUnsignedShort();
+            int cols = dis.readUnsignedShort();
+            dis.readUnsignedShort(); // rows
+            int cellW = dis.readUnsignedShort();
+            int cellH = dis.readUnsignedShort();
+            float pxRange = dis.readFloat();
+            float capTopNorm = dis.readFloat();
+            float capHeightNorm = dis.readFloat();
+            float advNorm = dis.readFloat();
 
-        // Digits (48..57)
-        g['0' - 32] = ".######./##...###/##..####/##.##.##/####..##/###...##/.######./........";
-        g['1' - 32] = "...##.../..###.../.####.../...##.../...##.../...##.../.######./........";
-        g['2' - 32] = ".######./##....##/.....##./..####../.##...../##....../########/........";
-        g['3' - 32] = ".######./##....##/.....##./..#####./.....##./##....##/.######./........";
-        g['4' - 32] = "....###./...####./..##.##./.##..##./########/.....##./.....##./........";
-        g['5' - 32] = "########/##....../#######./.....##./.....##./##....##/.######./........";
-        g['6' - 32] = "..#####./.##...../##....../#######./##....##/##....##/.######./........";
-        g['7' - 32] = "########/##....##/....##../...##.../..##..../..##..../..##..../........";
-        g['8' - 32] = ".######./##....##/##....##/.######./##....##/##....##/.######./........";
-        g['9' - 32] = ".######./##....##/##....##/.#######/.....##./....##../.#####../........";
-
-        // Symbols (58..64)
-        g[':' - 32] = "......../..###.../..###.../......../..###.../..###.../......../........";
-        g[';' - 32] = "......../..###.../..###.../......../..###.../...##.../..##..../........";
-        g['<' - 32] = ".....##./...##.../.##...../##....../.##...../...##.../.....##./........";
-        g['=' - 32] = "......../......../.######./......../.######./......../......../........";
-        g['>' - 32] = ".##...../...##.../.....##./......##/.....##./...##.../.##...../........";
-        g['?' - 32] = ".######./##....##/.....##./...###../...##.../......../...##.../........";
-        g['@' - 32] = ".######./##....##/##.####./##.##.##/##.####./##....../.######./........";
-
-        // Uppercase (65..90)
-        g['A' - 32] = "..####../.##..##./##....##/########/##....##/##....##/##....##/........";
-        g['B' - 32] = "#######./##....##/##....##/#######./##....##/##....##/#######./........";
-        g['C' - 32] = ".######./##....##/##....../##....../##....../##....##/.######./........";
-        g['D' - 32] = "######../##...##./##....##/##....##/##....##/##...##./######../........";
-        g['E' - 32] = "########/##....../##....../######../##....../##....../########/........";
-        g['F' - 32] = "########/##....../##....../######../##....../##....../##....../........";
-        g['G' - 32] = ".######./##....##/##....../##..####/##....##/##....##/.######./........";
-        g['H' - 32] = "##....##/##....##/##....##/########/##....##/##....##/##....##/........";
-        g['I' - 32] = ".######./...##.../...##.../...##.../...##.../...##.../.######./........";
-        g['J' - 32] = "..######/.....##./.....##./.....##./##...##./##...##./.#####../........";
-        g['K' - 32] = "##...##./##..##../##.##.../####..../##.##.../##..##../##...##./........";
-        g['L' - 32] = "##....../##....../##....../##....../##....../##....../########/........";
-        g['M' - 32] = "##....##/###..###/########/##.##.##/##....##/##....##/##....##/........";
-        g['N' - 32] = "##....##/###...##/####..##/##.##.##/##..####/##...###/##....##/........";
-        g['O' - 32] = ".######./##....##/##....##/##....##/##....##/##....##/.######./........";
-        g['P' - 32] = "#######./##....##/##....##/#######./##....../##....../##....../........";
-        g['Q' - 32] = ".######./##....##/##....##/##....##/##.##.##/##..###./.#####.#/........";
-        g['R' - 32] = "#######./##....##/##....##/#######./##..##../##...##./##....##/........";
-        g['S' - 32] = ".######./##....##/##....../.######./.....##./##....##/.######./........";
-        g['T' - 32] = "########/...##.../...##.../...##.../...##.../...##.../...##.../........";
-        g['U' - 32] = "##....##/##....##/##....##/##....##/##....##/##....##/.######./........";
-        g['V' - 32] = "##....##/##....##/##....##/##....##/.##..##./..####../...##.../........";
-        g['W' - 32] = "##....##/##....##/##....##/##.##.##/########/###..###/##....##/........";
-        g['X' - 32] = "##....##/.##..##./..####../...##.../..####../.##..##./##....##/........";
-        g['Y' - 32] = "##....##/.##..##./..####../...##.../...##.../...##.../...##.../........";
-        g['Z' - 32] = "########/.....##./....##../...##.../..##..../.##...../########/........";
-
-        // Brackets & Misc (91..96)
-        g['[' - 32] = "..####../..##..../..##..../..##..../..##..../..##..../..####../........";
-        g['\\' - 32] = "##....../.##...../..##..../...##.../....##../.....##./......##/........";
-        g[']' - 32] = "..####../....##../....##../....##../....##../....##../..####../........";
-        g['^' - 32] = "...##.../..####../.##..##./......../......../......../......../........";
-        g['_' - 32] = "......../......../......../......../......../......../########/........";
-        g['`' - 32] = "..##..../...##.../....##../......../......../......../......../........";
-
-        // Lowercase (97..122) — complete 26-letter set
-        g['a' - 32] = "......../......../.######./.....##./.#######/##....##/.#######/........";
-        g['b' - 32] = "##....../##....../#######./##....##/##....##/##....##/#######./........";
-        g['c' - 32] = "......../......../.######./##....../##....../##....##/.######./........";
-        g['d' - 32] = ".....##./.....##./.#######/##....##/##....##/##....##/.#######/........";
-        g['e' - 32] = "......../......../.######./##....##/########/##....../.######./........";
-        g['f' - 32] = "...####./..##..../.######./..##..../..##..../..##..../..##..../........";
-        g['g' - 32] = "......../......../.#######/##....##/.#######/.....##./.######./........";
-        g['h' - 32] = "##....../##....../#######./##....##/##....##/##....##/##....##/........";
-        g['i' - 32] = "...##.../......../..###.../...##.../...##.../...##.../.######./........";
-        g['j' - 32] = "....##../......../...###../....##../....##../##..##../.####.../........";
-        g['k' - 32] = "##....../##....../##..##../##.##.../####..../##.##.../##..##../........";
-        g['l' - 32] = "..###.../...##.../...##.../...##.../...##.../...##.../.######./........";
-        g['m' - 32] = "......../......../###.###./##.##.##/##.##.##/##....##/##....##/........";
-        g['n' - 32] = "......../......../#######./##....##/##....##/##....##/##....##/........";
-        g['o' - 32] = "......../......../.######./##....##/##....##/##....##/.######./........";
-        g['p' - 32] = "......../......../#######./##....##/#######./##....../##....../........";
-        g['q' - 32] = "......../......../.#######/##....##/.#######/.....##./.....##./........";
-        g['r' - 32] = "......../......../##.###../###..##./##....../##....../##....../........";
-        g['s' - 32] = "......../......../.######./##....../.######./.....##./.######./........";
-        g['t' - 32] = "..##..../..##..../.######./..##..../..##..../..##..##/..####../........";
-        g['u' - 32] = "......../......../##....##/##....##/##....##/##...###/.#####.#/........";
-        g['v' - 32] = "......../......../##....##/##....##/.##..##./..####../...##.../........";
-        g['w' - 32] = "......../......../##....##/##.##.##/##.##.##/########/.##..##./........";
-        g['x' - 32] = "......../......../##....##/.##..##./..####../.##..##./##....##/........";
-        g['y' - 32] = "......../......../##....##/##....##/.#######/.....##./.######./........";
-        g['z' - 32] = "......../......../########/....##../..##..../.##...../########/........";
-
-        // Braces & Tilde (123..126) + Degree Symbol (95) + Bullet Symbol (96)
-        g['{' - 32] = "....###./...##.../...##.../..##..../...##.../...##.../....###./........";
-        g['|' - 32] = "...##.../...##.../...##.../...##.../...##.../...##.../...##.../........";
-        g['}' - 32] = ".###..../...##.../...##.../....##../...##.../...##.../.###..../........";
-        g['~' - 32] = "......../.###..##/##..###./......../......../......../......../........";
-        g[95]       = "..###.../##...##./##...##./..###.../......../......../......../........";
-        g[96]       = "......../......../...##.../..####../..####../...##.../......../........";
-
-        int atlasW = 97 * 8;
-        int atlasH = 8;
-        ByteBuffer pixels = MemoryUtil.memAlloc(atlasW * atlasH);
-
-        for (int idx = 0; idx < 97; idx++) {
-            String pattern = g[idx];
-            String[] rows = pattern.split("/");
-            for (int y = 0; y < 8; y++) {
-                String row = y < rows.length ? rows[y] : "........";
-                for (int x = 0; x < 8; x++) {
-                    boolean on = x < row.length() && row.charAt(x) == '#';
-                    pixels.put(y * atlasW + idx * 8 + x, (byte) (on ? 255 : 0));
+            int expectedBytes = atlasW * atlasH * 4;
+            byte[] rgba = new byte[expectedBytes];
+            try (InflaterInputStream iis = new InflaterInputStream(dis)) {
+                int offset = 0;
+                while (offset < expectedBytes) {
+                    int n = iis.read(rgba, offset, expectedBytes - offset);
+                    if (n < 0) {
+                        throw new IOException("Truncated MTSDF atlas payload (" + offset + "/" + expectedBytes + ")");
+                    }
+                    offset += n;
                 }
             }
+
+            ByteBuffer pixels = MemoryUtil.memAlloc(expectedBytes);
+            pixels.put(rgba).flip();
+
+            int tex = glGenTextures();
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW, atlasH, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            MemoryUtil.memFree(pixels);
+            return new MtsdfAtlas(tex, atlasW, atlasH, cols, cellW, cellH,
+                    pxRange, capTopNorm, capHeightNorm, advNorm);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load MTSDF font atlas: " + MTSDF_RESOURCE, e);
         }
-
-        int tex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, atlasW, atlasH, 0, GL_RED, GL_UNSIGNED_BYTE, pixels);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        MemoryUtil.memFree(pixels);
-        return tex;
     }
 }

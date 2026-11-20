@@ -74,11 +74,12 @@
 | **Kerr–Schild RK4 Hamiltonian** | Exact Cartesian spheroidal radius $r$, analytic metric gradients ($\nabla r, \nabla H, \nabla(\mathbf{l}\cdot\mathbf{p})$), and RK4 null geodesic evolution conserving $\mathcal{H} = \frac{1}{2}g^{\mu\nu}p_\mu p_\nu = 0$. Exact $r_+ = M + \sqrt{M^2 - a^2}$, Bardeen–Press–Teukolsky prograde ISCO, cubic Hermite equatorial crossings ($n = 0, 1, \ge 2$), 128³ baked periodic 3D disk turbulence, and covariant Doppler beaming + blackbody LUT. |
 | **Doran Horizon Plunge** | Horizon-penetrating Kerr–Schild / Doran observer frame (`[P]` / `[F]`) crossing $r_+$ cleanly ($\beta_{\text{in}} = c$ at $r_+$) with independent 360° free-look, proper time ($\tau$) vs. diverging coordinate time ($t_\infty \to \infty$), relativistic blueshift, Kerr inner Cauchy horizon ($r_-$) mass-inflation flash, Schwarzschild anisotropic optical spaghettification, and tidal camera micro-rumble. |
 | **Morris–Thorne Wormhole** | Exact *Interstellar* / Dneg embedding radius $r(l)$ with live throat radius $\rho$, throat half-length $a$, and lensing width $M_w$. Smooth bidirectional flight across $l = 0$ between GPU-baked `1024×1024×6` mipmapped HDR cubemaps (**Universe A**: Milky Way; **Universe B**: teal-amber nebula & ringed gas giant) with `textureGrad` ray differentials. |
-| **OpenGL 4.3 Compute TDE** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) stepped in `tidal_disruption.comp` with 2-substep Velocity-Verlet integration, Lense–Thirring frame-dragging torque, tidal shear shock heating, and analytical shadow-cone occlusion rendered as additive HDR sprites directly into `hdrFbo`. |
-| **Relativistic Temporal AA (TAA)** | 16-phase Halton(2,3) sub-pixel jittered 1-ray/px geodesics resolved via `taa_resolve.frag` with exact 3D camera parallax reprojection (using linear world hit distance in `hdrFbo.a`), 5-tap Catmull-Rom bicubic history sampling, and Karis-weighted 3×3 YCoCg variance clipping for flicker-free photon rings and 120+ FPS 1080p performance. |
+| **OpenGL 4.3 Compute TDE** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) stepped in `tidal_disruption.comp` with 2-substep Velocity-Verlet integration, Lense–Thirring frame-dragging torque, and periapsis nozzle-compression shock heating — rendered as instanced velocity-stretched volumetric plasma ribbons with analytic Kerr-calibrated gravitational lensing, 3D turbulence filamentation, and feathered shadow occlusion. |
+| **Relativistic Temporal AA (TAA)** | 16-phase Halton(2,3) sub-pixel jittered 1-ray/px geodesics resolved via `taa_resolve.frag` with exact 3D camera parallax reprojection (using linear world hit distance in `hdrFbo.a`), 5-tap Catmull-Rom bicubic history sampling, and Karis-weighted 3×3 YCoCg variance clipping for flicker-free photon rings and 180+ FPS 1080p performance. |
 | **Karis Bloom + Anamorphic Glare** | 5-level HDR bloom pyramid (`GL_RGBA16F`) with weight-normalized Jimenez/Karis firefly suppression and quadratic soft-knee extraction, a 2-pass cascaded 13-tap *Interstellar*-style horizontal anamorphic streak at 1/8 resolution (shadow-guarded so black levels inside $r_+$ stay pure), ACES filmic tonemapping, and post-tonemap TPDF dithering. |
+| **MTSDF HUD Typography** | Pre-baked 3-channel MSDF + true-SDF alpha (`RGBA8`) JetBrains Mono Medium atlas loaded via `java.util.zip` (zero `java.desktop`/AWT dependency) with `median(r,g,b)` + `fwidth` analytical anti-aliasing and subtle dark legibility micro-halo over bright HDR plasma. |
 | **Procedural OpenAL Audio** | Zero-asset 44.1 kHz stereo PCM daemon synthesizer (`lwjgl-openal`) generating gravitational-redshift sub-bass drones, Doppler-panned accretion roar, TDE periapsis plasma crackle, and sweeping wormhole throat harmonics (with graceful silent fallback). |
-| **Hardware `GL_TIME_ELAPSED` Profiling** | 3-slot asynchronous ring-buffered OpenGL timer queries measuring **Raytrace**, **TDE**, **Bloom**, and **UI** passes independently alongside `nvidia-smi` / `GL_NVX_gpu_memory_info` telemetry, JVM/system CPU load, and a 120-frame oscilloscope trace — all with **zero per-frame Java heap allocations**. |
+| **Hardware `GL_TIME_ELAPSED` Profiling** | 3-slot asynchronous ring-buffered OpenGL timer queries measuring **Raytrace**, **TDE**, **Bloom/TAA**, and **UI** passes independently alongside `nvidia-smi` / `GL_NVX_gpu_memory_info` telemetry, JVM/system CPU load, and a 120-frame oscilloscope trace — all with **zero per-frame Java heap allocations**. |
 
 ---
 
@@ -86,44 +87,50 @@
 
 ```text
   [GPU Bake Once @ Boot]
-   ├─ noise_volume.frag        ──▶ 128³ R16F 3D Periodic Turbulence
+   ├─ noise_volume.frag        ──▶ 128³ R16F Mipmapped 3D Periodic Turbulence
    ├─ skybox_milkyway.frag     ──▶ 1024²×6 RGBA16F Cubemap (Universe A)
    └─ skybox_nebula.frag       ──▶ 1024²×6 RGBA16F Cubemap (Universe B)
 
   [Per-Frame Pipeline — Zero Heap Allocations]
-   Pass 1A  kerr_blackhole.frag / morris_thorne_wormhole.frag ──▶ hdrFbo (RGBA16F)
-   Pass 1B  tidal_disruption.comp ──▶ SSBO ──▶ tidal_disruption.{vert,frag} (+hdrFbo)
-   Pass 2   5× bloom_downsample.frag (Karis) ──▶ 4× bloom_upsample.frag (Tent)
-   Pass 3   tonemap_composite.frag (Bloom + 7-Tap Anamorphic Streak + ACES) ──▶ Backbuffer
-   Pass 4   hud.{vert,frag} (SDF Glassmorphism + Bitmap Telemetry + Toasts)
+   Pass 1A  kerr_blackhole.frag / morris_thorne_wormhole.frag ──▶ hdrFbo (RGBA16F + hitDist)
+   Pass 1B  tidal_disruption.comp ──▶ SSBO ──▶ Instanced Lensed Volumetric TDE (+hdrFbo)
+   Pass 1C  taa_resolve.frag (3D Parallax Reprojection + Catmull-Rom + Karis YCoCg) ──▶ taaFbo
+   Pass 2A  5× bloom_downsample.frag (Karis) ──▶ 4× bloom_upsample.frag (Tent)
+   Pass 2B  2× anamorphic_blur.frag (1/8 Res 13-Tap Horizontal Streak Cascade)
+   Pass 3   tonemap_composite.frag (Bloom + Anamorphic + ACES + TPDF Dither) ──▶ Backbuffer
+   Pass 4   hud.{vert,frag} (SDF Glassmorphism + JetBrains Mono MTSDF + Toasts)
 ```
 
 ```text
-src/main/
-├── java/
-│   ├── module-info.java
-│   └── io/github/laithabuzaid/blackhole/
-│       ├── Main.java                       # CLI entry (--capture-showcase)
-│       ├── audio/RelativisticAudioEngine.java
-│       ├── core/
-│       │   ├── CameraController.java       # Orbit, Plunge, Wormhole, Attract Tour & Tidal Rumble
-│       │   ├── SimulationEngine.java       # GLFW loop, async [F12] & --capture-showcase
-│       │   └── SimulationState.java
-│       ├── graphics/
-│       │   ├── BlackHoleRenderer.java
-│       │   ├── GpuTimerQueries.java
-│       │   ├── RenderTargets.java
-│       │   ├── ShaderProgram.java
-│       │   └── TidalDisruptionSystem.java
-│       ├── telemetry/HardwareTelemetry.java
-│       ├── ui/{HudOverlay.java, UiRenderer.java}
-│       └── util/PngWriter.java             # Pure-Java zero-dependency PNG encoder
-└── resources/shaders/
-    ├── common/fullscreen.vert
-    ├── bake/{noise_volume.frag, skybox_milkyway.frag, skybox_nebula.frag}
-    ├── simulation/{kerr_blackhole.frag, morris_thorne_wormhole.frag, tidal_disruption.*}
-    ├── post/{bloom_downsample.frag, bloom_upsample.frag, tonemap_composite.frag}
-    └── ui/{hud.vert, hud.frag}
+src/
+├── main/
+│   ├── java/
+│   │   ├── module-info.java
+│   │   └── io/github/laithabuzaid/blackhole/
+│   │       ├── Main.java                       # CLI entry (--capture-showcase)
+│   │       ├── audio/RelativisticAudioEngine.java
+│   │       ├── core/
+│   │       │   ├── CameraController.java       # Orbit, Plunge, Wormhole, Attract Tour & Tidal Rumble
+│   │       │   ├── SimulationEngine.java       # GLFW loop, async [F12] & --capture-showcase
+│   │       │   └── SimulationState.java
+│   │       ├── graphics/
+│   │       │   ├── BlackHoleRenderer.java
+│   │       │   ├── GpuTimerQueries.java
+│   │       │   ├── RenderTargets.java
+│   │       │   ├── ShaderProgram.java
+│   │       │   └── TidalDisruptionSystem.java
+│   │       ├── telemetry/HardwareTelemetry.java
+│   │       ├── ui/{HudOverlay.java, UiRenderer.java}
+│   │       └── util/PngWriter.java             # Pure-Java zero-dependency PNG encoder
+│   └── resources/
+│       ├── fonts/jetbrains_mono_mtsdf.bin      # Pre-baked 3-channel MSDF + SDF atlas
+│       └── shaders/
+│           ├── common/fullscreen.vert
+│           ├── bake/{noise_volume.frag, skybox_milkyway.frag, skybox_nebula.frag}
+│           ├── simulation/{kerr_blackhole.frag, morris_thorne_wormhole.frag, tidal_disruption.*}
+│           ├── post/{taa_resolve.frag, bloom_downsample.frag, bloom_upsample.frag, anamorphic_blur.frag, tonemap_composite.frag}
+│           └── ui/{hud.vert, hud.frag}
+└── test/java/io/github/laithabuzaid/blackhole/ # Headless JUnit 5 physics, camera & asset tests
 ```
 
 ---
