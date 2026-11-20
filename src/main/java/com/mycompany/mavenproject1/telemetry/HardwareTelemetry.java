@@ -30,9 +30,11 @@ public final class HardwareTelemetry {
     public float wallFrameMs = 16.6f;
     public float cpuSubmitMs = 0.15f;
     public float gpuRayMs = 2.5f;
+    public float gpuTdeMs = 0.0f;
     public float gpuBloomMs = 0.3f;
     public float gpuUiMs = 0.08f;
     public float gpuTotalMs = 2.88f;
+    public int tdeActiveParticles = 0;
 
     // Rolling 120-frame frame-time oscilloscope buffers
     public final float[] gpuHistory = new float[HISTORY_LEN];
@@ -88,11 +90,12 @@ public final class HardwareTelemetry {
         }
     }
 
-    public void updateGpuPassTimings(float rayMs, float bloomMs, float uiMs) {
+    public void updateGpuPassTimings(float rayMs, float tdeMs, float bloomMs, float uiMs) {
         gpuRayMs = gpuRayMs * 0.85f + rayMs * 0.15f;
+        gpuTdeMs = gpuTdeMs * 0.85f + tdeMs * 0.15f;
         gpuBloomMs = gpuBloomMs * 0.85f + bloomMs * 0.15f;
         gpuUiMs = gpuUiMs * 0.85f + uiMs * 0.15f;
-        gpuTotalMs = gpuRayMs + gpuBloomMs + gpuUiMs;
+        gpuTotalMs = gpuRayMs + gpuTdeMs + gpuBloomMs + gpuUiMs;
     }
 
     public void recordFrameSample(float rawCpuSubmitMs) {

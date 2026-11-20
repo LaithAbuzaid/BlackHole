@@ -25,10 +25,12 @@ import static org.lwjgl.opengl.GL20.glGetUniformLocation;
 import static org.lwjgl.opengl.GL20.glLinkProgram;
 import static org.lwjgl.opengl.GL20.glShaderSource;
 import static org.lwjgl.opengl.GL20.glUseProgram;
+import static org.lwjgl.opengl.GL43.GL_COMPUTE_SHADER;
 
 /**
- * Loads GLSL shaders from classpath resources under {@code /shaders/}, compiles
- * and links them with detailed diagnostics, and provides OpenGL error checks.
+ * Loads GLSL graphics and OpenGL 4.3 compute shaders from classpath resources
+ * under {@code /shaders/}, compiles and links them with detailed diagnostics,
+ * and provides OpenGL error checks.
  */
 public final class ShaderProgram implements AutoCloseable {
 
@@ -66,6 +68,30 @@ public final class ShaderProgram implements AutoCloseable {
 
         checkGlError("ShaderProgram.link(" + fragmentResource + ")");
         return new ShaderProgram(program, fragmentResource);
+    }
+
+    public static ShaderProgram fromComputeResource(String computeResource) {
+        String compSrc = readResource(computeResource);
+        int cs = compileStage(GL_COMPUTE_SHADER, compSrc, computeResource);
+
+        int program = glCreateProgram();
+        glAttachShader(program, cs);
+        glLinkProgram(program);
+
+        int linkStatus = glGetProgrami(program, GL_LINK_STATUS);
+        String linkLog = glGetProgramInfoLog(program);
+        glDeleteShader(cs);
+
+        if (linkStatus == GL_FALSE) {
+            glDeleteProgram(program);
+            throw new RuntimeException("Compute shader link error [" + computeResource + "]:\n" + linkLog);
+        }
+        if (linkLog != null && !linkLog.isBlank()) {
+            System.err.println("[GLSL Compute Link Info] " + computeResource + ":\n" + linkLog.trim());
+        }
+
+        checkGlError("ShaderProgram.linkCompute(" + computeResource + ")");
+        return new ShaderProgram(program, computeResource);
     }
 
     public int id() {

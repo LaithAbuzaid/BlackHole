@@ -12,13 +12,15 @@ import static org.lwjgl.opengl.GL33.glGetQueryObjectui64;
 
 /**
  * Zero-allocation asynchronous 3-slot ring-buffered OpenGL {@code GL_TIME_ELAPSED}
- * timer queries tracking Raytrace, Bloom, and UI passes without GPU pipeline stalls.
+ * timer queries tracking Raytrace, TDE Compute+Particles, Bloom, and UI passes
+ * without GPU pipeline stalls.
  */
 public final class GpuTimerQueries implements AutoCloseable {
 
     private static final int SLOTS = 3;
 
     private final int[] ray = new int[SLOTS];
+    private final int[] tde = new int[SLOTS];
     private final int[] bloom = new int[SLOTS];
     private final int[] ui = new int[SLOTS];
 
@@ -26,12 +28,14 @@ public final class GpuTimerQueries implements AutoCloseable {
     private int framesRecorded = 0;
 
     private long lastRayNs = 0L;
+    private long lastTdeNs = 0L;
     private long lastBloomNs = 0L;
     private long lastUiNs = 0L;
 
     public GpuTimerQueries() {
         for (int i = 0; i < SLOTS; i++) {
             ray[i] = glGenQueries();
+            tde[i] = glGenQueries();
             bloom[i] = glGenQueries();
             ui[i] = glGenQueries();
         }
@@ -42,6 +46,14 @@ public final class GpuTimerQueries implements AutoCloseable {
     }
 
     public void endRay() {
+        glEndQuery(GL_TIME_ELAPSED);
+    }
+
+    public void beginTde() {
+        glBeginQuery(GL_TIME_ELAPSED, tde[writeIndex]);
+    }
+
+    public void endTde() {
         glEndQuery(GL_TIME_ELAPSED);
     }
 
@@ -75,6 +87,7 @@ public final class GpuTimerQueries implements AutoCloseable {
             return false;
         }
         lastRayNs = glGetQueryObjectui64(ray[readIdx], GL_QUERY_RESULT);
+        lastTdeNs = glGetQueryObjectui64(tde[readIdx], GL_QUERY_RESULT);
         lastBloomNs = glGetQueryObjectui64(bloom[readIdx], GL_QUERY_RESULT);
         lastUiNs = glGetQueryObjectui64(ui[readIdx], GL_QUERY_RESULT);
         return true;
@@ -82,6 +95,10 @@ public final class GpuTimerQueries implements AutoCloseable {
 
     public float rayMs() {
         return lastRayNs * 1e-6f;
+    }
+
+    public float tdeMs() {
+        return lastTdeNs * 1e-6f;
     }
 
     public float bloomMs() {
@@ -103,6 +120,7 @@ public final class GpuTimerQueries implements AutoCloseable {
     public void close() {
         for (int i = 0; i < SLOTS; i++) {
             glDeleteQueries(ray[i]);
+            glDeleteQueries(tde[i]);
             glDeleteQueries(bloom[i]);
             glDeleteQueries(ui[i]);
         }

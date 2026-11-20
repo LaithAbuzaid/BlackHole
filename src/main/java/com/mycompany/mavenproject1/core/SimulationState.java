@@ -1,8 +1,8 @@
 package com.mycompany.mavenproject1.core;
 
 /**
- * Mutable simulation parameters, diagnostic toggles, and physical constants
- * shared between the renderer, camera controller, and interactive HUD.
+ * Mutable simulation parameters, spacetime mode flags, wormhole metric controls,
+ * audio controls, and physical constants shared across all subsystems.
  */
 public final class SimulationState {
 
@@ -21,9 +21,21 @@ public final class SimulationState {
     public static final float MIN_FOV_DEG = 14.0f;
     public static final float MAX_FOV_DEG = 40.0f;
 
+    // Morris-Thorne / Interstellar Wormhole metric parameter bounds
+    public static final float MIN_WORMHOLE_RHO = 0.60f;
+    public static final float MAX_WORMHOLE_RHO = 6.00f;
+    public static final float MIN_WORMHOLE_A = 0.00f;
+    public static final float MAX_WORMHOLE_A = 3.50f;
+    public static final float MIN_WORMHOLE_M = 0.20f;
+    public static final float MAX_WORMHOLE_M = 4.00f;
+
+    public static final float MIN_VOLUME = 0.00f;
+    public static final float MAX_VOLUME = 1.00f;
+
     public double simTime = 0.0;
 
-    // UI & Diagnostic Toggles
+    // Spacetime Mode & UI Toggles
+    public boolean wormholeMode = false;
     public boolean showUi = true;
     public boolean controlsExpanded = true;
     public boolean lensingEnabled = true;
@@ -38,8 +50,9 @@ public final class SimulationState {
     public boolean autoOrbit = false;
     public boolean paused = false;
     public boolean vsync = true;
+    public boolean audioEnabled = true;
 
-    // Real-Time Physics & Optics Sliders
+    // Black Hole Physics & Optics Sliders
     public float spinParam = 0.98f;       // Kerr dimensionless spin a* [0.00 .. 0.998]
     public float diskTempScale = 1.00f;   // Blackbody temperature multiplier [0.55 .. 1.65]
     public float diskDensity = 1.00f;     // Accretion optical density [0.25 .. 2.00]
@@ -47,6 +60,14 @@ public final class SimulationState {
     public float bloomStrength = 0.30f;   // Mipmap bloom intensity [0.00 .. 0.80]
     public float exposure = 1.15f;        // HDR exposure [0.40 .. 2.40]
     public float fovDeg = 22.5f;          // Camera half-FOV degrees [14.0 .. 40.0]
+
+    // Morris-Thorne / Interstellar Wormhole Metric Sliders
+    public float wormholeRho = 2.60f;     // Throat radius rho
+    public float wormholeA = 0.45f;       // Throat half-length a
+    public float wormholeM = 1.25f;       // Lensing transition width M_w
+
+    // Procedural Relativistic Audio
+    public float audioVolume = 0.60f;     // Master volume [0.00 .. 1.00]
 
     public float effectiveSpin() {
         return kerrSpinEnabled ? spinParam : 0.0f;
@@ -86,5 +107,9 @@ public final class SimulationState {
         bloomStrength = 0.30f;
         exposure = 1.15f;
         fovDeg = 22.5f;
+
+        wormholeRho = 2.60f;
+        wormholeA = 0.45f;
+        wormholeM = 1.25f;
     }
 }
