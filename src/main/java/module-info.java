@@ -4,10 +4,12 @@ module com.mycompany.mavenproject1 {
     requires org.lwjgl;
     requires org.lwjgl.glfw;
     requires org.lwjgl.opengl;
+    requires org.lwjgl.openal;
     requires java.management;
     requires jdk.management;
 
     exports com.mycompany.mavenproject1;
+    exports com.mycompany.mavenproject1.audio;
     exports com.mycompany.mavenproject1.core;
     exports com.mycompany.mavenproject1.graphics;
     exports com.mycompany.mavenproject1.telemetry;

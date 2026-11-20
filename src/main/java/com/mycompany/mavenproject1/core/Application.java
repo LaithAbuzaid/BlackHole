@@ -1,5 +1,6 @@
 package com.mycompany.mavenproject1.core;
 
+import com.mycompany.mavenproject1.audio.RelativisticAudioEngine;
 import com.mycompany.mavenproject1.graphics.BlackHoleRenderer;
 import com.mycompany.mavenproject1.graphics.GpuTimerQueries;
 import com.mycompany.mavenproject1.graphics.ShaderProgram;
@@ -17,8 +18,8 @@ import static org.lwjgl.opengl.GL11.glGetString;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * Main GLFW / OpenGL 3.3 application lifecycle, input routing, and
- * zero-allocation real-time render loop.
+ * Main GLFW / OpenGL 4.3 Core application lifecycle, input routing, procedural
+ * OpenAL audio synchronization, and zero-allocation real-time render loop.
  */
 public final class Application {
 
@@ -30,9 +31,15 @@ public final class Application {
     private final CameraController camera = new CameraController();
     private final HardwareTelemetry telemetry = new HardwareTelemetry();
     private final HudOverlay hud = new HudOverlay();
+    private final RelativisticAudioEngine audio = new RelativisticAudioEngine();
 
     private boolean draggingCamera = false;
     private boolean mouseDown = false;
+    private boolean keyUpHeld = false;
+    private boolean keyDownHeld = false;
+    private boolean pendingSpawnStar = false;
+    private boolean pendingClearStars = false;
+
     private double anchorX;
     private double anchorY;
     private double mouseX;
@@ -53,15 +60,15 @@ public final class Application {
             glfwDefaultWindowHints();
             glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
             glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
             glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
             glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
             window = glfwCreateWindow(windowW, windowH,
-                    "Relativistic Kerr-Schild Black Hole Engine — OpenGL 3.3", NULL, NULL);
+                    "Relativistic Kerr-Schild Black Hole & Wormhole Engine — OpenGL 4.3", NULL, NULL);
             if (window == NULL) {
-                throw new RuntimeException("Failed to create GLFW OpenGL 3.3 window");
+                throw new RuntimeException("Failed to create GLFW OpenGL 4.3 Core window");
             }
 
             setupCallbacks(window);
@@ -76,17 +83,20 @@ public final class Application {
             String glVersion = glGetString(GL_VERSION);
             telemetry.initOpenGlInfo(glRenderer, glVersion);
             telemetry.startBackgroundSampler();
+            audio.start();
 
             try (BlackHoleRenderer renderer = new BlackHoleRenderer(windowW, windowH);
                  UiRenderer uiRenderer = new UiRenderer();
                  GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
 
                 ShaderProgram.checkGlError("Application.startup");
-                System.out.println("[BlackHole] OpenGL " + glVersion + " | GPU: " + glRenderer + " | Shaders & FBOs validated.");
+                System.out.println("[BlackHole] OpenGL " + glVersion + " | GPU: " + glRenderer
+                        + " | Compute TDE, Dual Cubemaps & Shaders validated.");
 
                 runRenderLoop(renderer, uiRenderer, gpuTimers);
             }
         } finally {
+            audio.close();
             telemetry.stop();
             if (window != NULL) {
                 glfwFreeCallbacks(window);
@@ -112,31 +122,45 @@ public final class Application {
                 framebufferResized = false;
             }
 
+            if (pendingClearStars) {
+                renderer.clearTdeStars();
+                pendingClearStars = false;
+            }
+            if (pendingSpawnStar) {
+                renderer.spawnTdeStar(state);
+                pendingSpawnStar = false;
+            }
+
             long elapsedNano = frameStartNano - lastFrameNano;
             double dt = Math.min(elapsedNano * 1e-9, 0.05);
             float rawWallMs = elapsedNano * 1e-6f;
             telemetry.wallFrameMs = telemetry.wallFrameMs * 0.88f + rawWallMs * 0.12f;
             lastFrameNano = frameStartNano;
 
+            boolean telemetryTick = false;
             frameCounter++;
             if (frameStartNano - fpsTimerNano >= 250_000_000L) {
                 telemetry.currentFps = (float) (frameCounter * 1_000_000_000.0 / (frameStartNano - fpsTimerNano));
                 frameCounter = 0;
                 fpsTimerNano = frameStartNano;
                 telemetry.pollOpenGlVram();
+                telemetryTick = true;
             }
 
             if (gpuTimers.pollPreviousFrame()) {
-                telemetry.updateGpuPassTimings(gpuTimers.rayMs(), gpuTimers.bloomMs(), gpuTimers.uiMs());
+                telemetry.updateGpuPassTimings(gpuTimers.rayMs(), gpuTimers.tdeMs(),
+                        gpuTimers.bloomMs(), gpuTimers.uiMs());
             }
 
             if (!state.paused) {
                 state.simTime += dt;
             }
-            camera.update(dt, state);
+            camera.update(dt, state, keyUpHeld, keyDownHeld);
 
-            // Passes 1..3: Kerr-Schild Raytrace, 5-Level Karis Bloom Pyramid, HDR Composite
-            renderer.renderFrame(windowW, windowH, state, camera, gpuTimers);
+            // Passes 1..3: Kerr-Schild / Wormhole Raytrace, Compute TDE + HDR Sprites, Bloom, ACES Composite
+            renderer.renderFrame(windowW, windowH, dt, telemetryTick, state, camera, gpuTimers);
+            telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
+            audio.updatePhysics(state, camera, renderer.tdeShearEnergy());
 
             // Pass 4: Glassmorphic Hardware Profiler & Controls HUD (Always GPU-timed for query sync)
             gpuTimers.beginUi();
@@ -159,6 +183,26 @@ public final class Application {
 
     private void triggerAction(int actionId) {
         switch (actionId) {
+            case HudOverlay.ACT_WORMHOLE -> {
+                state.wormholeMode = !state.wormholeMode;
+                if (state.wormholeMode) {
+                    camera.applyWormholeUniverseA();
+                } else {
+                    camera.applyPresetGargantuaEdge();
+                }
+            }
+            case HudOverlay.ACT_SHRED_STAR -> {
+                if (!state.wormholeMode) {
+                    pendingSpawnStar = true;
+                }
+            }
+            case HudOverlay.ACT_FLY_THROUGH -> {
+                if (state.wormholeMode) {
+                    state.autoOrbit = false;
+                    camera.triggerWormholeFlyThrough();
+                }
+            }
+            case HudOverlay.ACT_AUDIO -> state.audioEnabled = !state.audioEnabled;
             case HudOverlay.ACT_LENSING -> state.lensingEnabled = !state.lensingEnabled;
             case HudOverlay.ACT_DISK -> state.showDisk = !state.showDisk;
             case HudOverlay.ACT_JETS -> state.showJets = !state.showJets;
@@ -191,9 +235,26 @@ public final class Application {
                 state.autoOrbit = false;
                 camera.applyPresetHorizonDive(state);
             }
+            case HudOverlay.PRESET_UNIV_A -> {
+                state.autoOrbit = false;
+                camera.applyWormholeUniverseA();
+            }
+            case HudOverlay.PRESET_THROAT -> {
+                state.autoOrbit = false;
+                camera.applyWormholeThroat();
+            }
+            case HudOverlay.PRESET_UNIV_B -> {
+                state.autoOrbit = false;
+                camera.applyWormholeUniverseB();
+            }
             case HudOverlay.PRESET_RESET -> {
                 state.resetDefaults();
-                camera.applyPresetGargantuaEdge();
+                pendingClearStars = true;
+                if (state.wormholeMode) {
+                    camera.resetWormholeDefaults();
+                } else {
+                    camera.applyPresetGargantuaEdge();
+                }
             }
             default -> {
             }
@@ -253,16 +314,27 @@ public final class Application {
         glfwSetScrollCallback(winHandle, (win, xoffset, yoffset) -> camera.zoomBy(yoffset, state));
 
         glfwSetKeyCallback(winHandle, (win, key, scancode, action, mods) -> {
+            if (key == GLFW_KEY_UP) {
+                keyUpHeld = (action != GLFW_RELEASE);
+                return;
+            }
+            if (key == GLFW_KEY_DOWN) {
+                keyDownHeld = (action != GLFW_RELEASE);
+                return;
+            }
             if (action != GLFW_PRESS) {
                 return;
             }
             switch (key) {
                 case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(win, true);
                 case GLFW_KEY_H -> state.showUi = !state.showUi;
-                case GLFW_KEY_1 -> triggerAction(HudOverlay.PRESET_EDGE);
-                case GLFW_KEY_2 -> triggerAction(HudOverlay.PRESET_POLE);
-                case GLFW_KEY_3 -> triggerAction(HudOverlay.PRESET_RING);
-                case GLFW_KEY_4 -> triggerAction(HudOverlay.PRESET_DIVE);
+                case GLFW_KEY_W -> triggerAction(HudOverlay.ACT_WORMHOLE);
+                case GLFW_KEY_E -> triggerAction(HudOverlay.ACT_SHRED_STAR);
+                case GLFW_KEY_A -> triggerAction(HudOverlay.ACT_AUDIO);
+                case GLFW_KEY_1 -> triggerAction(state.wormholeMode ? HudOverlay.PRESET_UNIV_A : HudOverlay.PRESET_EDGE);
+                case GLFW_KEY_2 -> triggerAction(state.wormholeMode ? HudOverlay.PRESET_THROAT : HudOverlay.PRESET_POLE);
+                case GLFW_KEY_3 -> triggerAction(state.wormholeMode ? HudOverlay.PRESET_UNIV_B : HudOverlay.PRESET_RING);
+                case GLFW_KEY_4 -> triggerAction(state.wormholeMode ? HudOverlay.ACT_FLY_THROUGH : HudOverlay.PRESET_DIVE);
                 case GLFW_KEY_R -> triggerAction(HudOverlay.PRESET_RESET);
                 case GLFW_KEY_L -> triggerAction(HudOverlay.ACT_LENSING);
                 case GLFW_KEY_D -> triggerAction(HudOverlay.ACT_DISK);

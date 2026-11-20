@@ -1,0 +1,113 @@
+#version 430 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 posMass; // xyz = Cartesian position (M=1), w = mass (>0 active, <=0 captured/inactive)
+    vec4 velTemp; // xyz = velocity, w = temperature (Kelvin)
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+    Particle particles[];
+};
+
+layout(std430, binding = 1) buffer CounterBuffer {
+    uint activeCount;
+    uint shearCount;
+};
+
+uniform uint uParticleCount;
+uniform float uDt;
+uniform float uSpinA;
+uniform float uHorizonR;
+
+// Relativistic Paczynski-Wiita gravitational acceleration + Kerr Lense-Thirring frame-dragging torque
+vec3 computeAccel(vec3 pos, vec3 vel, float spinA, float rPlus) {
+    float r2 = dot(pos, pos);
+    float r = sqrt(max(1e-5, r2));
+
+    // Paczynski-Wiita pseudo-Newtonian potential smoothly calibrated to Kerr outer horizon r_+
+    float rPw = max(0.32, r - 0.88 * rPlus);
+    vec3 aGrav = (-1.0 / (rPw * rPw * r)) * pos;
+
+    // Gravitomagnetic Kerr frame-dragging torque around +Y spin axis (prograde along (-z, 0, +x))
+    vec3 aKerr = vec3(0.0);
+    if (spinA > 0.001) {
+        float invR3 = 1.0 / max(1.0, r2 * r);
+        vec3 spinVec = vec3(0.0, spinA, 0.0);
+        // Lense-Thirring velocity-dependent gravitomagnetic force + prograde azimuthal frame drag
+        vec3 jCrossV = cross(spinVec, vel);
+        vec3 rCrossV = cross(pos, vel);
+        aKerr = (2.0 * invR3) * (jCrossV - (3.0 * dot(spinVec, pos) / max(1.0, r2)) * rCrossV);
+
+        float rho2 = dot(pos.xz, pos.xz);
+        if (rho2 > 1e-4) {
+            vec3 phiPro = vec3(-pos.z, 0.0, pos.x) * inversesqrt(rho2);
+            aKerr += phiPro * (0.45 * spinA * invR3 / max(1.0, r));
+        }
+    }
+
+    return aGrav + aKerr;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uParticleCount) {
+        return;
+    }
+
+    Particle p = particles[idx];
+    if (p.posMass.w <= 0.0) {
+        return;
+    }
+
+    vec3 pos = p.posMass.xyz;
+    vec3 vel = p.velTemp.xyz;
+    float temp = p.velTemp.w;
+
+    // 2 substeps of Velocity-Verlet integration for crisp conservation at periapsis
+    float dtSub = uDt * 0.5;
+    bool captured = false;
+
+    for (int sub = 0; sub < 2; sub++) {
+        vec3 a0 = computeAccel(pos, vel, uSpinA, uHorizonR);
+        vec3 vHalf = vel + a0 * (0.5 * dtSub);
+        pos += vHalf * dtSub;
+
+        float r = length(pos);
+        if (r <= uHorizonR * 1.03 || r > 95.0) {
+            captured = true;
+            break;
+        }
+
+        vec3 a1 = computeAccel(pos, vHalf, uSpinA, uHorizonR);
+        vel = vHalf + a1 * (0.5 * dtSub);
+
+        // Relativistic speed ceiling c = 1
+        float v2 = dot(vel, vel);
+        if (v2 > 0.90) {
+            vel *= inversesqrt(v2) * 0.948;
+        }
+
+        // Tidal shear shock heating near periapsis (~ 2M / r^3 * |v|^2) + gradual radiative cooling
+        float tidalGrad = 2.0 / max(2.2, r * r * r);
+        float shearHeat = tidalGrad * (0.35 + v2) * 54000.0 * dtSub;
+        float radCool = max(0.0, temp - 3600.0) * 0.14 * dtSub;
+        temp = clamp(temp + shearHeat - radCool, 2600.0, 42000.0);
+    }
+
+    if (captured) {
+        p.posMass.w = 0.0;
+        particles[idx] = p;
+        return;
+    }
+
+    p.posMass.xyz = pos;
+    p.velTemp.xyz = vel;
+    p.velTemp.w = temp;
+    particles[idx] = p;
+
+    atomicAdd(activeCount, 1u);
+    if (length(pos) < 8.5 && temp > 10500.0) {
+        atomicAdd(shearCount, 1u);
+    }
+}

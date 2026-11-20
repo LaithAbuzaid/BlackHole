@@ -5,12 +5,13 @@ import com.mycompany.mavenproject1.core.SimulationState;
 
 import java.nio.ByteBuffer;
 
-import static org.lwjgl.opengl.GL33.*;
+import static org.lwjgl.opengl.GL43.*;
 
 /**
- * Manages GPU startup precomputations (128^3 3D turbulence volume and mipmapped
- * 1024x1024 HDR skybox cubemap) and executes the zero-allocation multi-pass
- * Kerr-Schild raytrace, 5-level Karis bloom pyramid, and HDR composite pipeline.
+ * Manages GPU startup precomputations (128^3 3D turbulence volume + dual mipmapped
+ * 1024x1024 HDR skybox cubemaps for Universe A and Universe B) and executes the
+ * zero-allocation multi-pass Kerr-Schild / Morris-Thorne raytrace, OpenGL 4.3 TDE
+ * compute + HDR sprite pass, 5-level Karis bloom pyramid, and ACES composite pipeline.
  */
 public final class BlackHoleRenderer implements AutoCloseable {
 
@@ -19,16 +20,19 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private static final int SKYBOX_FACE_SIZE = 1024;
 
     private final ShaderProgram rayProgram;
+    private final ShaderProgram wormholeProgram;
     private final ShaderProgram downsampleProgram;
     private final ShaderProgram upsampleProgram;
     private final ShaderProgram compositeProgram;
+    private final TdeParticleSystem tdeSystem;
 
     private final int quadVao;
     private final int noise3dTex;
-    private final int skyboxCubemap;
+    private final int skyboxUniverseA;
+    private final int skyboxUniverseB;
     private FramebufferSet framebuffers;
 
-    // Cached uniform locations (zero string/hash lookups per frame)
+    // Cached Black Hole uniform locations
     private final int uResolution;
     private final int uTime;
     private final int uCamPos;
@@ -51,11 +55,27 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uOrderVis;
     private final int uAdaptiveAa;
 
+    // Cached Wormhole uniform locations
+    private final int uWhResolution;
+    private final int uWhCamRadial;
+    private final int uWhCamForward;
+    private final int uWhCamRight;
+    private final int uWhCamUp;
+    private final int uWhSkyboxA;
+    private final int uWhSkyboxB;
+    private final int uWhL;
+    private final int uWhRho;
+    private final int uWhA;
+    private final int uWhM;
+    private final int uWhTanHalfFov;
+    private final int uWhShowGrid;
+    private final int uWhAdaptiveAa;
+
+    // Bloom & Composite uniform locations
     private final int uDownSource;
     private final int uIsFirstPass;
     private final int uUpSource;
     private final int uFilterRadius;
-
     private final int uCompHdr;
     private final int uCompBloom;
     private final int uCompStrength;
@@ -65,9 +85,11 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
         this.rayProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/blackhole.frag");
+        this.wormholeProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/wormhole.frag");
         this.downsampleProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/bloom_downsample.frag");
         this.upsampleProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/bloom_upsample.frag");
         this.compositeProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/composite.frag");
+        this.tdeSystem = new TdeParticleSystem();
 
         this.quadVao = glGenVertexArrays();
         glBindVertexArray(quadVao);
@@ -76,14 +98,18 @@ public final class BlackHoleRenderer implements AutoCloseable {
             this.noise3dTex = bake3dNoiseVolume(noiseProg, NOISE_VOL_SIZE);
         }
 
-        try (ShaderProgram skyProg = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/skybox_bake.frag")) {
-            this.skyboxCubemap = bakeHdrSkyboxCubemap(skyProg, noise3dTex, SKYBOX_FACE_SIZE);
+        try (ShaderProgram skyProgA = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/skybox_bake.frag")) {
+            this.skyboxUniverseA = bakeHdrSkyboxCubemap(skyProgA, noise3dTex, SKYBOX_FACE_SIZE, "UniverseA");
+        }
+
+        try (ShaderProgram skyProgB = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/skybox_b_bake.frag")) {
+            this.skyboxUniverseB = bakeHdrSkyboxCubemap(skyProgB, noise3dTex, SKYBOX_FACE_SIZE, "UniverseB");
         }
 
         this.framebuffers = new FramebufferSet(initialWidth, initialHeight, BLOOM_LEVELS);
         ShaderProgram.checkGlError("BlackHoleRenderer.init");
 
-        // Cache all uniform locations once at startup
+        // Cache Black Hole uniform locations
         uResolution = rayProgram.uniformLocation("uResolution");
         uTime = rayProgram.uniformLocation("uTime");
         uCamPos = rayProgram.uniformLocation("uCamPos");
@@ -106,6 +132,23 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uOrderVis = rayProgram.uniformLocation("uOrderVis");
         uAdaptiveAa = rayProgram.uniformLocation("uAdaptiveAa");
 
+        // Cache Wormhole uniform locations
+        uWhResolution = wormholeProgram.uniformLocation("uResolution");
+        uWhCamRadial = wormholeProgram.uniformLocation("uCamRadial");
+        uWhCamForward = wormholeProgram.uniformLocation("uCamForward");
+        uWhCamRight = wormholeProgram.uniformLocation("uCamRight");
+        uWhCamUp = wormholeProgram.uniformLocation("uCamUp");
+        uWhSkyboxA = wormholeProgram.uniformLocation("uSkyboxA");
+        uWhSkyboxB = wormholeProgram.uniformLocation("uSkyboxB");
+        uWhL = wormholeProgram.uniformLocation("uWormholeL");
+        uWhRho = wormholeProgram.uniformLocation("uWormholeRho");
+        uWhA = wormholeProgram.uniformLocation("uWormholeA");
+        uWhM = wormholeProgram.uniformLocation("uWormholeM");
+        uWhTanHalfFov = wormholeProgram.uniformLocation("uTanHalfFov");
+        uWhShowGrid = wormholeProgram.uniformLocation("uShowGrid");
+        uWhAdaptiveAa = wormholeProgram.uniformLocation("uAdaptiveAa");
+
+        // Cache Bloom & Composite uniform locations
         uDownSource = downsampleProgram.uniformLocation("uSource");
         uIsFirstPass = downsampleProgram.uniformLocation("uIsFirstPass");
         uUpSource = upsampleProgram.uniformLocation("uSource");
@@ -124,48 +167,103 @@ public final class BlackHoleRenderer implements AutoCloseable {
         framebuffers = new FramebufferSet(width, height, BLOOM_LEVELS);
     }
 
-    /** Executes Passes 1, 2, and 3 with zero heap allocations. */
-    public void renderFrame(int width, int height, SimulationState state, CameraController camera, GpuTimerQueries timers) {
+    public void spawnTdeStar(SimulationState state) {
+        if (!state.wormholeMode) {
+            tdeSystem.spawnStar(state);
+        }
+    }
+
+    public void clearTdeStars() {
+        tdeSystem.clearAll();
+    }
+
+    public int tdeActiveParticles() {
+        return tdeSystem.activeParticleCount();
+    }
+
+    public float tdeShearEnergy() {
+        return tdeSystem.shearEnergy();
+    }
+
+    /** Executes Passes 1, 1B (TDE), 2 (Bloom), and 3 (Composite) with zero heap allocations. */
+    public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
+                            SimulationState state, CameraController camera, GpuTimerQueries timers) {
         glBindVertexArray(quadVao);
 
-        // PASS 1: Exact Kerr-Schild Geodesic Ray-Tracer (GPU Timed)
+        // PASS 1: Exact Kerr-Schild Black Hole OR Morris-Thorne Wormhole Ray-Tracer (GPU Timed)
         timers.beginRay();
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffers.hdrFbo());
         glViewport(0, 0, width, height);
-        rayProgram.use();
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxCubemap);
-        glUniform1i(uSkybox, 0);
+        float tanHalfFov = (float) Math.tan(Math.toRadians(state.fovDeg));
 
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_3D, noise3dTex);
-        glUniform1i(uNoiseVol, 1);
+        if (state.wormholeMode) {
+            wormholeProgram.use();
 
-        glUniform2f(uResolution, width, height);
-        glUniform1f(uTime, (float) state.simTime);
-        glUniform3f(uCamPos, camera.posX, camera.posY, camera.posZ);
-        glUniform3f(uCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
-        glUniform3f(uCamRight, camera.rightX, camera.rightY, camera.rightZ);
-        glUniform3f(uCamUp, camera.upX, camera.upY, camera.upZ);
-        glUniform1f(uSpinA, state.effectiveSpin());
-        glUniform1f(uDiskTempScale, state.diskTempScale);
-        glUniform1f(uDiskDensity, state.diskDensity);
-        glUniform1f(uJetPower, state.jetPower);
-        glUniform1f(uTanHalfFov, (float) Math.tan(Math.toRadians(state.fovDeg)));
-        glUniform1i(uDoppler, state.dopplerEnabled ? 1 : 0);
-        glUniform1i(uLensing, state.lensingEnabled ? 1 : 0);
-        glUniform1i(uShowDisk, state.showDisk ? 1 : 0);
-        glUniform1i(uShowJets, state.showJets ? 1 : 0);
-        glUniform1i(uFreeFall, state.freeFallMode ? 1 : 0);
-        glUniform1i(uShowGrid, state.showGrid ? 1 : 0);
-        glUniform1i(uOrderVis, state.orderVisualizer ? 1 : 0);
-        glUniform1i(uAdaptiveAa, state.adaptiveAa4x ? 1 : 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxUniverseA);
+            glUniform1i(uWhSkyboxA, 0);
 
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxUniverseB);
+            glUniform1i(uWhSkyboxB, 1);
+
+            glUniform2f(uWhResolution, width, height);
+            glUniform3f(uWhCamRadial, camera.radialX, camera.radialY, camera.radialZ);
+            glUniform3f(uWhCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(uWhCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(uWhCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(uWhL, (float) camera.currentWormholeL());
+            glUniform1f(uWhRho, state.wormholeRho);
+            glUniform1f(uWhA, state.wormholeA);
+            glUniform1f(uWhM, state.wormholeM);
+            glUniform1f(uWhTanHalfFov, tanHalfFov);
+            glUniform1i(uWhShowGrid, state.showGrid ? 1 : 0);
+            glUniform1i(uWhAdaptiveAa, state.adaptiveAa4x ? 1 : 0);
+
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        } else {
+            rayProgram.use();
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxUniverseA);
+            glUniform1i(uSkybox, 0);
+
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_3D, noise3dTex);
+            glUniform1i(uNoiseVol, 1);
+
+            glUniform2f(uResolution, width, height);
+            glUniform1f(uTime, (float) state.simTime);
+            glUniform3f(uCamPos, camera.posX, camera.posY, camera.posZ);
+            glUniform3f(uCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(uCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(uCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(uSpinA, state.effectiveSpin());
+            glUniform1f(uDiskTempScale, state.diskTempScale);
+            glUniform1f(uDiskDensity, state.diskDensity);
+            glUniform1f(uJetPower, state.jetPower);
+            glUniform1f(uTanHalfFov, tanHalfFov);
+            glUniform1i(uDoppler, state.dopplerEnabled ? 1 : 0);
+            glUniform1i(uLensing, state.lensingEnabled ? 1 : 0);
+            glUniform1i(uShowDisk, state.showDisk ? 1 : 0);
+            glUniform1i(uShowJets, state.showJets ? 1 : 0);
+            glUniform1i(uFreeFall, state.freeFallMode ? 1 : 0);
+            glUniform1i(uShowGrid, state.showGrid ? 1 : 0);
+            glUniform1i(uOrderVis, state.orderVisualizer ? 1 : 0);
+            glUniform1i(uAdaptiveAa, state.adaptiveAa4x ? 1 : 0);
+
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
         timers.endRay();
 
+        // PASS 1B: OpenGL 4.3 Compute TDE + Additive HDR Sprites into hdrFbo (Always GPU Timed)
+        timers.beginTde();
+        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, state, camera);
+        timers.endTde();
+
         // PASS 2: 5-Level Karis-Averaged Bloom Pyramid (GPU Timed)
+        glBindVertexArray(quadVao);
         timers.beginBloom();
         downsampleProgram.use();
         glUniform1i(uDownSource, 0);
@@ -215,10 +313,13 @@ public final class BlackHoleRenderer implements AutoCloseable {
         if (framebuffers != null) {
             framebuffers.close();
         }
-        glDeleteTextures(skyboxCubemap);
+        tdeSystem.close();
+        glDeleteTextures(skyboxUniverseA);
+        glDeleteTextures(skyboxUniverseB);
         glDeleteTextures(noise3dTex);
         glDeleteVertexArrays(quadVao);
         rayProgram.close();
+        wormholeProgram.close();
         downsampleProgram.close();
         upsampleProgram.close();
         compositeProgram.close();
@@ -256,7 +357,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         return tex;
     }
 
-    private static int bakeHdrSkyboxCubemap(ShaderProgram skyProg, int noiseVolTex, int faceSize) {
+    private static int bakeHdrSkyboxCubemap(ShaderProgram skyProg, int noiseVolTex, int faceSize, String tag) {
         int cubemap = glGenTextures();
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
         for (int face = 0; face < 6; face++) {
@@ -284,7 +385,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                     GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cubemap, 0);
             if (face == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-                throw new RuntimeException("HDR Skybox bake framebuffer incomplete");
+                throw new RuntimeException("HDR Skybox (" + tag + ") bake framebuffer incomplete");
             }
             glUniform1i(uFace, face);
             glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -298,7 +399,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 
-        ShaderProgram.checkGlError("bakeHdrSkyboxCubemap");
+        ShaderProgram.checkGlError("bakeHdrSkyboxCubemap(" + tag + ")");
         return cubemap;
     }
 }
