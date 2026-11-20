@@ -2,7 +2,7 @@
 
 # BlackHole
 
-**Real-Time General-Relativistic Kerr-Schild Black Hole, Morris-Thorne Wormhole & Compute TDE Engine**
+**Real-Time General-Relativistic Kerr-Schild Black Hole, Binary Merger, Morris-Thorne Wormhole & Compute TDE Engine**
 
 [![Java 21+](https://img.shields.io/badge/Java-21%2B-ED8B00?style=flat-square&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![OpenGL 4.3](https://img.shields.io/badge/OpenGL-4.3%20Core-5586A4?style=flat-square&logo=opengl&logoColor=white)](https://www.khronos.org/opengl/)
@@ -10,7 +10,7 @@
 [![Build Status](https://img.shields.io/github/actions/workflow/status/LaithAbuzaid/BlackHole/build.yml?branch=main&style=flat-square&label=CI%20Build)](https://github.com/LaithAbuzaid/BlackHole/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square)](#)
 
-*Exact Cartesian Kerr-Schild RK4 geodesics · Interstellar Morris-Thorne wormhole · 65,536-particle GPU compute TDE · Doran horizon plunge · Procedural OpenAL audio · Zero per-frame GC allocations*
+*Exact Cartesian Kerr-Schild RK4 geodesics · Binary Black Hole Merger & LIGO GW Chirp · Interstellar Morris-Thorne wormhole · Volumetric Lensed Compute TDE · Relativistic HDR TAA · JetBrains Mono MTSDF HUD*
 
 </div>
 
@@ -30,12 +30,18 @@
 
 ## Visual Showcase
 
+<p align="center">
+  <img src="docs/media/binary_merger.png" alt="Interactive Binary Black Hole Merger showing mutual eyebrow lensing, shock-heated tidal gas bridge, and propagating quadrupole gravitational waves" width="100%">
+  <br>
+  <sub><b>Binary Black Hole Merger &amp; Gravitational Waves (`[X]`)</b> — Superposed boosted Kerr–Schild geodesics, mutual secondary "eyebrow" shadow lensing, companion mini-disks, shock-heated tidal gas bridge, and propagating quadrupole gravitational waves (<i>h<sub>+</sub></i>, <i>h<sub>&times;</sub></i>) with live LIGO chirp audio.</sub>
+</p>
+
 <table>
   <tr>
     <td align="center" width="50%">
       <img src="docs/media/tde_shredding.png" alt="65,536-particle Tidal Disruption Event wrapping around the black hole shadow" width="100%">
       <br>
-      <sub><b>OpenGL 4.3 Compute TDE (`[E]`)</b> — 65,536-particle star sheared across periapsis under Paczyński–Wiita gravity &amp; Kerr frame-dragging torque.</sub>
+      <sub><b>Volumetric Lensed Compute TDE (`[E]`)</b> — 65,536-particle star sheared across periapsis under Paczyński–Wiita gravity &amp; Kerr frame-dragging torque.</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/media/wormhole_throat.png" alt="Morris-Thorne traversable wormhole showing Universe B nebula and lensed ghost arcs" width="100%">
@@ -72,6 +78,7 @@
 | Subsystem | Implementation Highlights |
 |---|---|
 | **Kerr–Schild RK4 Hamiltonian** | Exact Cartesian spheroidal radius $r$, analytic metric gradients ($\nabla r, \nabla H, \nabla(\mathbf{l}\cdot\mathbf{p})$), and RK4 null geodesic evolution conserving $\mathcal{H} = \frac{1}{2}g^{\mu\nu}p_\mu p_\nu = 0$. Exact $r_+ = M + \sqrt{M^2 - a^2}$, Bardeen–Press–Teukolsky prograde ISCO, cubic Hermite equatorial crossings ($n = 0, 1, \ge 2$), 128³ baked periodic 3D disk turbulence, and covariant Doppler beaming + blackbody LUT. |
+| **Binary Black Hole Merger (`[X]`)** | Deterministic Peters–Mathews inspiral ($\frac{da}{dt} = -\frac{64}{5}\frac{\eta M^3}{a^3}$), coalescence, and $(l=2,m=2)$ QNM ringdown forming a spinning Kerr remnant ($a_f \approx 3.464\eta - 2.9\eta^2$). Ray-traced via superposed Lorentz-boosted Kerr–Schild geodesics (`binary_merger.frag`) with mutual secondary "eyebrow" shadow lensing, $m=2$ circumbinary disk, companion mini-disks, shock-heated tidal bridge, retarded quadrupole $h_+, h_\times$ skybox deflection + `[G]` orbital-plane ripple overlay, MRT `GL_RG16F` TAA motion vectors, live LIGO chirp audio, and a 160-sample HUD strain oscilloscope. |
 | **Doran Horizon Plunge** | Horizon-penetrating Kerr–Schild / Doran observer frame (`[P]` / `[F]`) crossing $r_+$ cleanly ($\beta_{\text{in}} = c$ at $r_+$) with independent 360° free-look, proper time ($\tau$) vs. diverging coordinate time ($t_\infty \to \infty$), relativistic blueshift, Kerr inner Cauchy horizon ($r_-$) mass-inflation flash, Schwarzschild anisotropic optical spaghettification, and tidal camera micro-rumble. |
 | **Morris–Thorne Wormhole** | Exact *Interstellar* / Dneg embedding radius $r(l)$ with live throat radius $\rho$, throat half-length $a$, and lensing width $M_w$. Smooth bidirectional flight across $l = 0$ between GPU-baked `1024×1024×6` mipmapped HDR cubemaps (**Universe A**: Milky Way; **Universe B**: teal-amber nebula & ringed gas giant) with `textureGrad` ray differentials. |
 | **OpenGL 4.3 Compute TDE** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) stepped in `tidal_disruption.comp` with 2-substep Velocity-Verlet integration, Lense–Thirring frame-dragging torque, and periapsis nozzle-compression shock heating — rendered as instanced velocity-stretched volumetric plasma ribbons with analytic Kerr-calibrated gravitational lensing, 3D turbulence filamentation, and feathered shadow occlusion. |
@@ -92,13 +99,13 @@
    └─ skybox_nebula.frag       ──▶ 1024²×6 RGBA16F Cubemap (Universe B)
 
   [Per-Frame Pipeline — Zero Heap Allocations]
-   Pass 1A  kerr_blackhole.frag / morris_thorne_wormhole.frag ──▶ hdrFbo (RGBA16F + hitDist)
+   Pass 1A  kerr_blackhole.frag / binary_merger.frag (MRT + Vel) / morris_thorne_wormhole.frag ──▶ hdrFbo
    Pass 1B  tidal_disruption.comp ──▶ SSBO ──▶ Instanced Lensed Volumetric TDE (+hdrFbo)
-   Pass 1C  taa_resolve.frag (3D Parallax Reprojection + Catmull-Rom + Karis YCoCg) ──▶ taaFbo
+   Pass 1C  taa_resolve.frag (3D Parallax / MRT Velocity + Catmull-Rom + Karis YCoCg) ──▶ taaFbo
    Pass 2A  5× bloom_downsample.frag (Karis) ──▶ 4× bloom_upsample.frag (Tent)
    Pass 2B  2× anamorphic_blur.frag (1/8 Res 13-Tap Horizontal Streak Cascade)
    Pass 3   tonemap_composite.frag (Bloom + Anamorphic + ACES + TPDF Dither) ──▶ Backbuffer
-   Pass 4   hud.{vert,frag} (SDF Glassmorphism + JetBrains Mono MTSDF + Toasts)
+   Pass 4   hud.{vert,frag} (SDF Glassmorphism + JetBrains Mono MTSDF + LIGO Oscilloscope)
 ```
 
 ```text
@@ -110,7 +117,8 @@ src/
 │   │       ├── Main.java                       # CLI entry (--capture-showcase)
 │   │       ├── audio/RelativisticAudioEngine.java
 │   │       ├── core/
-│   │       │   ├── CameraController.java       # Orbit, Plunge, Wormhole, Attract Tour & Tidal Rumble
+│   │       │   ├── BinaryMergerPhysics.java    # Peters-Mathews inspiral, merger & QNM ringdown
+│   │       │   ├── CameraController.java       # Orbit, Plunge, Binary, Wormhole & Attract Tour
 │   │       │   ├── SimulationEngine.java       # GLFW loop, async [F12] & --capture-showcase
 │   │       │   └── SimulationState.java
 │   │       ├── graphics/
@@ -127,10 +135,10 @@ src/
 │       └── shaders/
 │           ├── common/fullscreen.vert
 │           ├── bake/{noise_volume.frag, skybox_milkyway.frag, skybox_nebula.frag}
-│           ├── simulation/{kerr_blackhole.frag, morris_thorne_wormhole.frag, tidal_disruption.*}
+│           ├── simulation/{kerr_blackhole.frag, binary_merger.frag, morris_thorne_wormhole.frag, tidal_disruption.*}
 │           ├── post/{taa_resolve.frag, bloom_downsample.frag, bloom_upsample.frag, anamorphic_blur.frag, tonemap_composite.frag}
 │           └── ui/{hud.vert, hud.frag}
-└── test/java/io/github/laithabuzaid/blackhole/ # Headless JUnit 5 physics, camera & asset tests
+└── test/java/io/github/laithabuzaid/blackhole/ # Headless JUnit 5 physics, binary, camera & asset tests
 ```
 
 ---
@@ -152,11 +160,11 @@ mvn clean package
 java --enable-native-access=ALL-UNNAMED -jar target\blackhole-1.0-SNAPSHOT.jar
 ```
 
-### Regenerate All 5 Curated 1080p Showcase PNGs
+### Regenerate All 6 Curated 1080p Showcase PNGs
 ```bash
 java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar --capture-showcase
 ```
-> Renders all 5 `1920×1080` showcase stills into `docs/media/` using an offscreen FBO and exits cleanly with status `0`.
+> Renders all 6 `1920×1080` showcase stills into `docs/media/` using an offscreen FBO and exits cleanly with status `0`.
 
 ---
 
@@ -165,17 +173,18 @@ java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar -
 | Input | Action |
 |---|---|
 | **Left-Drag** | Orbit camera (instantly disengages Attract Tour) / drag console sliders |
-| **Scroll Wheel** | Logarithmic zoom (Black Hole) · Fly through throat `l ∈ [-35, +35]` (Wormhole) · Plunge speed (`[P]`) |
+| **Scroll Wheel** | Logarithmic zoom (Black Hole / Binary) · Fly through throat `l ∈ [-35, +35]` (Wormhole) · Plunge speed (`[P]`) |
 | `H` | Toggle Glassmorphic Console & Hardware Profiler (**Cinema Mode** ↔ **Telemetry HUD**) |
+| `X` / `Shift+X` | Toggle **Binary Black Hole Merger & GW Sandbox** · `Shift+X`: Replay Merger |
 | `T` | Toggle **Director's Cut Attract Tour** |
 | `P` | Launch / Abort / Replay **Horizon Plunge Dive** (`r+` → Interior) |
 | `W` | Switch Spacetime: **Kerr–Schild Black Hole** ↔ **Morris–Thorne Wormhole** |
 | `E` | Inject & Shred a **65,536-particle Star** (Tidal Disruption Event) |
 | `F12` / `S` | Capture clean HUD-free PNG screenshot to `captures/` |
-| `A` | Toggle Procedural OpenAL Soundscape |
-| `1` `2` `3` `4` | Presets — Black Hole: Edge / Polar / Photon Ring / Horizon Dive · Wormhole: Univ A / Throat / Univ B / Fly-Through |
+| `A` | Toggle Procedural OpenAL Soundscape (including live **LIGO Chirp** in Binary mode) |
+| `1` `2` `3` `4` | Presets — Black Hole: Edge / Polar / Photon Ring / Dive · Binary: Oblique / Top-Down / Close / Replay · Wormhole: Univ A / Throat / Univ B / Fly-Through |
 | `Up` / `Down` | Fly forward / backward through the wormhole throat |
 | `L` `D` `J` `B` `K` | Toggle Lensing · Accretion Disk · Bipolar Jets · Doppler Beaming · Kerr Spin |
 | `F` `M` `C` `I` `O` | Toggle Free-Fall Frame · Temporal AA (TAA) · Celestial Grid · Image-Order Vis · Auto Orbit |
-| `U` `G` `[` `]` `V` | Toggle Camera Roll · Cycle Bloom · Exposure `−`/`+` · V-Sync |
+| `U` `G` `[` `]` `V` | Toggle Camera Roll · GW Strain Overlay (Binary) / Cycle Bloom · Exposure `−`/`+` · V-Sync |
 | `Space` / `R` / `Esc` | Pause · Reset Simulation · Quit |

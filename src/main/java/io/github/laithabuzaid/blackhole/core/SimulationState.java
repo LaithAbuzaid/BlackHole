@@ -34,6 +34,12 @@ public final class SimulationState {
     public static final float MIN_WORMHOLE_M = 0.20f;
     public static final float MAX_WORMHOLE_M = 4.00f;
 
+    // Binary Black Hole Merger & Gravitational Wave parameter bounds
+    public static final float MIN_MASS_RATIO = 0.25f;
+    public static final float MAX_MASS_RATIO = 1.00f;
+    public static final float MIN_BIN_TIME_SCALE = 0.20f;
+    public static final float MAX_BIN_TIME_SCALE = 2.50f;
+
     // Plunge & Audio bounds
     public static final float MIN_PLUNGE_SPEED = 0.10f;
     public static final float MAX_PLUNGE_SPEED = 2.00f;
@@ -52,6 +58,9 @@ public final class SimulationState {
 
     // Spacetime Mode & UI Toggles ("Cinema First, Console Second" startup)
     public boolean wormholeMode = false;
+    public boolean binaryMode = false;
+    public boolean binaryGwOverlay = false;
+    public boolean binaryAutoLoop = true;
     public boolean showUi = false;
     public boolean controlsExpanded = true;
     public boolean attractTourActive = true;
@@ -104,6 +113,10 @@ public final class SimulationState {
     public float wormholeRho = 2.60f;     // Throat radius rho
     public float wormholeA = 0.45f;       // Throat half-length a
     public float wormholeM = 1.25f;       // Lensing transition width M_w
+
+    // Binary Black Hole Merger Sliders
+    public float binaryMassRatio = 0.65f; // Mass ratio q = M2 / M1 [0.25 .. 1.00]
+    public float binaryTimeScale = 1.00f; // Inspiral & merger time multiplier [0.20 .. 2.50]
 
     // Procedural Relativistic Audio
     public float audioVolume = 0.60f;     // Master volume [0.00 .. 1.00]
@@ -240,5 +253,10 @@ public final class SimulationState {
         wormholeRho = 2.60f;
         wormholeA = 0.45f;
         wormholeM = 1.25f;
+
+        binaryMassRatio = 0.65f;
+        binaryTimeScale = 1.00f;
+        binaryGwOverlay = false;
+        binaryAutoLoop = true;
     }
 }

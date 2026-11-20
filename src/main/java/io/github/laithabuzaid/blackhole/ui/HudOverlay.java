@@ -1,5 +1,6 @@
 package io.github.laithabuzaid.blackhole.ui;
 
+import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
@@ -32,6 +33,10 @@ public final class HudOverlay {
     public static final int ACT_PLUNGE = 17;
     public static final int ACT_ATTRACT_TOUR = 18;
     public static final int ACT_ANAMORPHIC = 19;
+    public static final int ACT_BINARY = 20;
+    public static final int ACT_BINARY_REPLAY = 21;
+    public static final int ACT_BINARY_GW_OVERLAY = 22;
+    public static final int ACT_BINARY_AUTOLOOP = 23;
     public static final int ACT_TOGGLE_PANEL = 100;
 
     // Slider IDs
@@ -48,6 +53,8 @@ public final class HudOverlay {
     public static final int SLIDER_WH_M = 211;
     public static final int SLIDER_PLUNGE_SPEED = 212;
     public static final int SLIDER_ANAMORPHIC = 213;
+    public static final int SLIDER_BIN_MASS_RATIO = 214;
+    public static final int SLIDER_BIN_TIME_SCALE = 215;
 
     // Preset IDs
     public static final int PRESET_EDGE = 301;
@@ -58,6 +65,9 @@ public final class HudOverlay {
     public static final int PRESET_UNIV_A = 306;
     public static final int PRESET_THROAT = 307;
     public static final int PRESET_UNIV_B = 308;
+    public static final int PRESET_BIN_OBLIQUE = 309;
+    public static final int PRESET_BIN_TOP = 310;
+    public static final int PRESET_BIN_CLOSE = 311;
 
     private static final int MAX_HITBOXES = 88;
 
@@ -192,6 +202,15 @@ public final class HudOverlay {
                        boolean suppressOverlays,
                        SimulationState state, CameraController camera,
                        HardwareTelemetry telemetry) {
+        render(ui, windowW, windowH, mouseX, mouseY, refreshTelemetry, suppressOverlays, state, camera, null, telemetry);
+    }
+
+    public void render(UiRenderer ui, int windowW, int windowH,
+                       double mouseX, double mouseY, boolean refreshTelemetry,
+                       boolean suppressOverlays,
+                       SimulationState state, CameraController camera,
+                       BinaryMergerPhysics binary,
+                       HardwareTelemetry telemetry) {
         hitBoxCount = 0;
         if (suppressOverlays) {
             return;
@@ -204,7 +223,7 @@ public final class HudOverlay {
 
         boolean plungeBannerDrawn = false;
         if (state.showUi) {
-            renderLeftProfilerPanel(ui, windowW, windowH, state, camera, telemetry);
+            renderLeftProfilerPanel(ui, windowW, windowH, state, camera, binary, telemetry);
             if (state.plungeActive && windowW >= 1040) {
                 renderTopPlungeBanner(ui, windowW, state, camera);
                 plungeBannerDrawn = true;
@@ -234,7 +253,7 @@ public final class HudOverlay {
 
     private void renderCinemaBottomPill(UiRenderer ui, int windowW, int windowH,
                                         double mouseY, SimulationState state) {
-        String pill = "Drag to Orbit \u2022 [H] Console & Telemetry \u2022 [T] Tour \u2022 [P] Dive In \u2022 [W] Wormhole \u2022 [E] Shred Star";
+        String pill = "Drag to Orbit \u2022 [H] Console \u2022 [X] Binary \u2022 [P] Dive In \u2022 [W] Wormhole \u2022 [E] Shred Star";
         float fadeT = Math.max(0.0f, Math.min(1.0f, (state.cinemaHintAge - 5.0f) / 1.5f));
         float alpha = 0.92f - 0.62f * fadeT; // Fades cleanly from 92% -> 30% after 6 seconds
         if (mouseY > windowH - 72.0) {
@@ -349,29 +368,32 @@ public final class HudOverlay {
 
     private void renderLeftProfilerPanel(UiRenderer ui, int windowW, int windowH,
                                          SimulationState state, CameraController camera,
+                                         BinaryMergerPhysics binary,
                                          HardwareTelemetry telemetry) {
+        boolean isBinary = state.binaryMode && binary != null;
         float lx = 16f;
         float ly = 16f;
         float lw = Math.min(386f, windowW - 32f);
-        float lh = Math.min(394f, windowH - 58f);
+        float lh = Math.min(isBinary ? 414f : 394f, windowH - 58f);
 
         ui.drawGlassPanel(lx, ly, lw, lh, 10f,
                 0.07f, 0.09f, 0.14f, 0.84f,
-                state.wormholeMode ? 0.36f : 0.42f,
-                state.wormholeMode ? 0.90f : 0.68f,
-                state.wormholeMode ? 0.85f : 0.96f, 0.38f);
+                isBinary ? 0.34f : (state.wormholeMode ? 0.36f : 0.42f),
+                isBinary ? 0.84f : (state.wormholeMode ? 0.90f : 0.68f),
+                isBinary ? 1.00f : (state.wormholeMode ? 0.85f : 0.96f), 0.38f);
 
         float cx = lx + 14f;
         float cy = ly + 13f;
         float innerW = lw - 28f;
 
-        ui.drawText(state.wormholeMode
-                        ? "WORMHOLE PROFILER & TELEMETRY"
-                        : "KERR-SCHILD PROFILER & TELEMETRY",
+        String headerTitle = isBinary
+                ? "BINARY MERGER PROFILER & LIGO"
+                : (state.wormholeMode ? "WORMHOLE PROFILER & TELEMETRY" : "KERR-SCHILD PROFILER & TELEMETRY");
+        ui.drawText(headerTitle,
                 cx, cy, 1.26f,
-                state.wormholeMode ? 0.42f : 0.95f,
-                state.wormholeMode ? 0.95f : 0.78f,
-                state.wormholeMode ? 0.88f : 0.48f, 1.0f);
+                isBinary ? 0.38f : (state.wormholeMode ? 0.42f : 0.95f),
+                isBinary ? 0.88f : (state.wormholeMode ? 0.95f : 0.78f),
+                isBinary ? 1.00f : (state.wormholeMode ? 0.88f : 0.48f), 1.0f);
         cy += 19f;
         ui.drawRect(cx, cy, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
         cy += 9f;
@@ -417,7 +439,41 @@ public final class HudOverlay {
         ui.drawRect(cx, cy, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
         cy += 7f;
 
-        if (state.wormholeMode) {
+        if (isBinary) {
+            BinaryMergerPhysics.Phase ph = binary.phase();
+            boolean hotPhase = (ph == BinaryMergerPhysics.Phase.MERGER || ph == BinaryMergerPhysics.Phase.PLUNGE);
+
+            sb.setLength(0);
+            sb.append("STAGE: ").append(ph.label()).append("  SEP: ");
+            appendFixed2(sb, binary.currentSeparation);
+            sb.append('M');
+            ui.drawText(sb, cx, cy, 1.08f,
+                    hotPhase ? 1.00f : 0.40f,
+                    hotPhase ? 0.72f : 0.90f,
+                    hotPhase ? 0.38f : 1.00f, 0.98f);
+            cy += 14f;
+
+            sb.setLength(0);
+            sb.append("GW FREQ: ");
+            appendFixed1(sb, binary.gwFreqHz);
+            sb.append("Hz  REMNANT a*: ");
+            appendFixed3(sb, binary.remnantSpin);
+            ui.drawText(sb, cx, cy, 1.04f, 0.95f, 0.84f, 0.56f, 0.96f);
+            cy += 14f;
+
+            sb.setLength(0);
+            sb.append("M1:");
+            appendFixed2(sb, binary.mass1);
+            sb.append(" M2:");
+            appendFixed2(sb, binary.mass2);
+            sb.append(" Mf:");
+            appendFixed3(sb, binary.remnantMass);
+            sb.append("M  v:");
+            appendFixed2(sb, binary.orbitalBeta);
+            sb.append('c');
+            ui.drawText(sb, cx, cy, 1.02f, 0.74f, 0.84f, 0.96f, 0.95f);
+            cy += 16f;
+        } else if (state.wormholeMode) {
             float lVal = (float) camera.currentWormholeL();
             float throatBand = state.wormholeA + 0.65f;
             boolean inThroat = Math.abs(lVal) <= throatBand;
@@ -485,51 +541,80 @@ public final class HudOverlay {
             cy += 16f;
         }
 
-        // Rolling 120-Frame GPU vs CPU Oscilloscope Graph (guarded against short windows)
-        float gh = Math.min(72f, (ly + lh - 10f) - cy);
+        // Rolling Oscilloscope: LIGO Strain h+(t) in Binary mode, GPU vs CPU ms otherwise
+        float gh = Math.min(76f, (ly + lh - 10f) - cy);
         if (gh >= 36f) {
             float gx = cx;
             float gy = cy;
             float gw = innerW;
             ui.drawGlassPanel(gx, gy, gw, gh, 5f, 0.03f, 0.04f, 0.07f, 0.86f, 1f, 1f, 1f, 0.14f);
-            ui.drawText("GPU(CYAN) CPU(GRN) | 16.6ms 6.9ms", gx + 6f, gy + 5f, 1.00f, 0.65f, 0.72f, 0.82f, 0.85f);
 
-            float maxScaleMs = 20.0f;
-            for (int i = 0; i < HardwareTelemetry.HISTORY_LEN; i++) {
-                int idx = (telemetry.historyCursor + i) % HardwareTelemetry.HISTORY_LEN;
-                float m = Math.max(telemetry.gpuHistory[idx], telemetry.cpuHistory[idx]) * 1.15f;
-                if (m > maxScaleMs) {
-                    maxScaleMs = m;
+            if (isBinary) {
+                ui.drawText("LIGO STRAIN h+(t) | QUADRUPOLE GW", gx + 6f, gy + 5f, 1.00f, 0.45f, 0.88f, 1.0f, 0.92f);
+                float midY = gy + 17f + (gh - 22f) * 0.5f;
+                float halfAmpPx = (gh - 24f) * 0.46f;
+                ui.drawRect(gx + 4f, midY, gw - 8f, 1f, 0f, 1f, 1f, 1f, 0.16f);
+
+                float[] hist = binary.strainHistory();
+                int cursor = binary.strainCursor();
+                int count = BinaryMergerPhysics.STRAIN_HISTORY_LEN;
+                float stepX = (gw - 8f) / (count - 1);
+                for (int i = 0; i < count - 1; i++) {
+                    int i0 = (cursor + i) % count;
+                    int i1 = (cursor + i + 1) % count;
+                    float x0 = gx + 4f + i * stepX;
+                    float x1 = gx + 4f + (i + 1) * stepX;
+                    float h0 = Math.max(-1.0f, Math.min(1.0f, hist[i0]));
+                    float h1 = Math.max(-1.0f, Math.min(1.0f, hist[i1]));
+                    float y0 = midY - h0 * halfAmpPx;
+                    float y1 = midY - h1 * halfAmpPx;
+                    float amp = Math.min(1.0f, Math.max(Math.abs(h0), Math.abs(h1)));
+                    // Color shifts smoothly from cool cyan during inspiral to fiery gold at chirp peak
+                    float rCol = 0.24f + 0.76f * amp;
+                    float gCol = 0.88f - 0.12f * amp;
+                    float bCol = 1.00f - 0.62f * amp;
+                    ui.drawLine(x0, y0, x1, y1, 1.75f, rCol, gCol, bCol, 0.96f);
                 }
-            }
+            } else {
+                ui.drawText("GPU(CYAN) CPU(GRN) | 16.6ms 6.9ms", gx + 6f, gy + 5f, 1.00f, 0.65f, 0.72f, 0.82f, 0.85f);
 
-            float plotH = gh - 20f;
-            float baseLineY = gy + gh - 4f;
+                float maxScaleMs = 20.0f;
+                for (int i = 0; i < HardwareTelemetry.HISTORY_LEN; i++) {
+                    int idx = (telemetry.historyCursor + i) % HardwareTelemetry.HISTORY_LEN;
+                    float m = Math.max(telemetry.gpuHistory[idx], telemetry.cpuHistory[idx]) * 1.15f;
+                    if (m > maxScaleMs) {
+                        maxScaleMs = m;
+                    }
+                }
 
-            float line60Y = baseLineY - (16.67f / maxScaleMs) * plotH;
-            if (line60Y > gy + 15f && line60Y < baseLineY) {
-                ui.drawRect(gx + 4f, line60Y, gw - 8f, 1f, 0f, 1.0f, 0.65f, 0.25f, 0.42f);
-            }
-            float line144Y = baseLineY - (6.94f / maxScaleMs) * plotH;
-            if (line144Y > gy + 15f && line144Y < baseLineY) {
-                ui.drawRect(gx + 4f, line144Y, gw - 8f, 1f, 0f, 0.65f, 0.55f, 1.0f, 0.42f);
-            }
+                float plotH = gh - 20f;
+                float baseLineY = gy + gh - 4f;
 
-            float stepX = (gw - 8f) / (HardwareTelemetry.HISTORY_LEN - 1);
-            for (int i = 0; i < HardwareTelemetry.HISTORY_LEN - 1; i++) {
-                int i0 = (telemetry.historyCursor + i) % HardwareTelemetry.HISTORY_LEN;
-                int i1 = (telemetry.historyCursor + i + 1) % HardwareTelemetry.HISTORY_LEN;
+                float line60Y = baseLineY - (16.67f / maxScaleMs) * plotH;
+                if (line60Y > gy + 15f && line60Y < baseLineY) {
+                    ui.drawRect(gx + 4f, line60Y, gw - 8f, 1f, 0f, 1.0f, 0.65f, 0.25f, 0.42f);
+                }
+                float line144Y = baseLineY - (6.94f / maxScaleMs) * plotH;
+                if (line144Y > gy + 15f && line144Y < baseLineY) {
+                    ui.drawRect(gx + 4f, line144Y, gw - 8f, 1f, 0f, 0.65f, 0.55f, 1.0f, 0.42f);
+                }
 
-                float x0 = gx + 4f + i * stepX;
-                float x1 = gx + 4f + (i + 1) * stepX;
+                float stepX = (gw - 8f) / (HardwareTelemetry.HISTORY_LEN - 1);
+                for (int i = 0; i < HardwareTelemetry.HISTORY_LEN - 1; i++) {
+                    int i0 = (telemetry.historyCursor + i) % HardwareTelemetry.HISTORY_LEN;
+                    int i1 = (telemetry.historyCursor + i + 1) % HardwareTelemetry.HISTORY_LEN;
 
-                float gY0 = baseLineY - Math.min(1f, telemetry.gpuHistory[i0] / maxScaleMs) * plotH;
-                float gY1 = baseLineY - Math.min(1f, telemetry.gpuHistory[i1] / maxScaleMs) * plotH;
-                ui.drawLine(x0, gY0, x1, gY1, 1.65f, 0.25f, 0.85f, 1.0f, 0.95f);
+                    float x0 = gx + 4f + i * stepX;
+                    float x1 = gx + 4f + (i + 1) * stepX;
 
-                float cY0 = baseLineY - Math.min(1f, telemetry.cpuHistory[i0] / maxScaleMs) * plotH;
-                float cY1 = baseLineY - Math.min(1f, telemetry.cpuHistory[i1] / maxScaleMs) * plotH;
-                ui.drawLine(x0, cY0, x1, cY1, 1.45f, 0.32f, 0.95f, 0.65f, 0.90f);
+                    float gY0 = baseLineY - Math.min(1f, telemetry.gpuHistory[i0] / maxScaleMs) * plotH;
+                    float gY1 = baseLineY - Math.min(1f, telemetry.gpuHistory[i1] / maxScaleMs) * plotH;
+                    ui.drawLine(x0, gY0, x1, gY1, 1.65f, 0.25f, 0.85f, 1.0f, 0.95f);
+
+                    float cY0 = baseLineY - Math.min(1f, telemetry.cpuHistory[i0] / maxScaleMs) * plotH;
+                    float cY1 = baseLineY - Math.min(1f, telemetry.cpuHistory[i1] / maxScaleMs) * plotH;
+                    ui.drawLine(x0, cY0, x1, cY1, 1.45f, 0.32f, 0.95f, 0.65f, 0.90f);
+                }
             }
         }
     }
@@ -544,17 +629,19 @@ public final class HudOverlay {
         float rh;
         if (!expanded) {
             rh = 42f;
+        } else if (state.binaryMode) {
+            rh = 516f;
         } else if (state.wormholeMode) {
-            rh = 450f;
+            rh = 492f;
         } else {
-            rh = 578f;
+            rh = 602f;
         }
 
         ui.drawGlassPanel(rx, ry, rw, rh, 10f,
                 0.07f, 0.09f, 0.14f, 0.84f,
-                state.wormholeMode ? 0.36f : (state.plungeActive ? 0.96f : 0.95f),
-                state.wormholeMode ? 0.90f : (state.plungeActive ? 0.45f : 0.72f),
-                state.wormholeMode ? 0.85f : (state.plungeActive ? 0.92f : 0.42f), 0.40f);
+                state.binaryMode ? 0.34f : (state.wormholeMode ? 0.36f : (state.plungeActive ? 0.96f : 0.95f)),
+                state.binaryMode ? 0.84f : (state.wormholeMode ? 0.90f : (state.plungeActive ? 0.45f : 0.72f)),
+                state.binaryMode ? 1.00f : (state.wormholeMode ? 0.85f : (state.plungeActive ? 0.92f : 0.42f)), 0.40f);
 
         float px = rx + 14f;
         float py = ry + 13f;
@@ -581,19 +668,100 @@ public final class HudOverlay {
         float colW = (innerW - 6f) * 0.5f;
         float rowH = 21f;
 
-        if (state.wormholeMode) {
+        if (state.binaryMode) {
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[X] BINARY", true, ACT_BINARY,
+                    px + colW + 6f, "[REPLAY MERGER]", false, ACT_BINARY_REPLAY);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[G] GW RIPPLES", state.binaryGwOverlay, ACT_BINARY_GW_OVERLAY,
+                    px + colW + 6f, "AUTO LOOP", state.binaryAutoLoop, ACT_BINARY_AUTOLOOP);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[W] WORMHOLE", false, ACT_WORMHOLE,
+                    px + colW + 6f, "[A] AUDIO", state.audioEnabled, ACT_AUDIO);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[M] TEMPORAL AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
+                    px + colW + 6f, "[C] SKY GRID", state.showGrid, ACT_SKY_GRID);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[D] DISK", state.showDisk, ACT_DISK,
+                    px + colW + 6f, "[B] DOPPLER", state.dopplerEnabled, ACT_DOPPLER);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[V] V-SYNC", state.vsync, ACT_VSYNC,
+                    px + colW + 6f, "[SPC] PAUSE", state.paused, ACT_PAUSE);
+
+            py += 4f;
+            ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
+            py += 7f;
+
+            sb.setLength(0);
+            appendFixed2(sb, state.binaryMassRatio);
+            py = drawSlider(ui, px, py, innerW, "MASS RATIO (q)", state.binaryMassRatio,
+                    SimulationState.MIN_MASS_RATIO, SimulationState.MAX_MASS_RATIO, sb, SLIDER_BIN_MASS_RATIO);
+
+            sb.setLength(0);
+            appendFixed2(sb, state.binaryTimeScale);
+            sb.append('x');
+            py = drawSlider(ui, px, py, innerW, "TIME SCALE", state.binaryTimeScale,
+                    SimulationState.MIN_BIN_TIME_SCALE, SimulationState.MAX_BIN_TIME_SCALE, sb, SLIDER_BIN_TIME_SCALE);
+
+            sb.setLength(0);
+            sb.append(Math.round(11800f * state.diskTempScale)).append(" K");
+            py = drawSlider(ui, px, py, innerW, "DISK TEMP (K)", state.diskTempScale,
+                    SimulationState.MIN_TEMP_SCALE, SimulationState.MAX_TEMP_SCALE, sb, SLIDER_TEMP);
+
+            sb.setLength(0);
+            appendFixed2(sb, state.bloomStrength);
+            py = drawSlider(ui, px, py, innerW, "BLOOM GLOW", state.bloomStrength,
+                    SimulationState.MIN_BLOOM, SimulationState.MAX_BLOOM, sb, SLIDER_BLOOM);
+
+            sb.setLength(0);
+            appendFixed2(sb, state.anamorphicStrength);
+            py = drawSlider(ui, px, py, innerW, "ANAMORPHIC", state.anamorphicStrength,
+                    SimulationState.MIN_ANAMORPHIC, SimulationState.MAX_ANAMORPHIC, sb, SLIDER_ANAMORPHIC);
+
+            sb.setLength(0);
+            appendFixed2(sb, state.exposure);
+            py = drawSlider(ui, px, py, innerW, "HDR EXPOSURE", state.exposure,
+                    SimulationState.MIN_EXPOSURE, SimulationState.MAX_EXPOSURE, sb, SLIDER_EXPOSURE);
+
+            sb.setLength(0);
+            sb.append(Math.round(state.fovDeg * 2f)).append('°');
+            py = drawSlider(ui, px, py, innerW, "CAMERA FOV", state.fovDeg,
+                    SimulationState.MIN_FOV_DEG, SimulationState.MAX_FOV_DEG, sb, SLIDER_FOV);
+
+            sb.setLength(0);
+            sb.append(Math.round(state.audioVolume * 100f)).append('%');
+            py = drawSlider(ui, px, py, innerW, "AUDIO VOLUME", state.audioVolume,
+                    SimulationState.MIN_VOLUME, SimulationState.MAX_VOLUME, sb, SLIDER_VOLUME);
+
+            py += 4f;
+            ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
+            py += 7f;
+
+            float row1W = (innerW - 12f) / 3f;
+            drawPresetButton(ui, mouseX, mouseY, px, py, row1W, 21f, "[1] OBLIQUE", PRESET_BIN_OBLIQUE);
+            drawPresetButton(ui, mouseX, mouseY, px + (row1W + 6f), py, row1W, 21f, "[2] TOP-DN", PRESET_BIN_TOP);
+            drawPresetButton(ui, mouseX, mouseY, px + (row1W + 6f) * 2f, py, row1W, 21f, "[3] CLOSE", PRESET_BIN_CLOSE);
+            py += 25f;
+
+            float row2W = (innerW - 6f) * 0.5f;
+            drawPresetButton(ui, mouseX, mouseY, px, py, row2W, 21f, "[SHIFT+X] REPLAY", ACT_BINARY_REPLAY);
+            drawPresetButton(ui, mouseX, mouseY, px + row2W + 6f, py, row2W, 21f, "[R] RESET ALL", PRESET_RESET);
+        } else if (state.wormholeMode) {
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[W] WORMHOLE", true, ACT_WORMHOLE,
-                    px + colW + 6f, "[FLY THROUGH]", camera.isFlyingThrough(), ACT_FLY_THROUGH);
+                    px + colW + 6f, "[X] BINARY", false, ACT_BINARY);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[FLY THROUGH]", camera.isFlyingThrough(), ACT_FLY_THROUGH,
+                    px + colW + 6f, "[A] AUDIO", state.audioEnabled, ACT_AUDIO);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[M] TEMPORAL AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
                     px + colW + 6f, "[C] SKY GRID", state.showGrid, ACT_SKY_GRID);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[O] AUTO ORBIT", state.autoOrbit, ACT_AUTO_ORBIT,
-                    px + colW + 6f, "[A] AUDIO", state.audioEnabled, ACT_AUDIO);
+                    px + colW + 6f, "[V] V-SYNC", state.vsync, ACT_VSYNC);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
-                    "[V] V-SYNC", state.vsync, ACT_VSYNC,
-                    px + colW + 6f, "[SPC] PAUSE", state.paused, ACT_PAUSE);
+                    "[SPC] PAUSE", state.paused, ACT_PAUSE,
+                    px + colW + 6f, "ANAMORPHIC", state.anamorphicEnabled, ACT_ANAMORPHIC);
 
             py += 4f;
             ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
@@ -655,7 +823,7 @@ public final class HudOverlay {
             drawPresetButton(ui, mouseX, mouseY, px, py, row2W, 22f, "[4] FLY THRU", ACT_FLY_THROUGH);
             drawPresetButton(ui, mouseX, mouseY, px + row2W + 6f, py, row2W, 22f, "[R] RESET ALL", PRESET_RESET);
         } else {
-            // Featured Action Row: Plunge Dive Simulator + Star TDE + Wormhole
+            // Featured Action Row: Plunge Dive Simulator + Star TDE + Binary + Wormhole
             String diveLabel = state.plungeActive
                     ? (state.plungeEnded ? "[P] REPLAY" : "[P] ABORT")
                     : "[P] DIVE IN";
@@ -663,8 +831,8 @@ public final class HudOverlay {
                     diveLabel, state.plungeActive, ACT_PLUNGE,
                     px + colW + 6f, "[E] SHRED STAR", false, ACT_SHRED_STAR);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
-                    "[W] WORMHOLE", false, ACT_WORMHOLE,
-                    px + colW + 6f, "[A] AUDIO", state.audioEnabled, ACT_AUDIO);
+                    "[X] BINARY", false, ACT_BINARY,
+                    px + colW + 6f, "[W] WORMHOLE", false, ACT_WORMHOLE);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[L] LENSING", state.lensingEnabled, ACT_LENSING,
                     px + colW + 6f, "[D] DISK", state.showDisk, ACT_DISK);
@@ -682,7 +850,10 @@ public final class HudOverlay {
                     px + colW + 6f, "[O] AUTO ORBIT", state.autoOrbit, ACT_AUTO_ORBIT);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[T] TOUR", state.attractTourActive, ACT_ATTRACT_TOUR,
-                    px + colW + 6f, "ANAMORPHIC", state.anamorphicEnabled, ACT_ANAMORPHIC);
+                    px + colW + 6f, "[A] AUDIO", state.audioEnabled, ACT_AUDIO);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "ANAMORPHIC", state.anamorphicEnabled, ACT_ANAMORPHIC,
+                    px + colW + 6f, "[SPC] PAUSE", state.paused, ACT_PAUSE);
 
             py += 3f;
             ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
@@ -760,12 +931,14 @@ public final class HudOverlay {
 
     private void renderBottomHintStrip(UiRenderer ui, int windowW, int windowH, SimulationState state) {
         String hint;
-        if (state.wormholeMode) {
+        if (state.binaryMode) {
+            hint = "[X] SINGLE BH | [SHIFT+X] REPLAY MERGER | [G] GW RIPPLES | [C] SKY GRID | [A] AUDIO | [H] HIDE HUD";
+        } else if (state.wormholeMode) {
             hint = "[W] BLACK HOLE | UP/DN OR SCROLL: FLY THRU THROAT | DRAG: ORBIT | [A] AUDIO | [H] HUD";
         } else if (state.plungeActive) {
             hint = "[P] ABORT/REPLAY DIVE | DRAG: 360 FREE-LOOK | SCROLL: PLUNGE SPEED | [R] RESET | [H] HUD";
         } else {
-            hint = "[P] DIVE | [W] WORMHOLE | [E] SHRED | [T] TOUR | [F12] PNG | [A] AUDIO | [H] HIDE HUD";
+            hint = "[X] BINARY | [P] DIVE | [W] WORMHOLE | [E] SHRED | [T] TOUR | [F12] PNG | [H] HIDE HUD";
         }
         float scale = windowW < 920 ? 0.85f : 1.0f;
         float hintW = Math.min(windowW - 24f, hint.length() * 8f * scale + 20f);
@@ -789,7 +962,8 @@ public final class HudOverlay {
                                 String label, boolean active, int id) {
         boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
         boolean plungeAction = (id == ACT_PLUNGE);
-        boolean accentAction = (id == ACT_SHRED_STAR || id == ACT_FLY_THROUGH);
+        boolean accentAction = (id == ACT_SHRED_STAR || id == ACT_FLY_THROUGH || id == ACT_BINARY_REPLAY);
+        boolean binaryAction = (id == ACT_BINARY);
 
         float bgR, bgG, bgB, bdR, bdG, bdB;
         if (plungeAction) {
@@ -797,6 +971,11 @@ public final class HudOverlay {
             bgG = active ? 0.18f : (hovered ? 0.20f : 0.15f);
             bgB = active ? 0.56f : (hovered ? 0.48f : 0.36f);
             bdR = 0.96f; bdG = 0.52f; bdB = 1.00f;
+        } else if (binaryAction) {
+            bgR = active ? 0.14f : (hovered ? 0.16f : 0.12f);
+            bgG = active ? 0.40f : (hovered ? 0.28f : 0.20f);
+            bgB = active ? 0.58f : (hovered ? 0.42f : 0.32f);
+            bdR = 0.34f; bdG = 0.88f; bdB = 1.00f;
         } else if (accentAction) {
             bgR = hovered ? 0.44f : 0.30f;
             bgG = hovered ? 0.28f : 0.20f;
@@ -919,6 +1098,8 @@ public final class HudOverlay {
             case SLIDER_WH_RHO -> state.wormholeRho = v;
             case SLIDER_WH_A -> state.wormholeA = v;
             case SLIDER_WH_M -> state.wormholeM = v;
+            case SLIDER_BIN_MASS_RATIO -> state.binaryMassRatio = v;
+            case SLIDER_BIN_TIME_SCALE -> state.binaryTimeScale = v;
             default -> {
             }
         }

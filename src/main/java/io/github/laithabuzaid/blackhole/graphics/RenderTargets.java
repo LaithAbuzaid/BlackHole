@@ -1,5 +1,7 @@
 package io.github.laithabuzaid.blackhole.graphics;
 
+import java.nio.ByteBuffer;
+
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
 import static org.lwjgl.opengl.GL11.GL_LINEAR;
 import static org.lwjgl.opengl.GL11.GL_RGBA;
@@ -14,9 +16,13 @@ import static org.lwjgl.opengl.GL11.glGenTextures;
 import static org.lwjgl.opengl.GL11.glTexImage2D;
 import static org.lwjgl.opengl.GL11.glTexParameteri;
 import static org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE;
+import static org.lwjgl.opengl.GL20.glDrawBuffers;
 import static org.lwjgl.opengl.GL30.GL_COLOR_ATTACHMENT0;
+import static org.lwjgl.opengl.GL30.GL_COLOR_ATTACHMENT1;
 import static org.lwjgl.opengl.GL30.GL_FRAMEBUFFER;
 import static org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_COMPLETE;
+import static org.lwjgl.opengl.GL30.GL_RG;
+import static org.lwjgl.opengl.GL30.GL_RG16F;
 import static org.lwjgl.opengl.GL30.GL_RGBA16F;
 import static org.lwjgl.opengl.GL30.glBindFramebuffer;
 import static org.lwjgl.opengl.GL30.glCheckFramebufferStatus;
@@ -25,15 +31,17 @@ import static org.lwjgl.opengl.GL30.glFramebufferTexture2D;
 import static org.lwjgl.opengl.GL30.glGenFramebuffers;
 
 /**
- * Owns the resizable HDR scene target and bloom framebuffer pyramid.
- *
- * <p>The allocation and deletion order intentionally mirrors the original
- * application implementation.</p>
+ * Owns the resizable HDR scene target, Binary Merger MRT velocity target,
+ * TAA history ping-pong targets, anamorphic streak targets, and bloom pyramid.
  */
 public final class RenderTargets implements AutoCloseable {
+    private static final int[] MRT_COLOR_AND_VEL = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+
     private final int bloomLevels;
     private final int hdrFbo;
+    private final int binaryHdrFbo;
     private final int hdrColorTexture;
+    private final int velocityTexture;
     private final int[] taaFbo = new int[2];
     private final int[] taaTexture = new int[2];
     private final int[] bloomFbo;
@@ -59,6 +67,19 @@ public final class RenderTargets implements AutoCloseable {
                 hdrColorTexture, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             throw new RuntimeException("HDR Framebuffer incomplete");
+        }
+
+        // Dedicated MRT FBO for Binary Merger mode: shares hdrColorTexture (LOC 0) + RG16F velocity (LOC 1)
+        binaryHdrFbo = glGenFramebuffers();
+        glBindFramebuffer(GL_FRAMEBUFFER, binaryHdrFbo);
+        velocityTexture = createVelocityTexture(width, height);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                hdrColorTexture, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D,
+                velocityTexture, 0);
+        glDrawBuffers(MRT_COLOR_AND_VEL);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            throw new RuntimeException("Binary MRT Framebuffer incomplete");
         }
 
         for (int i = 0; i < 2; i++) {
@@ -110,8 +131,16 @@ public final class RenderTargets implements AutoCloseable {
         return hdrFbo;
     }
 
+    public int binaryHdrFbo() {
+        return binaryHdrFbo;
+    }
+
     public int hdrColorTexture() {
         return hdrColorTexture;
+    }
+
+    public int velocityTexture() {
+        return velocityTexture;
     }
 
     public int taaFbo(int idx) {
@@ -159,8 +188,14 @@ public final class RenderTargets implements AutoCloseable {
         if (hdrFbo != 0) {
             glDeleteFramebuffers(hdrFbo);
         }
+        if (binaryHdrFbo != 0) {
+            glDeleteFramebuffers(binaryHdrFbo);
+        }
         if (hdrColorTexture != 0) {
             glDeleteTextures(hdrColorTexture);
+        }
+        if (velocityTexture != 0) {
+            glDeleteTextures(velocityTexture);
         }
         for (int i = 0; i < 2; i++) {
             if (taaFbo[i] != 0) {
@@ -191,7 +226,18 @@ public final class RenderTargets implements AutoCloseable {
     private static int createHdrTexture(int width, int height) {
         int texture = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, (java.nio.ByteBuffer) null);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, (ByteBuffer) null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        return texture;
+    }
+
+    private static int createVelocityTexture(int width, int height) {
+        int texture = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, (ByteBuffer) null);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

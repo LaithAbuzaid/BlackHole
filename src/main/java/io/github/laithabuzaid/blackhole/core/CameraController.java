@@ -85,7 +85,7 @@ public final class CameraController {
 
     public void update(double dt, SimulationState state, boolean keyUpHeld, boolean keyDownHeld,
                        float tdeShearEnergy, boolean enableRumble) {
-        if (state.attractTourActive && !state.paused && !state.wormholeMode && !state.plungeActive) {
+        if (state.attractTourActive && !state.paused && !state.wormholeMode && !state.binaryMode && !state.plungeActive) {
             updateAttractTour(dt);
         } else if (!state.paused && state.autoOrbit && !state.plungeActive) {
             targetYaw += dt * 0.14;
@@ -107,9 +107,11 @@ public final class CameraController {
             freeLookYaw += (0.0 - freeLookYaw) * relax;
             freeLookPitch += (0.0 - freeLookPitch) * relax;
 
-            double minAllowed = state.freeFallMode
-                    ? MIN_FREEFALL_DIST
-                    : Math.max(MIN_STATIC_DIST, state.outerHorizonRadius() + 0.45);
+            double minAllowed = state.binaryMode
+                    ? 8.5
+                    : (state.freeFallMode
+                        ? MIN_FREEFALL_DIST
+                        : Math.max(MIN_STATIC_DIST, state.outerHorizonRadius() + 0.45));
             if (targetDist < minAllowed) {
                 targetDist = minAllowed;
             }
@@ -135,7 +137,7 @@ public final class CameraController {
         lookFlip += (targetLookFlip - lookFlip) * (1.0 - Math.exp(-dt * 6.0));
 
         updateTidalRumble(dt, state, tdeShearEnergy, enableRumble);
-        recomputeBasis(state.effectiveSpin(), state.wormholeMode, state.plungeActive);
+        recomputeBasis(state.binaryMode ? 0.0 : state.effectiveSpin(), state.wormholeMode, state.plungeActive);
     }
 
     /**
@@ -262,7 +264,7 @@ public final class CameraController {
         freeLookYaw = targetFreeLookYaw = lookYaw;
         freeLookPitch = targetFreeLookPitch = lookPitch;
         rumbleYawOffset = rumblePitchOffset = rumbleRollOffset = 0.0;
-        recomputeBasis(state.effectiveSpin(), false, state.plungeActive);
+        recomputeBasis(state.binaryMode ? 0.0 : state.effectiveSpin(), false, state.plungeActive);
     }
 
     /** Exact deterministic Wormhole pose + instant snap (used by --capture-showcase). */
@@ -499,9 +501,11 @@ public final class CameraController {
                     Math.min(MAX_WORMHOLE_L, targetWormholeL + dirSign * scrollY * step));
             return;
         }
-        double minAllowed = state.freeFallMode
-                ? MIN_FREEFALL_DIST
-                : Math.max(MIN_STATIC_DIST, state.outerHorizonRadius() + 0.45);
+        double minAllowed = state.binaryMode
+                ? 8.5
+                : (state.freeFallMode
+                    ? MIN_FREEFALL_DIST
+                    : Math.max(MIN_STATIC_DIST, state.outerHorizonRadius() + 0.45));
         double step = Math.max(0.08, targetDist * 0.085);
         targetDist = Math.max(minAllowed, Math.min(MAX_DIST, targetDist - scrollY * step));
     }
@@ -542,6 +546,30 @@ public final class CameraController {
         targetYaw = 0.35;
         targetPitch = 0.24;
         targetRoll = -0.08;
+    }
+
+    /** Binary Preset [1]: Elevated oblique view framing both shadows, eyebrow arcs & tidal bridge. */
+    public void applyPresetBinaryOblique() {
+        targetDist = 31.0;
+        targetYaw = 0.38;
+        targetPitch = 0.42;
+        targetRoll = -0.10;
+    }
+
+    /** Binary Preset [2]: Top-down orbital view showcasing circumbinary m=2 spirals & GW contours. */
+    public void applyPresetBinaryTopDown() {
+        targetDist = 36.0;
+        targetYaw = 0.0;
+        targetPitch = 1.24;
+        targetRoll = 0.0;
+    }
+
+    /** Binary Preset [3]: Close equatorial sweep emphasizing mutual secondary eyebrow shadow lensing. */
+    public void applyPresetBinaryClose() {
+        targetDist = 17.5;
+        targetYaw = 0.22;
+        targetPitch = 0.17;
+        targetRoll = -0.12;
     }
 
     /** Triggers smooth automated throat traversal between Universe A and Universe B. */

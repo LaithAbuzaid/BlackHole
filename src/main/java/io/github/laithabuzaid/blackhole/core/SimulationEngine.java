@@ -44,6 +44,7 @@ public final class SimulationEngine {
 
     private final SimulationState state = new SimulationState();
     private final CameraController camera = new CameraController();
+    private final BinaryMergerPhysics binaryPhysics = new BinaryMergerPhysics();
     private final HardwareTelemetry telemetry = new HardwareTelemetry();
     private final HudOverlay hud = new HudOverlay();
     private final RelativisticAudioEngine audio = new RelativisticAudioEngine();
@@ -192,19 +193,22 @@ public final class SimulationEngine {
 
             if (!state.paused) {
                 state.simTime += dt;
+                if (state.binaryMode) {
+                    binaryPhysics.step(dt, state.binaryMassRatio, state.binaryTimeScale, state.binaryAutoLoop);
+                }
             }
             state.tickUiTimers(dt);
             camera.update(dt, state, keyUpHeld, keyDownHeld, renderer.tdeShearEnergy(), true);
 
-            if (camera.consumeAttractSpawnTrigger() && !state.wormholeMode) {
+            if (camera.consumeAttractSpawnTrigger() && !state.wormholeMode && !state.binaryMode) {
                 renderer.spawnTdeStar(state);
                 state.showToast("STAR INJECTED: 65,536 PARTICLES");
             }
 
-            // Passes 1..3: Kerr-Schild / Wormhole Raytrace, Compute TDE + HDR Sprites, Bloom, Anamorphic ACES Composite
-            renderer.renderFrame(windowW, windowH, dt, telemetryTick, state, camera, gpuTimers, 0);
+            // Passes 1..3: Kerr-Schild / Binary Merger / Wormhole Raytrace, Compute TDE, TAA, Bloom, Anamorphic ACES
+            renderer.renderFrame(windowW, windowH, dt, telemetryTick, state, camera, binaryPhysics, gpuTimers, 0);
             telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
-            audio.updatePhysics(state, camera, renderer.tdeShearEnergy());
+            audio.updatePhysics(state, camera, renderer.tdeShearEnergy(), binaryPhysics);
 
             // [F12] Live HUD-free PNG capture read directly from clean post-composite backbuffer (zero flicker)
             if (pendingScreenshot) {
@@ -214,7 +218,7 @@ public final class SimulationEngine {
 
             // Pass 4: Cinema Bottom Pill, Toasts, or Full Glassmorphic Profiler & Controls HUD
             gpuTimers.beginUi();
-            hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, telemetryTick, false, state, camera, telemetry);
+            hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, telemetryTick, false, state, camera, binaryPhysics, telemetry);
             gpuTimers.endUi();
 
             float rawCpuSubmitMs = (System.nanoTime() - frameStartNano) * 1e-6f;
@@ -249,14 +253,14 @@ public final class SimulationEngine {
     }
 
     /**
-     * Automated {@code --capture-showcase} generator rendering 5 pixel-exact 1920x1080 PNGs
+     * Automated {@code --capture-showcase} generator rendering 6 pixel-exact 1920x1080 PNGs
      * into {@code docs/media/} via an offscreen RGBA8 capture FBO, then exiting cleanly.
      */
     private void runShowcaseCapture(String glRenderer, String glVersion) {
         int w = SHOWCASE_WIDTH;
         int h = SHOWCASE_HEIGHT;
         System.out.println("[Showcase] OpenGL " + glVersion + " | GPU: " + glRenderer
-                + " | Rendering 5 curated " + w + "x" + h + " showcase PNGs into docs/media/...");
+                + " | Rendering 6 curated " + w + "x" + h + " showcase PNGs into docs/media/...");
 
         telemetry.startBackgroundSampler();
         int captureFbo = glGenFramebuffers();
@@ -377,11 +381,11 @@ public final class SimulationEngine {
                 boolean readback = (f == 120);
                 long t0 = System.nanoTime();
                 state.simTime += 1.0 / 60.0;
-                renderer.renderFrame(w, h, 1.0 / 60.0, readback, state, camera, gpuTimers, captureFbo);
+                renderer.renderFrame(w, h, 1.0 / 60.0, readback, state, camera, binaryPhysics, gpuTimers, captureFbo);
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
                 glViewport(0, 0, w, h);
                 gpuTimers.beginUi();
-                hud.render(uiRenderer, w, h, -10.0, -10.0, false, false, state, camera, telemetry);
+                hud.render(uiRenderer, w, h, -10.0, -10.0, false, false, state, camera, binaryPhysics, telemetry);
                 gpuTimers.endUi();
                 float submitMs = (System.nanoTime() - t0) * 1e-6f;
                 if (f >= 12) {
@@ -399,18 +403,59 @@ public final class SimulationEngine {
                 gpuTimers.advanceFrame();
             }
             // Render final crisp HUD frame into captureFbo
-            renderer.renderFrame(w, h, 1.0 / 60.0, true, state, camera, gpuTimers, captureFbo);
+            renderer.renderFrame(w, h, 1.0 / 60.0, true, state, camera, binaryPhysics, gpuTimers, captureFbo);
             telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
             glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
             glViewport(0, 0, w, h);
             gpuTimers.beginUi();
-            hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, telemetry);
+            hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, binaryPhysics, telemetry);
             gpuTimers.endUi();
             gpuTimers.advanceFrame();
             saveCaptureFbo(captureFbo, w, h, Path.of("docs/media/hud_telemetry.png"));
 
+            // 6. binary_merger.png — Late inspiral / pre-coalescence binary black holes with mutual eyebrow lensing & shock bridge
+            state.resetDefaults();
+            state.showUi = false;
+            state.wormholeMode = false;
+            state.binaryMode = true;
+            state.binaryMassRatio = 0.65f;
+            state.binaryTimeScale = 1.00f;
+            state.binaryGwOverlay = true;
+            state.diskTempScale = 1.00f;
+            state.diskDensity = 1.08f;
+            state.bloomStrength = 0.25f;
+            state.anamorphicEnabled = true;
+            state.anamorphicStrength = 0.22f;
+            state.exposure = 1.12f;
+            state.fovDeg = 23.0f;
+            binaryPhysics.advanceToSeparation(state.binaryMassRatio, 5.25);
+            // Frame near-broadside (~82 deg) to the binary axis so both shadows (1.54:1),
+            // mutual secondary eyebrow lensing arcs, mini-disks, and the tidal shock bridge shine cleanly
+            double broadsideYaw = Math.atan2(binaryPhysics.pos1X - binaryPhysics.pos2X,
+                    binaryPhysics.pos1Z - binaryPhysics.pos2Z) + Math.PI * 0.5 - 0.14;
+            camera.setShowcasePose(28.5, broadsideYaw, 0.38, -0.07, 0.0, 0.0, state);
+            // Benchmark live 1080p Binary Merger GPU frame time with TAA active
+            renderer.resetTaaHistory();
+            float binRayMs = 0f, binBlmMs = 0f;
+            for (int f = 0; f < 28; f++) {
+                renderer.renderFrame(w, h, 1.0 / 120.0, false, state, camera, binaryPhysics, gpuTimers, captureFbo);
+                gpuTimers.beginUi();
+                gpuTimers.endUi();
+                glFinish();
+                if (gpuTimers.pollPreviousFrame() && f >= 8) {
+                    binRayMs = gpuTimers.rayMs();
+                    binBlmMs = gpuTimers.bloomMs();
+                }
+                gpuTimers.advanceFrame();
+            }
+            float binTotalMs = binRayMs + binBlmMs;
+            System.out.printf("[Showcase] Binary Merger 1080p TAA GPU timing: RAY=%.2f ms, TAA+BLM=%.2f ms, TOTAL=%.2f ms (%.1f FPS)%n",
+                    binRayMs, binBlmMs, binTotalMs, 1000.0f / Math.max(0.1f, binTotalMs));
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
+                    Path.of("docs/media/binary_merger.png"));
+
             ShaderProgram.checkGlError("Showcase.finish");
-            System.out.println("[Showcase] All 5 1920x1080 showcase PNGs saved successfully.");
+            System.out.println("[Showcase] All 6 1920x1080 showcase PNGs saved successfully.");
         } catch (IOException e) {
             throw new RuntimeException("Failed writing showcase PNGs", e);
         } finally {
@@ -426,12 +471,12 @@ public final class SimulationEngine {
         // Converge 16 Halton(2,3) TAA sub-pixel jitter samples on the frozen showcase frame
         renderer.resetTaaHistory();
         for (int s = 0; s < 16; s++) {
-            renderer.renderFrame(w, h, 0.0, false, state, camera, gpuTimers, captureFbo);
+            renderer.renderFrame(w, h, 0.0, false, state, camera, binaryPhysics, gpuTimers, captureFbo);
             gpuTimers.beginUi();
             if (withHud && s == 15) {
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
                 glViewport(0, 0, w, h);
-                hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, telemetry);
+                hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, binaryPhysics, telemetry);
             }
             gpuTimers.endUi();
             gpuTimers.advanceFrame();
@@ -469,6 +514,7 @@ public final class SimulationEngine {
     private void triggerAction(int actionId) {
         switch (actionId) {
             case HudOverlay.ACT_ATTRACT_TOUR -> {
+                state.binaryMode = false;
                 camera.toggleAttractTour(state);
                 state.showToast(state.attractTourActive
                         ? "DIRECTOR'S CUT TOUR: ENGAGED"
@@ -476,6 +522,7 @@ public final class SimulationEngine {
             }
             case HudOverlay.ACT_PLUNGE -> {
                 camera.disengageAttractTour(state);
+                state.binaryMode = false;
                 if (state.plungeActive && !state.plungeEnded) {
                     camera.abortPlunge(state);
                     state.showToast("PLUNGE DIVE: ABORTED");
@@ -484,9 +531,39 @@ public final class SimulationEngine {
                     state.showToast("PLUNGE DIVE: CROSSING EVENT HORIZON");
                 }
             }
+            case HudOverlay.ACT_BINARY -> {
+                camera.disengageAttractTour(state);
+                state.clearPlungeTelemetry();
+                state.wormholeMode = false;
+                state.binaryMode = !state.binaryMode;
+                if (state.binaryMode) {
+                    binaryPhysics.reset(state.binaryMassRatio);
+                    camera.applyPresetBinaryOblique();
+                    state.showToast("SPACETIME: BINARY BLACK HOLE MERGER");
+                } else {
+                    camera.applyPresetGargantuaEdge();
+                    state.showToast("SPACETIME: KERR-SCHILD BLACK HOLE");
+                }
+            }
+            case HudOverlay.ACT_BINARY_REPLAY -> {
+                if (state.binaryMode) {
+                    binaryPhysics.reset(state.binaryMassRatio);
+                    state.paused = false;
+                    state.showToast("BINARY MERGER: REPLAYING INSPIRAL");
+                }
+            }
+            case HudOverlay.ACT_BINARY_GW_OVERLAY -> {
+                state.binaryGwOverlay = !state.binaryGwOverlay;
+                state.showToast(state.binaryGwOverlay ? "GW STRAIN OVERLAY: ON" : "GW STRAIN OVERLAY: OFF");
+            }
+            case HudOverlay.ACT_BINARY_AUTOLOOP -> {
+                state.binaryAutoLoop = !state.binaryAutoLoop;
+                state.showToast(state.binaryAutoLoop ? "MERGER AUTO-LOOP: ON" : "MERGER AUTO-LOOP: OFF");
+            }
             case HudOverlay.ACT_WORMHOLE -> {
                 camera.disengageAttractTour(state);
                 state.clearPlungeTelemetry();
+                state.binaryMode = false;
                 state.wormholeMode = !state.wormholeMode;
                 if (state.wormholeMode) {
                     camera.applyWormholeUniverseA();
@@ -497,7 +574,7 @@ public final class SimulationEngine {
                 }
             }
             case HudOverlay.ACT_SHRED_STAR -> {
-                if (!state.wormholeMode) {
+                if (!state.wormholeMode && !state.binaryMode) {
                     pendingSpawnStar = true;
                     state.showToast("STAR INJECTED: 65,536 PARTICLES");
                 }
@@ -614,11 +691,32 @@ public final class SimulationEngine {
                 camera.applyWormholeUniverseB();
                 state.showToast("WORMHOLE: UNIVERSE B (NEBULA)");
             }
+            case HudOverlay.PRESET_BIN_OBLIQUE -> {
+                camera.disengageAttractTour(state);
+                state.autoOrbit = false;
+                camera.applyPresetBinaryOblique();
+                state.showToast("BINARY: OBLIQUE MERGER VIEW");
+            }
+            case HudOverlay.PRESET_BIN_TOP -> {
+                camera.disengageAttractTour(state);
+                state.autoOrbit = false;
+                camera.applyPresetBinaryTopDown();
+                state.showToast("BINARY: TOP-DOWN ORBITAL PLANE");
+            }
+            case HudOverlay.PRESET_BIN_CLOSE -> {
+                camera.disengageAttractTour(state);
+                state.autoOrbit = false;
+                camera.applyPresetBinaryClose();
+                state.showToast("BINARY: CLOSE EYEBROW LENSING");
+            }
             case HudOverlay.PRESET_RESET -> {
                 camera.disengageAttractTour(state);
                 state.resetDefaults();
                 pendingClearStars = true;
-                if (state.wormholeMode) {
+                if (state.binaryMode) {
+                    binaryPhysics.reset(state.binaryMassRatio);
+                    camera.applyPresetBinaryOblique();
+                } else if (state.wormholeMode) {
                     camera.resetWormholeDefaults();
                 } else {
                     camera.applyPresetGargantuaEdge();
@@ -718,12 +816,23 @@ public final class SimulationEngine {
                 case GLFW_KEY_F12, GLFW_KEY_S -> pendingScreenshot = true;
                 case GLFW_KEY_P -> triggerAction(HudOverlay.ACT_PLUNGE);
                 case GLFW_KEY_W -> triggerAction(HudOverlay.ACT_WORMHOLE);
+                case GLFW_KEY_X -> {
+                    if ((mods & GLFW_MOD_SHIFT) != 0 && state.binaryMode) {
+                        triggerAction(HudOverlay.ACT_BINARY_REPLAY);
+                    } else {
+                        triggerAction(HudOverlay.ACT_BINARY);
+                    }
+                }
                 case GLFW_KEY_E -> triggerAction(HudOverlay.ACT_SHRED_STAR);
                 case GLFW_KEY_A -> triggerAction(HudOverlay.ACT_AUDIO);
-                case GLFW_KEY_1 -> triggerAction(state.wormholeMode ? HudOverlay.PRESET_UNIV_A : HudOverlay.PRESET_EDGE);
-                case GLFW_KEY_2 -> triggerAction(state.wormholeMode ? HudOverlay.PRESET_THROAT : HudOverlay.PRESET_POLE);
-                case GLFW_KEY_3 -> triggerAction(state.wormholeMode ? HudOverlay.PRESET_UNIV_B : HudOverlay.PRESET_RING);
-                case GLFW_KEY_4 -> triggerAction(state.wormholeMode ? HudOverlay.ACT_FLY_THROUGH : HudOverlay.PRESET_DIVE);
+                case GLFW_KEY_1 -> triggerAction(state.binaryMode ? HudOverlay.PRESET_BIN_OBLIQUE
+                        : (state.wormholeMode ? HudOverlay.PRESET_UNIV_A : HudOverlay.PRESET_EDGE));
+                case GLFW_KEY_2 -> triggerAction(state.binaryMode ? HudOverlay.PRESET_BIN_TOP
+                        : (state.wormholeMode ? HudOverlay.PRESET_THROAT : HudOverlay.PRESET_POLE));
+                case GLFW_KEY_3 -> triggerAction(state.binaryMode ? HudOverlay.PRESET_BIN_CLOSE
+                        : (state.wormholeMode ? HudOverlay.PRESET_UNIV_B : HudOverlay.PRESET_RING));
+                case GLFW_KEY_4 -> triggerAction(state.binaryMode ? HudOverlay.ACT_BINARY_REPLAY
+                        : (state.wormholeMode ? HudOverlay.ACT_FLY_THROUGH : HudOverlay.PRESET_DIVE));
                 case GLFW_KEY_R -> triggerAction(HudOverlay.PRESET_RESET);
                 case GLFW_KEY_L -> triggerAction(HudOverlay.ACT_LENSING);
                 case GLFW_KEY_D -> triggerAction(HudOverlay.ACT_DISK);
@@ -743,10 +852,14 @@ public final class SimulationEngine {
                     state.showToast("CAMERA ROLL TOGGLED");
                 }
                 case GLFW_KEY_G -> {
-                    state.bloomStrength =
-                            (state.bloomStrength > 0.45f) ? 0.0f : (state.bloomStrength < 0.1f ? 0.30f : 0.62f);
-                    state.showToast(state.bloomStrength < 0.05f ? "BLOOM: OFF"
-                            : (state.bloomStrength > 0.45f ? "BLOOM: CINEMATIC" : "BLOOM: BALANCED"));
+                    if (state.binaryMode) {
+                        triggerAction(HudOverlay.ACT_BINARY_GW_OVERLAY);
+                    } else {
+                        state.bloomStrength =
+                                (state.bloomStrength > 0.45f) ? 0.0f : (state.bloomStrength < 0.1f ? 0.30f : 0.62f);
+                        state.showToast(state.bloomStrength < 0.05f ? "BLOOM: OFF"
+                                : (state.bloomStrength > 0.45f ? "BLOOM: CINEMATIC" : "BLOOM: BALANCED"));
+                    }
                 }
                 case GLFW_KEY_LEFT_BRACKET -> state.exposure =
                         Math.max(SimulationState.MIN_EXPOSURE, state.exposure - 0.15f);

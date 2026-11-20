@@ -1,5 +1,6 @@
 package io.github.laithabuzaid.blackhole.graphics;
 
+import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import org.lwjgl.system.MemoryUtil;
@@ -38,6 +39,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
     private final ShaderProgram rayProgram;
     private final ShaderProgram wormholeProgram;
+    private final ShaderProgram binaryProgram;
     private final ShaderProgram taaProgram;
     private final ShaderProgram downsampleProgram;
     private final ShaderProgram upsampleProgram;
@@ -63,6 +65,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private float prevCamUpX, prevCamUpY, prevCamUpZ;
     private float prevTanHalfFov = 0.4f;
     private boolean prevWormholeMode;
+    private boolean prevBinaryMode;
+    private boolean prevBinaryGwOverlay;
     private boolean prevOrderVis;
     private boolean prevShowGrid;
     private boolean prevLensing;
@@ -116,9 +120,54 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uWhShowGrid;
     private final int uWhJitter;
 
+    // Cached Binary Merger uniform locations
+    private final int uBinResolution;
+    private final int uBinTime;
+    private final int uBinDt;
+    private final int uBinCamPos;
+    private final int uBinCamForward;
+    private final int uBinCamRight;
+    private final int uBinCamUp;
+    private final int uBinTanHalfFov;
+    private final int uBinPrevCamPos;
+    private final int uBinPrevCamForward;
+    private final int uBinPrevCamRight;
+    private final int uBinPrevCamUp;
+    private final int uBinPrevTanHalfFov;
+    private final int uBinSkybox;
+    private final int uBinNoiseVol;
+    private final int uBinBlackbodyLut;
+    private final int uBinPos1;
+    private final int uBinPos2;
+    private final int uBinVel1;
+    private final int uBinVel2;
+    private final int uBinMass1;
+    private final int uBinMass2;
+    private final int uBinRemnantMass;
+    private final int uBinRemnantSpin;
+    private final int uBinMergeBlend;
+    private final int uBinSeparation;
+    private final int uBinOrbitalPhase;
+    private final int uBinGwPhase;
+    private final int uBinGwFreqHz;
+    private final int uBinStrainAmp;
+    private final int uBinRingdownEnv;
+    private final int uBinMergerPulse;
+    private final int uBinDiskTempScale;
+    private final int uBinDiskDensity;
+    private final int uBinDoppler;
+    private final int uBinLensing;
+    private final int uBinShowDisk;
+    private final int uBinShowGrid;
+    private final int uBinGwOverlay;
+    private final int uBinJitter;
+    private final int uBinFrameIndex;
+
     // Cached TAA Resolve uniform locations
     private final int uTaaCurrent;
     private final int uTaaHistory;
+    private final int uTaaVelocity;
+    private final int uTaaUseVelocity;
     private final int uTaaResolution;
     private final int uTaaCamPos;
     private final int uTaaCamForward;
@@ -153,6 +202,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
         this.rayProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/kerr_blackhole.frag");
         this.wormholeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/morris_thorne_wormhole.frag");
+        this.binaryProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/binary_merger.frag");
         this.taaProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/taa_resolve.frag");
         this.downsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_downsample.frag");
         this.upsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_upsample.frag");
@@ -227,9 +277,54 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uWhShowGrid = wormholeProgram.uniformLocation("uShowGrid");
         uWhJitter = wormholeProgram.uniformLocation("uJitter");
 
+        // Cache Binary Merger uniform locations
+        uBinResolution = binaryProgram.uniformLocation("uResolution");
+        uBinTime = binaryProgram.uniformLocation("uTime");
+        uBinDt = binaryProgram.uniformLocation("uDt");
+        uBinCamPos = binaryProgram.uniformLocation("uCamPos");
+        uBinCamForward = binaryProgram.uniformLocation("uCamForward");
+        uBinCamRight = binaryProgram.uniformLocation("uCamRight");
+        uBinCamUp = binaryProgram.uniformLocation("uCamUp");
+        uBinTanHalfFov = binaryProgram.uniformLocation("uTanHalfFov");
+        uBinPrevCamPos = binaryProgram.uniformLocation("uPrevCamPos");
+        uBinPrevCamForward = binaryProgram.uniformLocation("uPrevCamForward");
+        uBinPrevCamRight = binaryProgram.uniformLocation("uPrevCamRight");
+        uBinPrevCamUp = binaryProgram.uniformLocation("uPrevCamUp");
+        uBinPrevTanHalfFov = binaryProgram.uniformLocation("uPrevTanHalfFov");
+        uBinSkybox = binaryProgram.uniformLocation("uSkybox");
+        uBinNoiseVol = binaryProgram.uniformLocation("uNoiseVol");
+        uBinBlackbodyLut = binaryProgram.uniformLocation("uBlackbodyLut");
+        uBinPos1 = binaryProgram.uniformLocation("uPos1");
+        uBinPos2 = binaryProgram.uniformLocation("uPos2");
+        uBinVel1 = binaryProgram.uniformLocation("uVel1");
+        uBinVel2 = binaryProgram.uniformLocation("uVel2");
+        uBinMass1 = binaryProgram.uniformLocation("uMass1");
+        uBinMass2 = binaryProgram.uniformLocation("uMass2");
+        uBinRemnantMass = binaryProgram.uniformLocation("uRemnantMass");
+        uBinRemnantSpin = binaryProgram.uniformLocation("uRemnantSpin");
+        uBinMergeBlend = binaryProgram.uniformLocation("uMergeBlend");
+        uBinSeparation = binaryProgram.uniformLocation("uSeparation");
+        uBinOrbitalPhase = binaryProgram.uniformLocation("uOrbitalPhase");
+        uBinGwPhase = binaryProgram.uniformLocation("uGwPhase");
+        uBinGwFreqHz = binaryProgram.uniformLocation("uGwFreqHz");
+        uBinStrainAmp = binaryProgram.uniformLocation("uStrainAmp");
+        uBinRingdownEnv = binaryProgram.uniformLocation("uRingdownEnv");
+        uBinMergerPulse = binaryProgram.uniformLocation("uMergerPulse");
+        uBinDiskTempScale = binaryProgram.uniformLocation("uDiskTempScale");
+        uBinDiskDensity = binaryProgram.uniformLocation("uDiskDensity");
+        uBinDoppler = binaryProgram.uniformLocation("uDoppler");
+        uBinLensing = binaryProgram.uniformLocation("uLensing");
+        uBinShowDisk = binaryProgram.uniformLocation("uShowDisk");
+        uBinShowGrid = binaryProgram.uniformLocation("uShowGrid");
+        uBinGwOverlay = binaryProgram.uniformLocation("uGwOverlay");
+        uBinJitter = binaryProgram.uniformLocation("uJitter");
+        uBinFrameIndex = binaryProgram.uniformLocation("uFrameIndex");
+
         // Cache TAA Resolve uniform locations
         uTaaCurrent = taaProgram.uniformLocation("uCurrentTex");
         uTaaHistory = taaProgram.uniformLocation("uHistoryTex");
+        uTaaVelocity = taaProgram.uniformLocation("uVelocityTex");
+        uTaaUseVelocity = taaProgram.uniformLocation("uUseVelocityTex");
         uTaaResolution = taaProgram.uniformLocation("uResolution");
         uTaaCamPos = taaProgram.uniformLocation("uCamPos");
         uTaaCamForward = taaProgram.uniformLocation("uCamForward");
@@ -278,7 +373,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     }
 
     public void spawnTdeStar(SimulationState state) {
-        if (!state.wormholeMode) {
+        if (!state.wormholeMode && !state.binaryMode) {
             tdeSystem.spawnStar(state);
         }
     }
@@ -299,18 +394,20 @@ public final class BlackHoleRenderer implements AutoCloseable {
         return tdeSystem.shearEnergy();
     }
 
-    /** Executes Passes 1, 1B (TDE), 2 (Bloom), and 3 (Composite) to default framebuffer with zero heap allocations. */
+    /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to default framebuffer with zero heap allocations. */
     public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
                             SimulationState state, CameraController camera, GpuTimerQueries timers) {
-        renderFrame(width, height, dt, readbackTdeCounters, state, camera, timers, 0);
+        renderFrame(width, height, dt, readbackTdeCounters, state, camera, null, timers, 0);
     }
 
-    /** Executes Passes 1, 1B (TDE), 2 (Bloom), and 3 (Composite) to {@code outputFbo} with zero heap allocations. */
+    /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to {@code outputFbo} with zero heap allocations. */
     public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
-                            SimulationState state, CameraController camera, GpuTimerQueries timers, int outputFbo) {
+                            SimulationState state, CameraController camera, BinaryMergerPhysics binary,
+                            GpuTimerQueries timers, int outputFbo) {
         glBindVertexArray(quadVao);
 
         boolean useTaa = state.adaptiveAa4x;
+        boolean runBinary = state.binaryMode && binary != null;
         int phase = frameIndex & 15;
         float jitterX = useTaa ? HALTON_X[phase] : 0.0f;
         float jitterY = useTaa ? HALTON_Y[phase] : 0.0f;
@@ -329,12 +426,84 @@ public final class BlackHoleRenderer implements AutoCloseable {
             effCamZ = camera.posZ;
         }
 
-        // PASS 1: Exact Kerr-Schild Black Hole OR Morris-Thorne Wormhole Ray-Tracer (1 ray/px, Halton jitter)
+        // PASS 1: Exact Kerr-Schild Black Hole, Binary Merger (MRT + Velocity), OR Morris-Thorne Wormhole Ray-Tracer
         timers.beginRay();
-        glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.hdrFbo());
+        glBindFramebuffer(GL_FRAMEBUFFER, runBinary ? renderTargets.binaryHdrFbo() : renderTargets.hdrFbo());
         glViewport(0, 0, width, height);
 
-        if (state.wormholeMode) {
+        if (runBinary) {
+            binaryProgram.use();
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxUniverseA);
+            glUniform1i(uBinSkybox, 0);
+
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_3D, noise3dTex);
+            glUniform1i(uBinNoiseVol, 1);
+
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
+            glUniform1i(uBinBlackbodyLut, 2);
+
+            float binDt = (state.paused || dt <= 0.0) ? 0.0f : (float) (dt * state.binaryTimeScale);
+            float pCamX = taaHistoryValid ? prevCamPosX : effCamX;
+            float pCamY = taaHistoryValid ? prevCamPosY : effCamY;
+            float pCamZ = taaHistoryValid ? prevCamPosZ : effCamZ;
+            float pFwdX = taaHistoryValid ? prevCamFwdX : camera.forwardX;
+            float pFwdY = taaHistoryValid ? prevCamFwdY : camera.forwardY;
+            float pFwdZ = taaHistoryValid ? prevCamFwdZ : camera.forwardZ;
+            float pRightX = taaHistoryValid ? prevCamRightX : camera.rightX;
+            float pRightY = taaHistoryValid ? prevCamRightY : camera.rightY;
+            float pRightZ = taaHistoryValid ? prevCamRightZ : camera.rightZ;
+            float pUpX = taaHistoryValid ? prevCamUpX : camera.upX;
+            float pUpY = taaHistoryValid ? prevCamUpY : camera.upY;
+            float pUpZ = taaHistoryValid ? prevCamUpZ : camera.upZ;
+            float pFov = taaHistoryValid ? prevTanHalfFov : tanHalfFov;
+
+            glUniform2f(uBinResolution, width, height);
+            glUniform1f(uBinTime, binary.binaryTime);
+            glUniform1f(uBinDt, binDt);
+            glUniform3f(uBinCamPos, camera.posX, camera.posY, camera.posZ);
+            glUniform3f(uBinCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(uBinCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(uBinCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(uBinTanHalfFov, tanHalfFov);
+            glUniform3f(uBinPrevCamPos, pCamX, pCamY, pCamZ);
+            glUniform3f(uBinPrevCamForward, pFwdX, pFwdY, pFwdZ);
+            glUniform3f(uBinPrevCamRight, pRightX, pRightY, pRightZ);
+            glUniform3f(uBinPrevCamUp, pUpX, pUpY, pUpZ);
+            glUniform1f(uBinPrevTanHalfFov, pFov);
+
+            glUniform3f(uBinPos1, binary.pos1X, binary.pos1Y, binary.pos1Z);
+            glUniform3f(uBinPos2, binary.pos2X, binary.pos2Y, binary.pos2Z);
+            glUniform3f(uBinVel1, binary.vel1X, binary.vel1Y, binary.vel1Z);
+            glUniform3f(uBinVel2, binary.vel2X, binary.vel2Y, binary.vel2Z);
+            glUniform1f(uBinMass1, binary.mass1);
+            glUniform1f(uBinMass2, binary.mass2);
+            glUniform1f(uBinRemnantMass, binary.remnantMass);
+            glUniform1f(uBinRemnantSpin, binary.remnantSpin);
+            glUniform1f(uBinMergeBlend, binary.mergeBlend);
+            glUniform1f(uBinSeparation, binary.currentSeparation);
+            glUniform1f(uBinOrbitalPhase, binary.currentOrbitalPhase);
+            glUniform1f(uBinGwPhase, binary.gwPhaseOut);
+            glUniform1f(uBinGwFreqHz, binary.gwFreqHz);
+            glUniform1f(uBinStrainAmp, binary.strainAmplitude);
+            glUniform1f(uBinRingdownEnv, binary.ringdownEnv);
+            glUniform1f(uBinMergerPulse, binary.mergerPulse);
+
+            glUniform1f(uBinDiskTempScale, state.diskTempScale);
+            glUniform1f(uBinDiskDensity, state.diskDensity);
+            glUniform1i(uBinDoppler, state.dopplerEnabled ? 1 : 0);
+            glUniform1i(uBinLensing, state.lensingEnabled ? 1 : 0);
+            glUniform1i(uBinShowDisk, state.showDisk ? 1 : 0);
+            glUniform1i(uBinShowGrid, state.showGrid ? 1 : 0);
+            glUniform1i(uBinGwOverlay, state.binaryGwOverlay ? 1 : 0);
+            glUniform2f(uBinJitter, jitterX, jitterY);
+            glUniform1i(uBinFrameIndex, frameIndex);
+
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        } else if (state.wormholeMode) {
             wormholeProgram.use();
 
             glActiveTexture(GL_TEXTURE0);
@@ -405,9 +574,11 @@ public final class BlackHoleRenderer implements AutoCloseable {
         }
         timers.endRay();
 
-        // PASS 1B: OpenGL 4.3 Compute TDE + Volumetric Lensed Plasma Ribbons (matching Halton jitter, preserves .a hitDist)
+        // PASS 1B: OpenGL 4.3 Compute TDE + Volumetric Lensed Plasma Ribbons (Single Kerr mode only)
         timers.beginTde();
-        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
+        if (!runBinary) {
+            tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
+        }
         timers.endTde();
 
         // PASS 1C + 2 + 2B + 3: Relativistic TAA Resolve + Karis Bloom + Anamorphic Flare + ACES Composite
@@ -425,6 +596,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
             boolean resetHist = !taaHistoryValid
                     || (state.wormholeMode != prevWormholeMode)
+                    || (runBinary != prevBinaryMode)
+                    || (state.binaryGwOverlay != prevBinaryGwOverlay)
                     || (state.orderVisualizer != prevOrderVis)
                     || (state.showGrid != prevShowGrid)
                     || (state.lensingEnabled != prevLensing)
@@ -445,6 +618,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             taaProgram.use();
             glUniform1i(uTaaCurrent, 0);
             glUniform1i(uTaaHistory, 1);
+            glUniform1i(uTaaVelocity, 2);
+            glUniform1i(uTaaUseVelocity, runBinary ? 1 : 0);
             glUniform2f(uTaaResolution, width, height);
             glUniform3f(uTaaCamPos, effCamX, effCamY, effCamZ);
             glUniform3f(uTaaCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
@@ -463,6 +638,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glBindTexture(GL_TEXTURE_2D, renderTargets.hdrColorTexture());
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, renderTargets.taaTexture(readIdx));
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, renderTargets.velocityTexture());
             glDrawArrays(GL_TRIANGLES, 0, 3);
 
             resolvedHdrTex = renderTargets.taaTexture(taaWriteIdx);
@@ -470,6 +647,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             taaHistoryValid = true;
             taaAccumCount = Math.min(16, taaAccumCount + 1);
             prevWormholeMode = state.wormholeMode;
+            prevBinaryMode = runBinary;
+            prevBinaryGwOverlay = state.binaryGwOverlay;
             prevOrderVis = state.orderVisualizer;
             prevShowGrid = state.showGrid;
             prevLensing = state.lensingEnabled;
@@ -572,6 +751,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glDeleteVertexArrays(quadVao);
         rayProgram.close();
         wormholeProgram.close();
+        binaryProgram.close();
         taaProgram.close();
         downsampleProgram.close();
         upsampleProgram.close();

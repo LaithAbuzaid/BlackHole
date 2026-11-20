@@ -1,5 +1,6 @@
 package io.github.laithabuzaid.blackhole.audio;
 
+import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import org.lwjgl.openal.AL;
@@ -49,6 +50,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
     private volatile boolean enabled = true;
     private volatile float masterVolume = 0.60f;
     private volatile boolean wormholeMode = false;
+    private volatile boolean binaryMode = false;
     private volatile boolean paused = false;
     private volatile float gravRedshift = 0.95f;
     private volatile float diskEnergy = 1.0f;
@@ -57,6 +59,14 @@ public final class RelativisticAudioEngine implements AutoCloseable {
     private volatile float wormholeL = 13.5f;
     private volatile float interiorShimmer = 0.0f;
     private volatile float singularitySilence = 0.0f;
+
+    // Binary Black Hole LIGO chirp & tidal swirl lock-free snapshot
+    private volatile float binaryGwFreqHz = 45.0f;
+    private volatile float binaryStrainAmp = 0.25f;
+    private volatile float binaryOrbitalBeta = 0.25f;
+    private volatile float binaryOrbitalPhase = 0.0f;
+    private volatile float binaryMergerPulse = 0.0f;
+    private volatile float binaryRingdownEnv = 0.0f;
 
     public void start() {
         try {
@@ -92,15 +102,31 @@ public final class RelativisticAudioEngine implements AutoCloseable {
 
     /** Zero-allocation render-loop physics update. */
     public void updatePhysics(SimulationState state, CameraController camera, float tdeShear) {
+        updatePhysics(state, camera, tdeShear, null);
+    }
+
+    /** Zero-allocation render-loop physics update including optional Binary Merger LIGO telemetry. */
+    public void updatePhysics(SimulationState state, CameraController camera, float tdeShear,
+                              BinaryMergerPhysics binary) {
         if (!available) {
             return;
         }
         this.enabled = state.audioEnabled;
         this.masterVolume = state.audioVolume;
         this.wormholeMode = state.wormholeMode;
+        this.binaryMode = state.binaryMode && binary != null;
         this.paused = state.paused;
         this.tdeShearEnergy = tdeShear;
         this.wormholeL = (float) camera.currentWormholeL();
+
+        if (binary != null) {
+            this.binaryGwFreqHz = binary.gwFreqHz;
+            this.binaryStrainAmp = binary.strainAmplitude;
+            this.binaryOrbitalBeta = binary.orbitalBeta;
+            this.binaryOrbitalPhase = binary.currentOrbitalPhase;
+            this.binaryMergerPulse = binary.mergerPulse;
+            this.binaryRingdownEnv = binary.ringdownEnv;
+        }
 
         double rCam = Math.max(0.08, camera.currentKerrRadius());
         double rPlus = state.outerHorizonRadius();
@@ -141,6 +167,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         double lfoPhase = 0.0;
         double shimPhaseA = 0.0;
         double shimPhaseB = 0.0;
+        double chirpPhase = 0.0;
+        double thumpPhase = 0.0;
         double[] whPhases = new double[4];
 
         double lpL = 0.0, lpR = 0.0;
@@ -150,6 +178,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
 
         double smGain = 0.0;
         double smWhMix = 0.0;
+        double smBinMix = 0.0;
         double smRedshift = 0.95;
         double smDisk = 1.0;
         double smPan = -0.35;
@@ -157,6 +186,12 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         double smWhL = 13.5;
         double smShimmer = 0.0;
         double smSilence = 0.0;
+        double smBinFreq = 45.0;
+        double smBinStrain = 0.25;
+        double smBinBeta = 0.25;
+        double smBinPan = 0.0;
+        double smBinPulse = 0.0;
+        double smBinRing = 0.0;
 
         try {
             for (int i = 0; i < BUFFER_COUNT; i++) {
@@ -182,6 +217,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
 
                 double targetGain = (enabled && !paused) ? masterVolume : 0.0;
                 double targetWhMix = wormholeMode ? 1.0 : 0.0;
+                double targetBinMix = binaryMode ? 1.0 : 0.0;
                 double targetRedshift = gravRedshift;
                 double targetDisk = diskEnergy;
                 double targetPan = dopplerPan;
@@ -189,6 +225,12 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                 double targetWhL = wormholeL;
                 double targetShimmer = interiorShimmer;
                 double targetSilence = singularitySilence;
+                double targetBinFreq = binaryGwFreqHz;
+                double targetBinStrain = binaryStrainAmp;
+                double targetBinBeta = binaryOrbitalBeta;
+                double targetBinPan = Math.sin(binaryOrbitalPhase) * 0.65;
+                double targetBinPulse = binaryMergerPulse;
+                double targetBinRing = binaryRingdownEnv;
 
                 while (processed-- > 0 && running) {
                     alSourceUnqueueBuffers(source, unqueued);
@@ -198,6 +240,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                     for (int f = 0; f < FRAMES_PER_BUFFER; f++) {
                         smGain += (targetGain - smGain) * 0.0009;
                         smWhMix += (targetWhMix - smWhMix) * 0.0007;
+                        smBinMix += (targetBinMix - smBinMix) * 0.0007;
                         smRedshift += (targetRedshift - smRedshift) * 0.0006;
                         smDisk += (targetDisk - smDisk) * 0.0006;
                         smPan += (targetPan - smPan) * 0.0006;
@@ -205,6 +248,12 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         smWhL += (targetWhL - smWhL) * 0.0008;
                         smShimmer += (targetShimmer - smShimmer) * 0.0008;
                         smSilence += (targetSilence - smSilence) * 0.0010;
+                        smBinFreq += (targetBinFreq - smBinFreq) * 0.0018;
+                        smBinStrain += (targetBinStrain - smBinStrain) * 0.0015;
+                        smBinBeta += (targetBinBeta - smBinBeta) * 0.0010;
+                        smBinPan += (targetBinPan - smBinPan) * 0.0012;
+                        smBinPulse += (targetBinPulse - smBinPulse) * 0.0022;
+                        smBinRing += (targetBinRing - smBinRing) * 0.0012;
 
                         rng ^= (rng << 13);
                         rng ^= (rng >>> 7);
@@ -287,8 +336,34 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         whL += (lpL * 0.28) * (0.25 + 0.75 * throatProx);
                         whR += (lpR * 0.28) * (0.25 + 0.75 * throatProx);
 
-                        double outL = Math.tanh((bhL * (1.0 - smWhMix) + whL * smWhMix) * smGain);
-                        double outR = Math.tanh((bhR * (1.0 - smWhMix) + whR * smWhMix) * smGain);
+                        // LAYER 6: Binary Black Hole LIGO Gravitational-Wave Chirp + Coalescence Ringdown Thump
+                        double chirpHz = Math.max(38.0, Math.min(380.0, smBinFreq));
+                        chirpPhase += twoPi * chirpHz * invSr;
+                        if (chirpPhase > twoPi) chirpPhase -= twoPi;
+
+                        double thumpHz = 62.0 + 72.0 * smBinPulse;
+                        thumpPhase += twoPi * thumpHz * invSr;
+                        if (thumpPhase > twoPi) thumpPhase -= twoPi;
+
+                        // Pure LIGO-style fundamental chirp + gentle 2nd harmonic + sub-bass coalescence thump
+                        double chirpAmp = (0.12 + 0.56 * smBinStrain);
+                        double chirpSig = (Math.sin(chirpPhase) * 0.78
+                                + Math.sin(chirpPhase * 2.0) * 0.16
+                                + Math.sin(chirpPhase * 0.5) * 0.10) * chirpAmp;
+                        double thumpSig = (Math.sin(thumpPhase) * 0.65 + Math.sin(thumpPhase * 0.5) * 0.35)
+                                * (smBinPulse * 0.52 + smBinRing * 0.16);
+
+                        // Stereo-panned Doppler-modulated tidal plasma turbulence intensifying toward 0.5c
+                        double binPanL = Math.sqrt(Math.max(0.0, 0.5 * (1.0 - smBinPan)));
+                        double binPanR = Math.sqrt(Math.max(0.0, 0.5 * (1.0 + smBinPan)));
+                        double swirlGain = (0.12 + 0.42 * Math.min(1.0, smBinBeta * 2.0) + 0.24 * smBinPulse)
+                                * Math.min(1.2, smDisk * 0.65 + 0.35);
+                        double binL = chirpSig * (0.92 + 0.08 * binPanL) + thumpSig + roarRawL * swirlGain * binPanL;
+                        double binR = chirpSig * (0.92 + 0.08 * binPanR) + thumpSig + roarRawR * swirlGain * binPanR;
+
+                        double singleMix = Math.max(0.0, 1.0 - smWhMix - smBinMix);
+                        double outL = Math.tanh((bhL * singleMix + whL * smWhMix + binL * smBinMix) * smGain);
+                        double outR = Math.tanh((bhR * singleMix + whR * smWhMix + binR * smBinMix) * smGain);
 
                         pcmBuf.put((short) (outL * 32000.0));
                         pcmBuf.put((short) (outR * 32000.0));

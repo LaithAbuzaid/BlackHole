@@ -1,5 +1,6 @@
 package io.github.laithabuzaid.blackhole;
 
+import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,7 @@ final class RelativisticPhysicsTest {
         "/shaders/bake/skybox_milkyway.frag",
         "/shaders/bake/skybox_nebula.frag",
         "/shaders/simulation/kerr_blackhole.frag",
+        "/shaders/simulation/binary_merger.frag",
         "/shaders/simulation/morris_thorne_wormhole.frag",
         "/shaders/simulation/tidal_disruption.comp",
         "/shaders/simulation/tidal_disruption.vert",
@@ -136,5 +138,76 @@ final class RelativisticPhysicsTest {
                 }
             }
         }
+    }
+
+    @Test
+    void binaryMergerPetersMathewsInspiralDecaysMonotonicallyAndFormsPhysicalRemnant() {
+        BinaryMergerPhysics binary = new BinaryMergerPhysics();
+        binary.reset(1.0f); // Equal-mass binary (q = 1.0, eta = 0.25)
+
+        assertEquals(BinaryMergerPhysics.Phase.INSPIRAL, binary.phase());
+        assertEquals(0.5f, binary.mass1, 1e-5f);
+        assertEquals(0.5f, binary.mass2, 1e-5f);
+        // Radiated energy ~4.8% -> M_f = 0.952; NR remnant spin a_f = 3.464*0.25 - 2.9*0.0625 = 0.68475
+        assertTrue(binary.remnantMass < 1.0f && binary.remnantMass > 0.94f,
+                "Radiated gravitational wave energy must reduce final remnant mass");
+        assertEquals(0.952f, binary.remnantMass, 1e-3f);
+        assertTrue(binary.remnantSpin > 0.0f && binary.remnantSpin < 1.0f,
+                "Final Kerr remnant spin must satisfy 0 < a_f < 1");
+        assertEquals(0.68475f, binary.remnantSpin, 1e-3f);
+
+        float prevSep = binary.currentSeparation;
+        float prevFreq = binary.gwFreqHz;
+        boolean sawPlunge = false;
+        boolean sawMerger = false;
+        boolean sawRingdown = false;
+
+        for (int i = 0; i < 2000; i++) {
+            binary.step(1.0 / 60.0, 1.0f, 1.0f, false);
+            BinaryMergerPhysics.Phase ph = binary.phase();
+            if (ph == BinaryMergerPhysics.Phase.INSPIRAL || ph == BinaryMergerPhysics.Phase.PLUNGE) {
+                assertTrue(binary.currentSeparation <= prevSep + 1e-5f,
+                        "Peters-Mathews separation must decay monotonically during inspiral/plunge");
+                assertTrue(binary.gwFreqHz >= prevFreq - 1e-3f,
+                        "GW chirp frequency must rise monotonically during inspiral/plunge");
+                prevSep = binary.currentSeparation;
+                prevFreq = binary.gwFreqHz;
+                if (ph == BinaryMergerPhysics.Phase.PLUNGE) {
+                    sawPlunge = true;
+                }
+            } else if (ph == BinaryMergerPhysics.Phase.MERGER) {
+                sawMerger = true;
+            } else if (ph == BinaryMergerPhysics.Phase.RINGDOWN) {
+                sawRingdown = true;
+                break;
+            }
+        }
+
+        assertTrue(sawPlunge, "Binary must pass through PLUNGE phase");
+        assertTrue(sawMerger, "Binary must pass through MERGER phase");
+        assertTrue(sawRingdown, "Binary must transition cleanly into QNM RINGDOWN");
+
+        // Verify QNM ringdown envelope decays exponentially with finite waveform samples
+        float envStart = binary.ringdownEnv;
+        for (int i = 0; i < 60; i++) {
+            binary.step(1.0 / 60.0, 1.0f, 1.0f, false);
+        }
+        float envMid = binary.ringdownEnv;
+        for (int i = 0; i < 60; i++) {
+            binary.step(1.0 / 60.0, 1.0f, 1.0f, false);
+        }
+        float envLate = binary.ringdownEnv;
+        assertTrue(envStart > envMid && envMid > envLate && envLate > 0.0f,
+                "QNM ringdown envelope must decay monotonically");
+
+        // Verify rolling 160-sample LIGO strain buffer contains finite, non-zero waveform data
+        float[] hist = binary.strainHistory();
+        assertEquals(BinaryMergerPhysics.STRAIN_HISTORY_LEN, hist.length);
+        float maxAbs = 0.0f;
+        for (float h : hist) {
+            assertTrue(Float.isFinite(h), "Strain buffer sample must be finite");
+            maxAbs = Math.max(maxAbs, Math.abs(h));
+        }
+        assertTrue(maxAbs > 0.2f, "Rolling LIGO strain buffer should capture active inspiral/merger waveform");
     }
 }

@@ -4,6 +4,8 @@ out vec4 FragColor;
 
 uniform sampler2D uCurrentTex;   // .rgb = linear HDR (ray + TDE), .a = hitDist (world distance or 1e5 sky)
 uniform sampler2D uHistoryTex;   // previous resolved linear HDR
+uniform sampler2D uVelocityTex;  // .rg = screen-space UV motion (vUv - prevUv) when uUseVelocityTex == 1
+uniform int uUseVelocityTex;
 uniform vec2 uResolution;
 uniform vec3 uCamPos;
 uniform vec3 uCamForward;
@@ -105,28 +107,38 @@ void main() {
         return;
     }
 
-    // Exact analytic 3D world-space + infinity camera reprojection using hitDist in alpha channel
-    float hitDist = centerSample.a;
-    vec2 ndc = vUv * 2.0 - 1.0;
-    float aspect = uResolution.x / uResolution.y;
+    vec2 prevUv;
+    if (uUseVelocityTex == 1) {
+        // Explicit MRT object + camera motion vectors (eliminates ghosting on rapidly orbiting binary shadows)
+        vec2 velUv = texture(uVelocityTex, vUv).rg;
+        if (isnan(velUv.x) || isinf(velUv.x) || isnan(velUv.y) || isinf(velUv.y)) {
+            velUv = vec2(0.0);
+        }
+        prevUv = vUv - velUv;
+    } else {
+        // Exact analytic 3D world-space + infinity camera reprojection using hitDist in alpha channel
+        float hitDist = centerSample.a;
+        vec2 ndc = vUv * 2.0 - 1.0;
+        float aspect = uResolution.x / uResolution.y;
 
-    vec3 rayDir = normalize(uCamForward
-                          + ndc.x * aspect * uTanHalfFov * uCamRight
-                          + ndc.y * uTanHalfFov * uCamUp);
+        vec3 rayDir = normalize(uCamForward
+                              + ndc.x * aspect * uTanHalfFov * uCamRight
+                              + ndc.y * uTanHalfFov * uCamUp);
 
-    vec3 prevRel = (hitDist > 5000.0)
-            ? rayDir
-            : ((uCamPos + rayDir * max(0.25, hitDist)) - uPrevCamPos);
+        vec3 prevRel = (hitDist > 5000.0)
+                ? rayDir
+                : ((uCamPos + rayDir * max(0.25, hitDist)) - uPrevCamPos);
 
-    float prevZ = dot(prevRel, uPrevCamForward);
-    if (prevZ <= 1e-4) {
-        FragColor = vec4(currentHdr, 1.0);
-        return;
+        float prevZ = dot(prevRel, uPrevCamForward);
+        if (prevZ <= 1e-4) {
+            FragColor = vec4(currentHdr, 1.0);
+            return;
+        }
+
+        float prevNdcX = dot(prevRel, uPrevCamRight) / (prevZ * aspect * uPrevTanHalfFov);
+        float prevNdcY = dot(prevRel, uPrevCamUp)    / (prevZ * uPrevTanHalfFov);
+        prevUv = vec2(prevNdcX, prevNdcY) * 0.5 + 0.5;
     }
-
-    float prevNdcX = dot(prevRel, uPrevCamRight) / (prevZ * aspect * uPrevTanHalfFov);
-    float prevNdcY = dot(prevRel, uPrevCamUp)    / (prevZ * uPrevTanHalfFov);
-    vec2 prevUv = vec2(prevNdcX, prevNdcY) * 0.5 + 0.5;
 
     if (prevUv.x < 0.0 || prevUv.x > 1.0 || prevUv.y < 0.0 || prevUv.y > 1.0) {
         FragColor = vec4(currentHdr, 1.0);
