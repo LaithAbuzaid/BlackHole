@@ -1,6 +1,5 @@
 @SuppressWarnings("module")
-module com.mycompany.mavenproject1 {
-    requires javafx.controls;
+module io.github.laithabuzaid.blackhole {
     requires org.lwjgl;
     requires org.lwjgl.glfw;
     requires org.lwjgl.opengl;
@@ -8,10 +7,10 @@ module com.mycompany.mavenproject1 {
     requires java.management;
     requires jdk.management;
 
-    exports com.mycompany.mavenproject1;
-    exports com.mycompany.mavenproject1.audio;
-    exports com.mycompany.mavenproject1.core;
-    exports com.mycompany.mavenproject1.graphics;
-    exports com.mycompany.mavenproject1.telemetry;
-    exports com.mycompany.mavenproject1.ui;
+    exports io.github.laithabuzaid.blackhole;
+    exports io.github.laithabuzaid.blackhole.audio;
+    exports io.github.laithabuzaid.blackhole.core;
+    exports io.github.laithabuzaid.blackhole.graphics;
+    exports io.github.laithabuzaid.blackhole.telemetry;
+    exports io.github.laithabuzaid.blackhole.ui;
 }

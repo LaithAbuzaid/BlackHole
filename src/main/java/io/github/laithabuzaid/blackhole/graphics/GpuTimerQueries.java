@@ -1,4 +1,4 @@
-package com.mycompany.mavenproject1.graphics;
+package io.github.laithabuzaid.blackhole.graphics;
 
 import static org.lwjgl.opengl.GL15.GL_QUERY_RESULT;
 import static org.lwjgl.opengl.GL15.GL_QUERY_RESULT_AVAILABLE;

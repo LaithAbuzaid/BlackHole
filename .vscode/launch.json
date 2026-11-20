@@ -3,11 +3,11 @@
     "configurations": [
         {
             "type": "java",
-            "name": "Launch BlackHole App",
+            "name": "Launch BlackHole Simulator",
             "request": "launch",
-            "mainClass": "com.mycompany.mavenproject1.App",
-            "projectName": "mavenproject1",
-            "vmArgs": "--enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=warn"
+            "mainClass": "io.github.laithabuzaid.blackhole.Main",
+            "projectName": "blackhole",
+            "vmArgs": "--enable-native-access=ALL-UNNAMED"
         }
     ]
 }

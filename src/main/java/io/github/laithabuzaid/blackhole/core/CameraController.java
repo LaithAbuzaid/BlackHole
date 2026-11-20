@@ -1,4 +1,4 @@
-package com.mycompany.mavenproject1.core;
+package io.github.laithabuzaid.blackhole.core;
 
 /**
  * Smooth inertial camera supporting:

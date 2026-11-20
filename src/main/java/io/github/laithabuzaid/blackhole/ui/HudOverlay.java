@@ -1,8 +1,8 @@
-package com.mycompany.mavenproject1.ui;
+package io.github.laithabuzaid.blackhole.ui;
 
-import com.mycompany.mavenproject1.core.CameraController;
-import com.mycompany.mavenproject1.core.SimulationState;
-import com.mycompany.mavenproject1.telemetry.HardwareTelemetry;
+import io.github.laithabuzaid.blackhole.core.CameraController;
+import io.github.laithabuzaid.blackhole.core.SimulationState;
+import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 
 /**
  * Interactive glassmorphic Hardware Profiler (Left Panel), live Doran Plunge

@@ -1,4 +1,4 @@
-package com.mycompany.mavenproject1.graphics;
+package io.github.laithabuzaid.blackhole.graphics;
 
 import static org.lwjgl.opengl.GL11.GL_FLOAT;
 import static org.lwjgl.opengl.GL11.GL_LINEAR;
@@ -30,7 +30,7 @@ import static org.lwjgl.opengl.GL30.glGenFramebuffers;
  * <p>The allocation and deletion order intentionally mirrors the original
  * application implementation.</p>
  */
-public final class FramebufferSet implements AutoCloseable {
+public final class RenderTargets implements AutoCloseable {
     private final int bloomLevels;
     private final int hdrFbo;
     private final int hdrColorTexture;
@@ -39,7 +39,7 @@ public final class FramebufferSet implements AutoCloseable {
     private final int[] bloomWidth;
     private final int[] bloomHeight;
 
-    public FramebufferSet(int width, int height, int bloomLevels) {
+    public RenderTargets(int width, int height, int bloomLevels) {
         this.bloomLevels = bloomLevels;
         this.bloomFbo = new int[bloomLevels];
         this.bloomTexture = new int[bloomLevels];

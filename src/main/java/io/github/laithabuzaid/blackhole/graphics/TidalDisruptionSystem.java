@@ -1,7 +1,7 @@
-package com.mycompany.mavenproject1.graphics;
+package io.github.laithabuzaid.blackhole.graphics;
 
-import com.mycompany.mavenproject1.core.CameraController;
-import com.mycompany.mavenproject1.core.SimulationState;
+import io.github.laithabuzaid.blackhole.core.CameraController;
+import io.github.laithabuzaid.blackhole.core.SimulationState;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
@@ -19,7 +19,7 @@ import static org.lwjgl.opengl.GL43.*;
  * pre-allocated direct memory so both spawning and per-frame updates incur zero Java
  * heap allocations.</p>
  */
-public final class TdeParticleSystem implements AutoCloseable {
+public final class TidalDisruptionSystem implements AutoCloseable {
 
     public static final int PARTICLES_PER_STAR = 65536;
     public static final int MAX_STAR_SLOTS = 2;
@@ -66,9 +66,9 @@ public final class TdeParticleSystem implements AutoCloseable {
     // Deterministic fast PRNG state (zero heap allocation)
     private long rngState = 0x5DEECE66DL;
 
-    public TdeParticleSystem() {
-        this.computeProgram = ShaderProgram.fromComputeResource("/shaders/tde_update.comp");
-        this.renderProgram = ShaderProgram.fromResources("/shaders/tde_render.vert", "/shaders/tde_render.frag");
+    public TidalDisruptionSystem() {
+        this.computeProgram = ShaderProgram.fromComputeResource("/shaders/simulation/tidal_disruption.comp");
+        this.renderProgram = ShaderProgram.fromResources("/shaders/simulation/tidal_disruption.vert", "/shaders/simulation/tidal_disruption.frag");
 
         this.emptyVao = glGenVertexArrays();
 
@@ -107,7 +107,7 @@ public final class TdeParticleSystem implements AutoCloseable {
         this.uRendHorizonR = renderProgram.uniformLocation("uHorizonR");
         this.uRendDoppler = renderProgram.uniformLocation("uDoppler");
 
-        ShaderProgram.checkGlError("TdeParticleSystem.init");
+        ShaderProgram.checkGlError("TidalDisruptionSystem.init");
     }
 
     /**

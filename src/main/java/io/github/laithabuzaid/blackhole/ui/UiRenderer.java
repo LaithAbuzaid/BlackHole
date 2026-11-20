@@ -1,6 +1,6 @@
-package com.mycompany.mavenproject1.ui;
+package io.github.laithabuzaid.blackhole.ui;
 
-import com.mycompany.mavenproject1.graphics.ShaderProgram;
+import io.github.laithabuzaid.blackhole.graphics.ShaderProgram;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
@@ -30,7 +30,7 @@ public final class UiRenderer implements AutoCloseable {
     private int quadCount = 0;
 
     public UiRenderer() {
-        this.shader = ShaderProgram.fromResources("/shaders/ui.vert", "/shaders/ui.frag");
+        this.shader = ShaderProgram.fromResources("/shaders/ui/hud.vert", "/shaders/ui/hud.frag");
         this.uResolutionLoc = shader.uniformLocation("uResolution");
         this.uFontTexLoc = shader.uniformLocation("uFontTex");
 

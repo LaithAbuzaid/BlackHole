@@ -1,4 +1,4 @@
-package com.mycompany.mavenproject1.telemetry;
+package io.github.laithabuzaid.blackhole.telemetry;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;

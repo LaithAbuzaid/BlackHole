@@ -1,12 +1,12 @@
-package com.mycompany.mavenproject1.core;
+package io.github.laithabuzaid.blackhole.core;
 
-import com.mycompany.mavenproject1.audio.RelativisticAudioEngine;
-import com.mycompany.mavenproject1.graphics.BlackHoleRenderer;
-import com.mycompany.mavenproject1.graphics.GpuTimerQueries;
-import com.mycompany.mavenproject1.graphics.ShaderProgram;
-import com.mycompany.mavenproject1.telemetry.HardwareTelemetry;
-import com.mycompany.mavenproject1.ui.HudOverlay;
-import com.mycompany.mavenproject1.ui.UiRenderer;
+import io.github.laithabuzaid.blackhole.audio.RelativisticAudioEngine;
+import io.github.laithabuzaid.blackhole.graphics.BlackHoleRenderer;
+import io.github.laithabuzaid.blackhole.graphics.GpuTimerQueries;
+import io.github.laithabuzaid.blackhole.graphics.ShaderProgram;
+import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
+import io.github.laithabuzaid.blackhole.ui.HudOverlay;
+import io.github.laithabuzaid.blackhole.ui.UiRenderer;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.opengl.GL;
 
@@ -18,11 +18,11 @@ import static org.lwjgl.opengl.GL11.glGetString;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * Main GLFW / OpenGL 4.3 Core application lifecycle, input routing, Doran plunge
+ * Main GLFW / OpenGL 4.3 Core simulation lifecycle, input routing, Doran plunge
  * simulator controls, procedural OpenAL audio synchronization, and zero-allocation
  * real-time render loop.
  */
-public final class Application {
+public final class SimulationEngine {
 
     private int windowW = 1440;
     private int windowH = 860;
@@ -90,7 +90,7 @@ public final class Application {
                  UiRenderer uiRenderer = new UiRenderer();
                  GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
 
-                ShaderProgram.checkGlError("Application.startup");
+                ShaderProgram.checkGlError("SimulationEngine.startup");
                 System.out.println("[BlackHole] OpenGL " + glVersion + " | GPU: " + glRenderer
                         + " | Plunge Simulator, Compute TDE, Blackbody LUT & Dual Cubemaps validated.");
 

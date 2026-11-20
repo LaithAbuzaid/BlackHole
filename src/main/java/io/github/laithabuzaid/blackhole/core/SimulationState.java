@@ -1,4 +1,4 @@
-package com.mycompany.mavenproject1.core;
+package io.github.laithabuzaid.blackhole.core;
 
 /**
  * Mutable simulation parameters, spacetime mode flags, Doran free-fall plunge

@@ -72,7 +72,7 @@ void main() {
         }
     }
 
-    // Exact perspective projection matching blackhole.frag camera basis
+    // Exact perspective projection matching kerr_blackhole.frag camera basis
     float xCam = dot(rel, uCamRight);
     float yCam = dot(rel, uCamUp);
     float aspect = uResolution.x / uResolution.y;

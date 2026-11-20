@@ -1,4 +1,4 @@
-package com.mycompany.mavenproject1.graphics;
+package io.github.laithabuzaid.blackhole.graphics;
 
 import java.io.IOException;
 import java.io.InputStream;

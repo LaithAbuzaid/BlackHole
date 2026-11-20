@@ -1,7 +1,7 @@
-package com.mycompany.mavenproject1.audio;
+package io.github.laithabuzaid.blackhole.audio;
 
-import com.mycompany.mavenproject1.core.CameraController;
-import com.mycompany.mavenproject1.core.SimulationState;
+import io.github.laithabuzaid.blackhole.core.CameraController;
+import io.github.laithabuzaid.blackhole.core.SimulationState;
 import org.lwjgl.openal.AL;
 import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALCCapabilities;

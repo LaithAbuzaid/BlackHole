@@ -6,7 +6,7 @@ The engine combines an exact Cartesian Kerr-Schild null geodesic black hole ray-
 
 ## Key Features
 
-- **Exact Cartesian Kerr-Schild Black Hole (`blackhole.frag`)**:
+- **Exact Cartesian Kerr-Schild Black Hole (`shaders/simulation/kerr_blackhole.frag`)**:
   - Exact spheroidal Kerr radius, exact analytic metric gradients ($\nabla r, \nabla H, \nabla(\mathbf{l}\cdot\mathbf{p})$), and Hamiltonian RK4 geodesic evolution conserving $\mathcal{H} = \frac{1}{2} g^{\mu\nu} p_\mu p_\nu = 0$.
   - Exact outer horizon $r_+ = M + \sqrt{M^2 - a^2}$ and Bardeen-Press-Teukolsky prograde ISCO $r_{\text{ISCO}}(a)$.
   - Dual observer frames (`[F]`): **Static Shell Observer** and horizon-penetrating **Free-Fall Observer** (Doran / Kerr-Schild frame supporting travel inside $r_+$ down to $r \approx 0.25\,M$).
@@ -17,7 +17,7 @@ The engine combines an exact Cartesian Kerr-Schild null geodesic black hole ray-
   - Dual GPU-baked `1024×1024×6` mipmapped HDR cubemaps: **Universe A** (Milky Way & spiral galaxies) and **Universe B** (golden-amber & teal emission nebula, dense star clusters, and a banded ringed gas giant near the throat axis).
   - Exact Dneg / Morris-Thorne RK4 geodesic integrator with live sliders for throat radius $\rho$, throat half-length $a$, and lensing width $M_w$, `textureGrad` ray differentials, and smooth throat flight (`Scroll`, `Up`/`Down`, or `[FLY THROUGH]`) across $l = 0$.
 - **Real-Time Tidal Disruption Events (`[E]` — OpenGL 4.3 Compute Shaders)**:
-  - `65,536` particles per spawned star (2-slot `131,072` ring-buffered SSBO capacity for simultaneous multi-star shredding) evolved via `tde_update.comp` under relativistic Paczyński-Wiita gravity, Kerr frame-dragging torque, tidal shear heating, and horizon capture.
+  - `65,536` particles per spawned star (2-slot `131,072` ring-buffered SSBO capacity for simultaneous multi-star shredding) evolved via `shaders/simulation/tidal_disruption.comp` under relativistic Paczyński-Wiita gravity, Kerr frame-dragging torque, tidal shear heating, and horizon capture.
   - Volumetric additive HDR blackbody + Doppler sprites rendered directly into `hdrFbo` with analytical shadow-cone occlusion feeding into the 5-stage Karis bloom pyramid.
 - **Procedural Relativistic Soundscape (`[A]` — `lwjgl-openal`)**:
   - Zero-asset 44.1 kHz stereo PCM daemon synth with gravitational-redshift sub-bass drone, Doppler-panned accretion disk roar, crackling TDE periapsis plasma swell, and sweeping harmonic wormhole throat chords (with graceful silent fallback if no audio device is present).
@@ -36,13 +36,13 @@ Build the standalone shaded JAR (bundling all GLSL/compute shaders and Linux LWJ
 
 ```bash
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target/mavenproject1-1.0-SNAPSHOT.jar
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar
 ```
 
-Or run via the JavaFX Maven plugin:
+Or compile and run directly via Maven (`exec-maven-plugin`):
 
 ```bash
-mvn clean javafx:run
+mvn compile exec:exec
 ```
 
 ## Controls & Diagnostics
@@ -86,21 +86,20 @@ mvn clean javafx:run
 src/main/
 ├── java/
 │   ├── module-info.java
-│   └── com/mycompany/mavenproject1/
-│       ├── App.java
-│       ├── SystemInfo.java
+│   └── io/github/laithabuzaid/blackhole/
+│       ├── Main.java
 │       ├── audio/
 │       │   └── RelativisticAudioEngine.java
 │       ├── core/
-│       │   ├── Application.java
 │       │   ├── CameraController.java
+│       │   ├── SimulationEngine.java
 │       │   └── SimulationState.java
 │       ├── graphics/
 │       │   ├── BlackHoleRenderer.java
-│       │   ├── FramebufferSet.java
 │       │   ├── GpuTimerQueries.java
+│       │   ├── RenderTargets.java
 │       │   ├── ShaderProgram.java
-│       │   └── TdeParticleSystem.java
+│       │   └── TidalDisruptionSystem.java
 │       ├── telemetry/
 │       │   └── HardwareTelemetry.java
 │       └── ui/
@@ -108,18 +107,23 @@ src/main/
 │           └── UiRenderer.java
 └── resources/
     └── shaders/
-        ├── fullscreen.vert
-        ├── noise3d_bake.frag
-        ├── skybox_bake.frag
-        ├── skybox_b_bake.frag
-        ├── blackhole.frag
-        ├── wormhole.frag
-        ├── tde_update.comp
-        ├── tde_render.vert
-        ├── tde_render.frag
-        ├── bloom_downsample.frag
-        ├── bloom_upsample.frag
-        ├── composite.frag
-        ├── ui.vert
-        └── ui.frag
+        ├── common/
+        │   └── fullscreen.vert
+        ├── bake/
+        │   ├── noise_volume.frag
+        │   ├── skybox_milkyway.frag
+        │   └── skybox_nebula.frag
+        ├── simulation/
+        │   ├── kerr_blackhole.frag
+        │   ├── morris_thorne_wormhole.frag
+        │   ├── tidal_disruption.comp
+        │   ├── tidal_disruption.vert
+        │   └── tidal_disruption.frag
+        ├── post/
+        │   ├── bloom_downsample.frag
+        │   ├── bloom_upsample.frag
+        │   └── tonemap_composite.frag
+        └── ui/
+            ├── hud.vert
+            └── hud.frag
 ```

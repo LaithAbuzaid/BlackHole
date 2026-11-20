@@ -2,10 +2,10 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Run (mvn javafx:run)",
+            "label": "Run (mvn compile exec:exec)",
             "type": "shell",
             "command": "mvn",
-            "args": ["javafx:run"],
+            "args": ["compile", "exec:exec"],
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -17,11 +17,15 @@
             "problemMatcher": []
         },
         {
-            "label": "Build (mvn clean compile)",
+            "label": "Package Shaded JAR (mvn clean package)",
             "type": "shell",
             "command": "mvn",
-            "args": ["clean", "compile"],
+            "args": ["clean", "package"],
             "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": []
         }
     ]

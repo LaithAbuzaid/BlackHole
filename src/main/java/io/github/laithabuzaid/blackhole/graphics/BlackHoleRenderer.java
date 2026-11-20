@@ -1,7 +1,7 @@
-package com.mycompany.mavenproject1.graphics;
+package io.github.laithabuzaid.blackhole.graphics;
 
-import com.mycompany.mavenproject1.core.CameraController;
-import com.mycompany.mavenproject1.core.SimulationState;
+import io.github.laithabuzaid.blackhole.core.CameraController;
+import io.github.laithabuzaid.blackhole.core.SimulationState;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
@@ -27,14 +27,14 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final ShaderProgram downsampleProgram;
     private final ShaderProgram upsampleProgram;
     private final ShaderProgram compositeProgram;
-    private final TdeParticleSystem tdeSystem;
+    private final TidalDisruptionSystem tdeSystem;
 
     private final int quadVao;
     private final int noise3dTex;
     private final int blackbodyLutTex;
     private final int skyboxUniverseA;
     private final int skyboxUniverseB;
-    private FramebufferSet framebuffers;
+    private RenderTargets renderTargets;
 
     // Cached Black Hole uniform locations
     private final int uResolution;
@@ -95,31 +95,31 @@ public final class BlackHoleRenderer implements AutoCloseable {
     public BlackHoleRenderer(int initialWidth, int initialHeight) {
         glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
-        this.rayProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/blackhole.frag");
-        this.wormholeProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/wormhole.frag");
-        this.downsampleProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/bloom_downsample.frag");
-        this.upsampleProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/bloom_upsample.frag");
-        this.compositeProgram = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/composite.frag");
-        this.tdeSystem = new TdeParticleSystem();
+        this.rayProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/kerr_blackhole.frag");
+        this.wormholeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/morris_thorne_wormhole.frag");
+        this.downsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_downsample.frag");
+        this.upsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_upsample.frag");
+        this.compositeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/tonemap_composite.frag");
+        this.tdeSystem = new TidalDisruptionSystem();
 
         this.quadVao = glGenVertexArrays();
         glBindVertexArray(quadVao);
 
         this.blackbodyLutTex = createBlackbodyLutTexture(BLACKBODY_LUT_WIDTH);
 
-        try (ShaderProgram noiseProg = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/noise3d_bake.frag")) {
+        try (ShaderProgram noiseProg = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/bake/noise_volume.frag")) {
             this.noise3dTex = bake3dNoiseVolume(noiseProg, NOISE_VOL_SIZE);
         }
 
-        try (ShaderProgram skyProgA = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/skybox_bake.frag")) {
+        try (ShaderProgram skyProgA = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/bake/skybox_milkyway.frag")) {
             this.skyboxUniverseA = bakeHdrSkyboxCubemap(skyProgA, noise3dTex, SKYBOX_FACE_SIZE, "UniverseA");
         }
 
-        try (ShaderProgram skyProgB = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/skybox_b_bake.frag")) {
+        try (ShaderProgram skyProgB = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/bake/skybox_nebula.frag")) {
             this.skyboxUniverseB = bakeHdrSkyboxCubemap(skyProgB, noise3dTex, SKYBOX_FACE_SIZE, "UniverseB");
         }
 
-        this.framebuffers = new FramebufferSet(initialWidth, initialHeight, BLOOM_LEVELS);
+        this.renderTargets = new RenderTargets(initialWidth, initialHeight, BLOOM_LEVELS);
         ShaderProgram.checkGlError("BlackHoleRenderer.init");
 
         // Cache Black Hole uniform locations
@@ -181,10 +181,10 @@ public final class BlackHoleRenderer implements AutoCloseable {
     }
 
     public void resize(int width, int height) {
-        if (framebuffers != null) {
-            framebuffers.close();
+        if (renderTargets != null) {
+            renderTargets.close();
         }
-        framebuffers = new FramebufferSet(width, height, BLOOM_LEVELS);
+        renderTargets = new RenderTargets(width, height, BLOOM_LEVELS);
     }
 
     public void spawnTdeStar(SimulationState state) {
@@ -212,7 +212,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
         // PASS 1: Exact Kerr-Schild Black Hole OR Morris-Thorne Wormhole Ray-Tracer (GPU Timed)
         timers.beginRay();
-        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers.hdrFbo());
+        glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.hdrFbo());
         glViewport(0, 0, width, height);
 
         float tanHalfFov = (float) Math.tan(Math.toRadians(state.fovDeg));
@@ -300,9 +300,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glActiveTexture(GL_TEXTURE0);
 
         for (int i = 0; i < BLOOM_LEVELS; i++) {
-            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers.bloomFbo(i));
-            glViewport(0, 0, framebuffers.bloomWidth(i), framebuffers.bloomHeight(i));
-            glBindTexture(GL_TEXTURE_2D, (i == 0) ? framebuffers.hdrColorTexture() : framebuffers.bloomTexture(i - 1));
+            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
+            glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
+            glBindTexture(GL_TEXTURE_2D, (i == 0) ? renderTargets.hdrColorTexture() : renderTargets.bloomTexture(i - 1));
             glUniform1i(uIsFirstPass, (i == 0) ? 1 : 0);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
@@ -314,9 +314,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glUniform1f(uFilterRadius, 1.15f);
 
         for (int i = BLOOM_LEVELS - 2; i >= 0; i--) {
-            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers.bloomFbo(i));
-            glViewport(0, 0, framebuffers.bloomWidth(i), framebuffers.bloomHeight(i));
-            glBindTexture(GL_TEXTURE_2D, framebuffers.bloomTexture(i + 1));
+            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
+            glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
+            glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(i + 1));
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         glDisable(GL_BLEND);
@@ -332,16 +332,16 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glUniform1f(uCompExposure, state.exposure);
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, framebuffers.hdrColorTexture());
+        glBindTexture(GL_TEXTURE_2D, renderTargets.hdrColorTexture());
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, framebuffers.bloomTexture(0));
+        glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(0));
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
     @Override
     public void close() {
-        if (framebuffers != null) {
-            framebuffers.close();
+        if (renderTargets != null) {
+            renderTargets.close();
         }
         tdeSystem.close();
         glDeleteTextures(blackbodyLutTex);
