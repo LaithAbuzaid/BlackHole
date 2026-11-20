@@ -54,6 +54,19 @@ public final class CameraController {
     private double flyThroughDir = -1.0;
     private double flyThroughGoalL = -13.5;
 
+    // Choreographed Director's Cut Attract Tour spline state (zero heap allocations)
+    private static final double ATTRACT_CYCLE_SECONDS = 32.0;
+    private double attractPhase = 0.0;
+    private double attractYawOrigin = 0.14;
+    private boolean attractStarSpawnedInCycle = false;
+    private boolean pendingAttractStarSpawn = false;
+
+    // Tidal Camera Micro-Rumble state (plunge + close TDE periapsis shear)
+    private double rumbleTime = 0.0;
+    private double rumbleYawOffset = 0.0;
+    private double rumblePitchOffset = 0.0;
+    private double rumbleRollOffset = 0.0;
+
     // Pre-allocated camera position, radial axis & orthonormal basis updated in place
     public float posX, posY, posZ;
     public float radialX, radialY, radialZ;
@@ -67,7 +80,14 @@ public final class CameraController {
     }
 
     public void update(double dt, SimulationState state, boolean keyUpHeld, boolean keyDownHeld) {
-        if (!state.paused && state.autoOrbit && !state.plungeActive) {
+        update(dt, state, keyUpHeld, keyDownHeld, 0.0f, false);
+    }
+
+    public void update(double dt, SimulationState state, boolean keyUpHeld, boolean keyDownHeld,
+                       float tdeShearEnergy, boolean enableRumble) {
+        if (state.attractTourActive && !state.paused && !state.wormholeMode && !state.plungeActive) {
+            updateAttractTour(dt);
+        } else if (!state.paused && state.autoOrbit && !state.plungeActive) {
             targetYaw += dt * 0.14;
             if (!state.wormholeMode) {
                 targetPitch = 0.14 + Math.sin(state.simTime * 0.20) * 0.28;
@@ -98,7 +118,7 @@ public final class CameraController {
             }
         }
 
-        double lerp = 1.0 - Math.exp(-dt * 11.0);
+        double lerp = 1.0 - Math.exp(-dt * (state.attractTourActive ? 3.2 : 11.0));
         if (!state.plungeActive) {
             camDist += (targetDist - camDist) * lerp;
             camYaw += (targetYaw - camYaw) * lerp;
@@ -114,7 +134,158 @@ public final class CameraController {
         wormholeL += (targetWormholeL - wormholeL) * whLerp;
         lookFlip += (targetLookFlip - lookFlip) * (1.0 - Math.exp(-dt * 6.0));
 
+        updateTidalRumble(dt, state, tdeShearEnergy, enableRumble);
         recomputeBasis(state.effectiveSpin(), state.wormholeMode, state.plungeActive);
+    }
+
+    /**
+     * Choreographed 32-second looping Director's Cut Attract Tour:
+     * Act 1 (0..9.5s): Slow Doppler-beamed Kerr accretion disk reveal;
+     * Act 2 (9.5..20.5s): Automatic TDE 65,536-particle star-shredding pass near periapsis;
+     * Act 3 (20.5..27.5s): Low grazing sweep toward the asymmetric Kerr photon ring;
+     * Act 4 (27.5..32.0s): Seamless pull-back into next orbital cycle.
+     */
+    private void updateAttractTour(double dt) {
+        double prevPhase = attractPhase;
+        attractPhase += dt;
+        if (attractPhase >= ATTRACT_CYCLE_SECONDS) {
+            attractPhase -= ATTRACT_CYCLE_SECONDS;
+            attractYawOrigin = targetYaw;
+            attractStarSpawnedInCycle = false;
+        }
+        if (!attractStarSpawnedInCycle && attractPhase >= 9.5 && prevPhase < 10.5) {
+            attractStarSpawnedInCycle = true;
+            pendingAttractStarSpawn = true;
+        }
+
+        double t = attractPhase;
+        // Monotonic smooth orbital sweep avoids any azimuth wrap seam across cycles
+        targetYaw = attractYawOrigin + t * 0.145;
+
+        if (t < 9.5) {
+            double u = smoothstep01(t / 9.5);
+            targetDist = lerp(42.0, 31.5, u);
+            targetPitch = lerp(0.115, 0.195, u);
+            targetRoll = lerp(-0.17, -0.12, u);
+        } else if (t < 20.5) {
+            double u = smoothstep01((t - 9.5) / 11.0);
+            targetDist = lerp(31.5, 24.5, u);
+            targetPitch = lerp(0.195, 0.35, u);
+            targetRoll = lerp(-0.12, -0.06, u);
+        } else if (t < 27.5) {
+            double u = smoothstep01((t - 20.5) / 7.0);
+            targetDist = lerp(24.5, 13.8, u);
+            targetPitch = lerp(0.35, 0.085, u);
+            targetRoll = lerp(-0.06, -0.15, u);
+        } else {
+            double u = smoothstep01((t - 27.5) / (ATTRACT_CYCLE_SECONDS - 27.5));
+            targetDist = lerp(13.8, 42.0, u);
+            targetPitch = lerp(0.085, 0.115, u);
+            targetRoll = lerp(-0.15, -0.17, u);
+        }
+    }
+
+    /** Instant zero-jump handoff when user clicks, drags, scrolls, or presses any control key. */
+    public boolean disengageAttractTour(SimulationState state) {
+        if (!state.attractTourActive) {
+            return false;
+        }
+        state.attractTourActive = false;
+        targetDist = camDist;
+        targetYaw = camYaw;
+        targetPitch = camPitch;
+        targetRoll = camRoll;
+        pendingAttractStarSpawn = false;
+        return true;
+    }
+
+    /** Toggles the Director's Cut Attract Tour smoothly from the current camera azimuth. */
+    public void toggleAttractTour(SimulationState state) {
+        if (state.attractTourActive) {
+            disengageAttractTour(state);
+        } else {
+            state.clearPlungeTelemetry();
+            state.wormholeMode = false;
+            state.autoOrbit = false;
+            state.paused = false;
+            state.attractTourActive = true;
+            attractPhase = 0.0;
+            attractYawOrigin = camYaw;
+            attractStarSpawnedInCycle = false;
+            pendingAttractStarSpawn = false;
+        }
+    }
+
+    /** Consumes the one-shot automatic TDE star-shred trigger fired during Act 2 of the Attract Tour. */
+    public boolean consumeAttractSpawnTrigger() {
+        if (pendingAttractStarSpawn) {
+            pendingAttractStarSpawn = false;
+            return true;
+        }
+        return false;
+    }
+
+    private void updateTidalRumble(double dt, SimulationState state, float tdeShearEnergy, boolean enableRumble) {
+        if (!enableRumble || state.paused || state.wormholeMode) {
+            rumbleYawOffset = 0.0;
+            rumblePitchOffset = 0.0;
+            rumbleRollOffset = 0.0;
+            return;
+        }
+        double plungeAmp = 0.0;
+        if (state.plungeActive && !state.plungeEnded) {
+            double tidalNorm = Math.min(1.0, Math.sqrt(Math.max(0.0, state.plungeTidalGrad)) * 0.42);
+            plungeAmp = tidalNorm * 0.0082;
+        }
+        double tdeAmp = Math.min(1.0, tdeShearEnergy * 0.90) * 0.0036;
+        double amp = Math.max(plungeAmp, tdeAmp);
+        if (amp < 1e-5) {
+            rumbleYawOffset = 0.0;
+            rumblePitchOffset = 0.0;
+            rumbleRollOffset = 0.0;
+            return;
+        }
+        rumbleTime += dt;
+        double t = rumbleTime;
+        rumbleYawOffset = amp * (Math.sin(t * 43.0) * 0.55 + Math.sin(t * 79.0) * 0.30 + Math.sin(t * 131.0) * 0.15);
+        rumblePitchOffset = amp * (Math.cos(t * 37.0) * 0.55 + Math.sin(t * 71.0) * 0.30 + Math.cos(t * 119.0) * 0.15);
+        rumbleRollOffset = amp * 0.85 * (Math.sin(t * 29.0) * 0.60 + Math.cos(t * 67.0) * 0.40);
+    }
+
+    /** Exact deterministic Black Hole pose + instant snap (used by --capture-showcase). */
+    public void setShowcasePose(double dist, double yaw, double pitch, double roll,
+                                double lookYaw, double lookPitch, SimulationState state) {
+        camDist = targetDist = dist;
+        camYaw = targetYaw = yaw;
+        camPitch = targetPitch = pitch;
+        camRoll = targetRoll = roll;
+        freeLookYaw = targetFreeLookYaw = lookYaw;
+        freeLookPitch = targetFreeLookPitch = lookPitch;
+        rumbleYawOffset = rumblePitchOffset = rumbleRollOffset = 0.0;
+        recomputeBasis(state.effectiveSpin(), false, state.plungeActive);
+    }
+
+    /** Exact deterministic Wormhole pose + instant snap (used by --capture-showcase). */
+    public void setShowcaseWormholePose(double lVal, double yaw, double pitch, double lookFlipRad) {
+        autoFlyThrough = false;
+        wormholeL = targetWormholeL = lVal;
+        camYaw = targetYaw = yaw;
+        camPitch = targetPitch = pitch;
+        camRoll = targetRoll = 0.0;
+        lookFlip = targetLookFlip = lookFlipRad;
+        freeLookYaw = targetFreeLookYaw = 0.0;
+        freeLookPitch = targetFreeLookPitch = 0.0;
+        rumbleYawOffset = rumblePitchOffset = rumbleRollOffset = 0.0;
+        recomputeBasis(0.0, true, false);
+    }
+
+    private static double smoothstep01(double u) {
+        double c = Math.max(0.0, Math.min(1.0, u));
+        return c * c * (3.0 - 2.0 * c);
+    }
+
+    private static double lerp(double a, double b, double t) {
+        return a + (b - a) * t;
     }
 
     /** Starts or replays a physically accurate Doran / Kerr-Schild free-fall plunge. */
@@ -495,10 +666,13 @@ public final class CameraController {
             ux = ry * fz - rz * fy;
             uy = rz * fx - rx * fz;
             uz = rx * fy - ry * fx;
-        } else if (plungeActive || Math.abs(freeLookYaw) > 1e-4 || Math.abs(freeLookPitch) > 1e-4) {
-            // Apply full 360° yaw around local up, then pitch around rotated right
-            double cyL = Math.cos(freeLookYaw);
-            double syL = Math.sin(freeLookYaw);
+        } else if (plungeActive || Math.abs(freeLookYaw) > 1e-4 || Math.abs(freeLookPitch) > 1e-4
+                || Math.abs(rumbleYawOffset) > 1e-6 || Math.abs(rumblePitchOffset) > 1e-6) {
+            // Apply full 360° yaw (plus subtle tidal rumble) around local up, then pitch around rotated right
+            double effYaw = freeLookYaw + rumbleYawOffset;
+            double effPitch = freeLookPitch + rumblePitchOffset;
+            double cyL = Math.cos(effYaw);
+            double syL = Math.sin(effYaw);
             double yfx = fx * cyL + rx * syL;
             double yfy = fy * cyL + ry * syL;
             double yfz = fz * cyL + rz * syL;
@@ -506,8 +680,8 @@ public final class CameraController {
             double yry = ry * cyL - fy * syL;
             double yrz = rz * cyL - fz * syL;
 
-            double cpL = Math.cos(freeLookPitch);
-            double spL = Math.sin(freeLookPitch);
+            double cpL = Math.cos(effPitch);
+            double spL = Math.sin(effPitch);
             fx = yfx * cpL + ux * spL;
             fy = yfy * cpL + uy * spL;
             fz = yfz * cpL + uz * spL;
@@ -519,8 +693,8 @@ public final class CameraController {
             ux = nux; uy = nuy; uz = nuz;
         }
 
-        double cosR = Math.cos(camRoll);
-        double sinR = Math.sin(camRoll);
+        double cosR = Math.cos(camRoll + rumbleRollOffset);
+        double sinR = Math.sin(camRoll + rumbleRollOffset);
 
         posX = (float) cx;
         posY = (float) cy;

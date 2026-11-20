@@ -136,6 +136,7 @@ public final class UiRenderer implements AutoCloseable {
     public void drawText(CharSequence text, float x, float y, float scale,
                          float r, float g, float b, float a) {
         float cursorX = x;
+        float snappedY = (float) Math.floor(y);
         float glyphW = 8f * scale;
         float glyphH = 8f * scale;
         int len = text.length();
@@ -145,15 +146,22 @@ public final class UiRenderer implements AutoCloseable {
                 break;
             }
             char ch = text.charAt(i);
-            int idx = (ch == '°') ? 95 : (ch >= 32 && ch <= 126 ? ch - 32 : 0);
+            int idx;
+            if (ch == '°') {
+                idx = 95;
+            } else if (ch == '\u2022') {
+                idx = 96;
+            } else {
+                idx = (ch >= 32 && ch <= 126) ? ch - 32 : 0;
+            }
 
             if (idx != 0) {
-                float u0 = idx / 96.0f;
-                float u1 = (idx + 1) / 96.0f;
+                float u0 = idx / 97.0f;
+                float u1 = (idx + 1) / 97.0f;
                 float x0 = cursorX;
-                float y0 = y;
+                float y0 = snappedY;
                 float x1 = cursorX + glyphW;
-                float y1 = y + glyphH;
+                float y1 = snappedY + glyphH;
 
                 putVert(x0, y0, u0, 0f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
                 putVert(x0, y1, u0, 1f, r, g, b, a, 0f, 0f, 0f, 0f, 0f, 2f);
@@ -213,9 +221,9 @@ public final class UiRenderer implements AutoCloseable {
         shader.close();
     }
 
-    /** Complete 8x8 bitmap font atlas covering all printable ASCII 32..126 + degree symbol (°). */
+    /** Complete 8x8 bitmap font atlas covering printable ASCII 32..126 + degree (°) + bullet (•). */
     private static int createBitmapFontTexture() {
-        String[] g = new String[96];
+        String[] g = new String[97];
         // Space (32)
         g[' ' - 32] = "......../......../......../......../......../......../......../........";
 
@@ -321,18 +329,19 @@ public final class UiRenderer implements AutoCloseable {
         g['y' - 32] = "......../......../##....##/##....##/.#######/.....##./.######./........";
         g['z' - 32] = "......../......../########/....##../..##..../.##...../########/........";
 
-        // Braces & Tilde (123..126) + Degree Symbol (95)
+        // Braces & Tilde (123..126) + Degree Symbol (95) + Bullet Symbol (96)
         g['{' - 32] = "....###./...##.../...##.../..##..../...##.../...##.../....###./........";
         g['|' - 32] = "...##.../...##.../...##.../...##.../...##.../...##.../...##.../........";
         g['}' - 32] = ".###..../...##.../...##.../....##../...##.../...##.../.###..../........";
         g['~' - 32] = "......../.###..##/##..###./......../......../......../......../........";
         g[95]       = "..###.../##...##./##...##./..###.../......../......../......../........";
+        g[96]       = "......../......../...##.../..####../..####../...##.../......../........";
 
-        int atlasW = 96 * 8;
+        int atlasW = 97 * 8;
         int atlasH = 8;
         ByteBuffer pixels = MemoryUtil.memAlloc(atlasW * atlasH);
 
-        for (int idx = 0; idx < 96; idx++) {
+        for (int idx = 0; idx < 97; idx++) {
             String pattern = g[idx];
             String[] rows = pattern.split("/");
             for (int y = 0; y < 8; y++) {

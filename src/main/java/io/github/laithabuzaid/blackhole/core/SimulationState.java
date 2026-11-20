@@ -17,10 +17,14 @@ public final class SimulationState {
     public static final float MAX_JET_POWER = 2.00f;
     public static final float MIN_BLOOM = 0.00f;
     public static final float MAX_BLOOM = 0.80f;
+    public static final float MIN_ANAMORPHIC = 0.00f;
+    public static final float MAX_ANAMORPHIC = 1.00f;
     public static final float MIN_EXPOSURE = 0.40f;
     public static final float MAX_EXPOSURE = 2.40f;
     public static final float MIN_FOV_DEG = 14.0f;
     public static final float MAX_FOV_DEG = 40.0f;
+
+    public static final float TOAST_DURATION = 2.2f;
 
     // Morris-Thorne / Interstellar Wormhole metric parameter bounds
     public static final float MIN_WORMHOLE_RHO = 0.60f;
@@ -46,10 +50,11 @@ public final class SimulationState {
 
     public double simTime = 0.0;
 
-    // Spacetime Mode & UI Toggles
+    // Spacetime Mode & UI Toggles ("Cinema First, Console Second" startup)
     public boolean wormholeMode = false;
-    public boolean showUi = true;
+    public boolean showUi = false;
     public boolean controlsExpanded = true;
+    public boolean attractTourActive = true;
     public boolean lensingEnabled = true;
     public boolean showDisk = true;
     public boolean showJets = true;
@@ -57,12 +62,19 @@ public final class SimulationState {
     public boolean kerrSpinEnabled = true;
     public boolean freeFallMode = false;
     public boolean adaptiveAa4x = true;
+    public boolean anamorphicEnabled = true;
     public boolean showGrid = false;
     public boolean orderVisualizer = false;
     public boolean autoOrbit = false;
     public boolean paused = false;
     public boolean vsync = true;
     public boolean audioEnabled = true;
+
+    // Minimalist Cinema Pill & Toast Notification State (zero per-frame heap allocations)
+    public float cinemaHintAge = 0.0f;
+    private final Object toastLock = new Object();
+    private final StringBuilder toastText = new StringBuilder(96);
+    private float toastRemaining = 0.0f;
 
     // Interactive Doran / Kerr-Schild Free-Fall Plunge Simulator State
     public boolean plungeActive = false;
@@ -83,8 +95,9 @@ public final class SimulationState {
     public float diskTempScale = 1.00f;   // Blackbody temperature multiplier [0.55 .. 1.65]
     public float diskDensity = 1.00f;     // Accretion optical density [0.25 .. 2.00]
     public float jetPower = 0.85f;        // Relativistic synchrotron jet intensity [0.00 .. 2.00]
-    public float bloomStrength = 0.30f;   // Mipmap bloom intensity [0.00 .. 0.80]
-    public float exposure = 1.15f;        // HDR exposure [0.40 .. 2.40]
+    public float bloomStrength = 0.30f;      // Mipmap bloom intensity [0.00 .. 0.80]
+    public float anamorphicStrength = 0.32f; // Horizontal anamorphic glare [0.00 .. 1.00]
+    public float exposure = 1.15f;           // HDR exposure [0.40 .. 2.40]
     public float fovDeg = 22.5f;          // Camera half-FOV degrees [14.0 .. 40.0]
 
     // Morris-Thorne / Interstellar Wormhole Metric Sliders
@@ -144,9 +157,64 @@ public final class SimulationState {
         singularityFade = 0.0f;
     }
 
+    public void showToast(CharSequence message) {
+        synchronized (toastLock) {
+            toastText.setLength(0);
+            toastText.append(message);
+            toastRemaining = TOAST_DURATION;
+        }
+    }
+
+    public void showSavedToast(CharSequence relativePath) {
+        synchronized (toastLock) {
+            toastText.setLength(0);
+            toastText.append("SAVED: ").append(relativePath);
+            toastRemaining = TOAST_DURATION;
+        }
+    }
+
+    public void clearToast() {
+        synchronized (toastLock) {
+            toastText.setLength(0);
+            toastRemaining = 0.0f;
+        }
+    }
+
+    public void tickUiTimers(double dt) {
+        if (!showUi) {
+            cinemaHintAge = Math.min(20.0f, cinemaHintAge + (float) dt);
+        }
+        synchronized (toastLock) {
+            if (toastRemaining > 0.0f) {
+                toastRemaining = Math.max(0.0f, toastRemaining - (float) dt);
+            }
+        }
+    }
+
+    /** Copies active toast into {@code dst} without allocating and returns fade alpha [0..1]. */
+    public float readActiveToast(StringBuilder dst) {
+        synchronized (toastLock) {
+            if (toastRemaining <= 0.0f || toastText.length() == 0) {
+                dst.setLength(0);
+                return 0.0f;
+            }
+            dst.setLength(0);
+            dst.append(toastText);
+            float elapsed = TOAST_DURATION - toastRemaining;
+            if (elapsed < 0.22f) {
+                return elapsed / 0.22f;
+            }
+            if (toastRemaining < 0.48f) {
+                return toastRemaining / 0.48f;
+            }
+            return 1.0f;
+        }
+    }
+
     public void resetDefaults() {
         clearPlungeTelemetry();
         autoOrbit = false;
+        attractTourActive = false;
         lensingEnabled = true;
         showDisk = true;
         showJets = true;
@@ -154,6 +222,7 @@ public final class SimulationState {
         kerrSpinEnabled = true;
         freeFallMode = false;
         adaptiveAa4x = true;
+        anamorphicEnabled = true;
         showGrid = false;
         orderVisualizer = false;
         paused = false;
@@ -164,6 +233,7 @@ public final class SimulationState {
         diskDensity = 1.00f;
         jetPower = 0.85f;
         bloomStrength = 0.30f;
+        anamorphicStrength = 0.32f;
         exposure = 1.15f;
         fovDeg = 22.5f;
 

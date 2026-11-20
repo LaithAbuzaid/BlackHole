@@ -30,6 +30,8 @@ public final class HudOverlay {
     public static final int ACT_AUDIO = 15;
     public static final int ACT_FLY_THROUGH = 16;
     public static final int ACT_PLUNGE = 17;
+    public static final int ACT_ATTRACT_TOUR = 18;
+    public static final int ACT_ANAMORPHIC = 19;
     public static final int ACT_TOGGLE_PANEL = 100;
 
     // Slider IDs
@@ -45,6 +47,7 @@ public final class HudOverlay {
     public static final int SLIDER_WH_A = 210;
     public static final int SLIDER_WH_M = 211;
     public static final int SLIDER_PLUNGE_SPEED = 212;
+    public static final int SLIDER_ANAMORPHIC = 213;
 
     // Preset IDs
     public static final int PRESET_EDGE = 301;
@@ -78,8 +81,9 @@ public final class HudOverlay {
     private int hitBoxCount = 0;
     private int activeSliderId = -1;
 
-    // Reusable scratch StringBuilder for dynamic live values (zero heap allocs)
+    // Reusable scratch StringBuilders for dynamic live values & toasts (zero heap allocs)
     private final StringBuilder sb = new StringBuilder(128);
+    private final StringBuilder toastScratch = new StringBuilder(96);
 
     // 250ms Cached Hardware Telemetry StringBuilders (avoid re-formatting every frame at 144+ FPS)
     private final StringBuilder cachedFpsLine = new StringBuilder(64);
@@ -185,27 +189,89 @@ public final class HudOverlay {
 
     public void render(UiRenderer ui, int windowW, int windowH,
                        double mouseX, double mouseY, boolean refreshTelemetry,
+                       boolean suppressOverlays,
                        SimulationState state, CameraController camera,
                        HardwareTelemetry telemetry) {
         hitBoxCount = 0;
-        if (!cachePrimed || refreshTelemetry) {
+        if (suppressOverlays) {
+            return;
+        }
+        if (state.showUi && (!cachePrimed || refreshTelemetry)) {
             refreshTelemetryCache(windowW, windowH, state, telemetry);
         }
 
         ui.begin(windowW, windowH);
 
-        renderLeftProfilerPanel(ui, windowW, windowH, state, camera, telemetry);
-        if (state.plungeActive && windowW >= 1040) {
-            renderTopPlungeBanner(ui, windowW, state, camera);
-        }
-        if (windowW >= 760) {
-            renderRightControlPanel(ui, windowW, windowH, mouseX, mouseY, state, camera);
-        }
-        if (windowH >= 480) {
-            renderBottomHintStrip(ui, windowW, windowH, state);
+        boolean plungeBannerDrawn = false;
+        if (state.showUi) {
+            renderLeftProfilerPanel(ui, windowW, windowH, state, camera, telemetry);
+            if (state.plungeActive && windowW >= 1040) {
+                renderTopPlungeBanner(ui, windowW, state, camera);
+                plungeBannerDrawn = true;
+            }
+            if (windowW >= 760) {
+                renderRightControlPanel(ui, windowW, windowH, mouseX, mouseY, state, camera);
+            }
+            if (windowH >= 480) {
+                renderBottomHintStrip(ui, windowW, windowH, state);
+            }
+        } else {
+            // Cinema-First Mode: show plunge telemetry only during active dive + sleek fading bottom pill
+            if (state.plungeActive && windowW >= 640) {
+                renderTopPlungeBanner(ui, windowW, state, camera);
+                plungeBannerDrawn = true;
+            }
+            if (windowH >= 360) {
+                renderCinemaBottomPill(ui, windowW, windowH, mouseY, state);
+            }
         }
 
+        // Minimalist 2.2s fade-in/fade-out toast pill at top-center
+        renderToastPill(ui, windowW, state, plungeBannerDrawn ? 120f : 18f);
+
         ui.end();
+    }
+
+    private void renderCinemaBottomPill(UiRenderer ui, int windowW, int windowH,
+                                        double mouseY, SimulationState state) {
+        String pill = "Drag to Orbit \u2022 [H] Console & Telemetry \u2022 [T] Tour \u2022 [P] Dive In \u2022 [W] Wormhole \u2022 [E] Shred Star";
+        float fadeT = Math.max(0.0f, Math.min(1.0f, (state.cinemaHintAge - 5.0f) / 1.5f));
+        float alpha = 0.92f - 0.62f * fadeT; // Fades cleanly from 92% -> 30% after 6 seconds
+        if (mouseY > windowH - 72.0) {
+            alpha = Math.max(alpha, 0.88f);
+        }
+
+        float scale = windowW < 1080 ? 0.90f : 1.04f;
+        float textW = pill.length() * 8f * scale;
+        float pw = Math.min(windowW - 24f, textW + 28f);
+        float px = (windowW - pw) * 0.5f;
+        float py = windowH - 36f;
+
+        ui.drawGlassPanel(px, py, pw, 24f, 12f,
+                0.05f, 0.07f, 0.11f, 0.72f * alpha,
+                0.78f, 0.86f, 0.98f, 0.24f * alpha);
+        ui.drawText(pill, px + (pw - textW) * 0.5f, py + 8f, scale,
+                0.88f, 0.92f, 0.98f, alpha);
+    }
+
+    private void renderToastPill(UiRenderer ui, int windowW, SimulationState state, float topY) {
+        float alpha = state.readActiveToast(toastScratch);
+        if (alpha <= 0.01f || toastScratch.length() == 0) {
+            return;
+        }
+        float scale = 1.06f;
+        float textW = toastScratch.length() * 8f * scale;
+        float pw = Math.min(windowW - 40f, textW + 30f);
+        float ph = 26f;
+        float px = (windowW - pw) * 0.5f;
+        // Subtle vertical slide-in on fade-in
+        float py = topY - (1.0f - alpha) * 6f;
+
+        ui.drawGlassPanel(px, py, pw, ph, 13f,
+                0.06f, 0.09f, 0.14f, 0.86f * alpha,
+                0.96f, 0.78f, 0.44f, 0.62f * alpha);
+        ui.drawText(toastScratch, px + (pw - textW) * 0.5f, py + 8.5f, scale,
+                0.96f, 0.95f, 0.92f, alpha);
     }
 
     private void renderTopPlungeBanner(UiRenderer ui, int windowW,
@@ -474,14 +540,14 @@ public final class HudOverlay {
         float rw = 340f;
         float rx = windowW - rw - 16f;
         float ry = 16f;
-        boolean expanded = state.controlsExpanded && windowH >= 675;
+        boolean expanded = state.controlsExpanded && windowH >= 720;
         float rh;
         if (!expanded) {
             rh = 42f;
         } else if (state.wormholeMode) {
-            rh = 468f;
+            rh = 494f;
         } else {
-            rh = 640f;
+            rh = 668f;
         }
 
         ui.drawGlassPanel(rx, ry, rw, rh, 10f,
@@ -554,6 +620,11 @@ public final class HudOverlay {
                     SimulationState.MIN_BLOOM, SimulationState.MAX_BLOOM, sb, SLIDER_BLOOM);
 
             sb.setLength(0);
+            appendFixed2(sb, state.anamorphicStrength);
+            py = drawSlider(ui, px, py, innerW, "ANAMORPHIC", state.anamorphicStrength,
+                    SimulationState.MIN_ANAMORPHIC, SimulationState.MAX_ANAMORPHIC, sb, SLIDER_ANAMORPHIC);
+
+            sb.setLength(0);
             appendFixed2(sb, state.exposure);
             py = drawSlider(ui, px, py, innerW, "HDR EXPOSURE", state.exposure,
                     SimulationState.MIN_EXPOSURE, SimulationState.MAX_EXPOSURE, sb, SLIDER_EXPOSURE);
@@ -609,6 +680,9 @@ public final class HudOverlay {
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[I] ORDER VIS", state.orderVisualizer, ACT_ORDER_VIS,
                     px + colW + 6f, "[O] AUTO ORBIT", state.autoOrbit, ACT_AUTO_ORBIT);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[T] TOUR", state.attractTourActive, ACT_ATTRACT_TOUR,
+                    px + colW + 6f, "ANAMORPHIC", state.anamorphicEnabled, ACT_ANAMORPHIC);
 
             py += 3f;
             ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
@@ -649,6 +723,11 @@ public final class HudOverlay {
                     SimulationState.MIN_BLOOM, SimulationState.MAX_BLOOM, sb, SLIDER_BLOOM);
 
             sb.setLength(0);
+            appendFixed2(sb, state.anamorphicStrength);
+            py = drawSlider(ui, px, py, innerW, "ANAMORPHIC", state.anamorphicStrength,
+                    SimulationState.MIN_ANAMORPHIC, SimulationState.MAX_ANAMORPHIC, sb, SLIDER_ANAMORPHIC);
+
+            sb.setLength(0);
             appendFixed2(sb, state.exposure);
             py = drawSlider(ui, px, py, innerW, "HDR EXPOSURE", state.exposure,
                     SimulationState.MIN_EXPOSURE, SimulationState.MAX_EXPOSURE, sb, SLIDER_EXPOSURE);
@@ -686,14 +765,14 @@ public final class HudOverlay {
         } else if (state.plungeActive) {
             hint = "[P] ABORT/REPLAY DIVE | DRAG: 360 FREE-LOOK | SCROLL: PLUNGE SPEED | [R] RESET | [H] HUD";
         } else {
-            hint = "[P] PLUNGE DIVE | [W] WORMHOLE | [E] SHRED STAR | [A] AUDIO | [SPC] PAUSE | [H] HUD | [ESC] QUIT";
+            hint = "[P] DIVE | [W] WORMHOLE | [E] SHRED | [T] TOUR | [F12] PNG | [A] AUDIO | [H] HIDE HUD";
         }
-        float scale = windowW < 920 ? 0.85f : 0.98f;
+        float scale = windowW < 920 ? 0.85f : 1.0f;
         float hintW = Math.min(windowW - 24f, hint.length() * 8f * scale + 20f);
         float hx = (windowW - hintW) * 0.5f;
         float hy = windowH - 30f;
         ui.drawGlassPanel(hx, hy, hintW, 21f, 6f, 0.06f, 0.08f, 0.12f, 0.76f, 1f, 1f, 1f, 0.16f);
-        ui.drawText(hint, hx + 10f, hy + 6f, scale, 0.76f, 0.82f, 0.92f, 0.88f);
+        ui.drawText(hint, hx + 10f, hy + 6.5f, scale, 0.76f, 0.82f, 0.92f, 0.88f);
     }
 
     private float drawToggleRow(UiRenderer ui, double mouseX, double mouseY,
@@ -772,8 +851,8 @@ public final class HudOverlay {
                 hovered ? 0.28f : 0.17f,
                 hovered ? 0.38f : 0.24f,
                 0.86f, 0.95f, 0.75f, 0.45f, hovered ? 0.78f : 0.30f);
-        float textW = label.length() * 8f * 0.98f;
-        ui.drawText(label, x + (w - textW) * 0.5f, y + 6.5f, 0.98f, 0.95f, 0.95f, 0.98f, 1.0f);
+        float textW = label.length() * 8f * 1.02f;
+        ui.drawText(label, x + (w - textW) * 0.5f, y + 6.5f, 1.02f, 0.95f, 0.95f, 0.98f, 1.0f);
         addHitBox(x, y, w, h, id, 0f, 0f);
     }
 
@@ -825,6 +904,10 @@ public final class HudOverlay {
                 state.showJets = v > 0.005f;
             }
             case SLIDER_BLOOM -> state.bloomStrength = v;
+            case SLIDER_ANAMORPHIC -> {
+                state.anamorphicStrength = v;
+                state.anamorphicEnabled = v > 0.005f;
+            }
             case SLIDER_EXPOSURE -> state.exposure = v;
             case SLIDER_FOV -> state.fovDeg = v;
             case SLIDER_VOLUME -> {

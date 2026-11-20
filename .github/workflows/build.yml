@@ -1,0 +1,72 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ main, "refactor/**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            profile: natives-linux
+          - os: windows-latest
+            platform: windows
+            profile: natives-windows
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Build & Package Shaded JAR
+        run: mvn -B clean package -P${{ matrix.profile }}
+
+      - name: Rename platform shaded JAR
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/blackhole-*.jar "dist/blackhole-${{ matrix.platform }}.jar"
+          ls -lh dist/
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackhole-${{ matrix.platform }}
+          path: dist/blackhole-${{ matrix.platform }}.jar
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux & Windows JARs
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*.jar

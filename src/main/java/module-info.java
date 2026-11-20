@@ -13,4 +13,5 @@ module io.github.laithabuzaid.blackhole {
     exports io.github.laithabuzaid.blackhole.graphics;
     exports io.github.laithabuzaid.blackhole.telemetry;
     exports io.github.laithabuzaid.blackhole.ui;
+    exports io.github.laithabuzaid.blackhole.util;
 }

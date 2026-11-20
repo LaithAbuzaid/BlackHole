@@ -305,6 +305,39 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         return shearEnergy;
     }
 
+    /**
+     * Advances the TDE compute solver by {@code steps} fixed ticks without rendering.
+     * Used by offline showcase capture to position a star cleanly at mid-disruption periapsis.
+     */
+    public void stepComputeOnly(int steps, double dt, SimulationState state) {
+        if (!hasAnyParticles || state.wormholeMode || steps <= 0) {
+            return;
+        }
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, counterSsbo);
+        computeProgram.use();
+        glUniform1ui(uCompParticleCount, TOTAL_PARTICLES);
+        glUniform1f(uCompDt, (float) (dt * TDE_TIME_SCALE));
+        glUniform1f(uCompSpinA, state.effectiveSpin());
+        glUniform1f(uCompHorizonR, (float) state.outerHorizonRadius());
+
+        for (int i = 0; i < steps; i++) {
+            zeroCounters.rewind();
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSsbo);
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, zeroCounters);
+            glDispatchCompute(TOTAL_PARTICLES / WORKGROUP_SIZE, 1, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        }
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+
+        readCounters.clear();
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSsbo);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, readCounters);
+        activeParticles = readCounters.get(0);
+        int hotShear = readCounters.get(1);
+        shearEnergy = Math.min(1.0f, hotShear / 6500.0f);
+    }
+
     private double nextRandom01() {
         rngState = rngState * 6364136223846793005L + 1442695040888963407L;
         return ((rngState >>> 11) * 0x1.0p-53);

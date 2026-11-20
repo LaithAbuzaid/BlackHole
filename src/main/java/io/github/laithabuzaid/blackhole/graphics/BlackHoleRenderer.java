@@ -89,7 +89,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uFilterRadius;
     private final int uCompHdr;
     private final int uCompBloom;
+    private final int uCompAnamorphic;
     private final int uCompStrength;
+    private final int uCompAnamorphicStrength;
     private final int uCompExposure;
 
     public BlackHoleRenderer(int initialWidth, int initialHeight) {
@@ -176,7 +178,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
         uCompHdr = compositeProgram.uniformLocation("uHdrScene");
         uCompBloom = compositeProgram.uniformLocation("uBloomTex");
+        uCompAnamorphic = compositeProgram.uniformLocation("uAnamorphicTex");
         uCompStrength = compositeProgram.uniformLocation("uBloomStrength");
+        uCompAnamorphicStrength = compositeProgram.uniformLocation("uAnamorphicStrength");
         uCompExposure = compositeProgram.uniformLocation("uExposure");
     }
 
@@ -197,6 +201,10 @@ public final class BlackHoleRenderer implements AutoCloseable {
         tdeSystem.clearAll();
     }
 
+    public void stepTdeComputeOnly(int steps, double dt, SimulationState state) {
+        tdeSystem.stepComputeOnly(steps, dt, state);
+    }
+
     public int tdeActiveParticles() {
         return tdeSystem.activeParticleCount();
     }
@@ -205,9 +213,15 @@ public final class BlackHoleRenderer implements AutoCloseable {
         return tdeSystem.shearEnergy();
     }
 
-    /** Executes Passes 1, 1B (TDE), 2 (Bloom), and 3 (Composite) with zero heap allocations. */
+    /** Executes Passes 1, 1B (TDE), 2 (Bloom), and 3 (Composite) to default framebuffer with zero heap allocations. */
     public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
                             SimulationState state, CameraController camera, GpuTimerQueries timers) {
+        renderFrame(width, height, dt, readbackTdeCounters, state, camera, timers, 0);
+    }
+
+    /** Executes Passes 1, 1B (TDE), 2 (Bloom), and 3 (Composite) to {@code outputFbo} with zero heap allocations. */
+    public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
+                            SimulationState state, CameraController camera, GpuTimerQueries timers, int outputFbo) {
         glBindVertexArray(quadVao);
 
         // PASS 1: Exact Kerr-Schild Black Hole OR Morris-Thorne Wormhole Ray-Tracer (GPU Timed)
@@ -322,19 +336,23 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glDisable(GL_BLEND);
         timers.endBloom();
 
-        // PASS 3: Final Composite + Lens Dispersion + Vignette + ACES Tone Mapping
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        // PASS 3: Final Composite + Anamorphic Glare + Lens Dispersion + Vignette + ACES Tone Mapping
+        glBindFramebuffer(GL_FRAMEBUFFER, outputFbo);
         glViewport(0, 0, width, height);
         compositeProgram.use();
         glUniform1i(uCompHdr, 0);
         glUniform1i(uCompBloom, 1);
+        glUniform1i(uCompAnamorphic, 2);
         glUniform1f(uCompStrength, state.bloomStrength);
+        glUniform1f(uCompAnamorphicStrength, state.anamorphicEnabled ? state.anamorphicStrength : 0.0f);
         glUniform1f(uCompExposure, state.exposure);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, renderTargets.hdrColorTexture());
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(0));
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(2));
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 

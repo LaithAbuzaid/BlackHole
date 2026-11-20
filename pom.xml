@@ -10,7 +10,45 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <lwjgl.version>3.3.4</lwjgl.version>
+        <lwjgl.natives>natives-linux</lwjgl.natives>
     </properties>
+
+    <profiles>
+        <profile>
+            <id>natives-linux</id>
+            <activation>
+                <os>
+                    <name>Linux</name>
+                </os>
+            </activation>
+            <properties>
+                <lwjgl.natives>natives-linux</lwjgl.natives>
+            </properties>
+        </profile>
+        <profile>
+            <id>natives-windows</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <properties>
+                <lwjgl.natives>natives-windows</lwjgl.natives>
+            </properties>
+        </profile>
+        <profile>
+            <id>natives-macos</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                </os>
+            </activation>
+            <properties>
+                <lwjgl.natives>natives-macos</lwjgl.natives>
+            </properties>
+        </profile>
+    </profiles>
+
     <dependencies>
         <dependency>
             <groupId>org.lwjgl</groupId>
@@ -21,7 +59,7 @@
             <groupId>org.lwjgl</groupId>
             <artifactId>lwjgl</artifactId>
             <version>${lwjgl.version}</version>
-            <classifier>natives-linux</classifier>
+            <classifier>${lwjgl.natives}</classifier>
         </dependency>
         <dependency>
             <groupId>org.lwjgl</groupId>
@@ -32,7 +70,7 @@
             <groupId>org.lwjgl</groupId>
             <artifactId>lwjgl-glfw</artifactId>
             <version>${lwjgl.version}</version>
-            <classifier>natives-linux</classifier>
+            <classifier>${lwjgl.natives}</classifier>
         </dependency>
         <dependency>
             <groupId>org.lwjgl</groupId>
@@ -43,7 +81,7 @@
             <groupId>org.lwjgl</groupId>
             <artifactId>lwjgl-opengl</artifactId>
             <version>${lwjgl.version}</version>
-            <classifier>natives-linux</classifier>
+            <classifier>${lwjgl.natives}</classifier>
         </dependency>
         <dependency>
             <groupId>org.lwjgl</groupId>
@@ -54,9 +92,10 @@
             <groupId>org.lwjgl</groupId>
             <artifactId>lwjgl-openal</artifactId>
             <version>${lwjgl.version}</version>
-            <classifier>natives-linux</classifier>
+            <classifier>${lwjgl.natives}</classifier>
         </dependency>
     </dependencies>
+
     <build>
         <plugins>
             <plugin>
