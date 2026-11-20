@@ -7,5 +7,7 @@ captures/
 .classpath
 dependency-reduced-pom.xml
 *.bak
-.DS_Store
+*.DS_Store
 *.log
+__pycache__/
+*.pyc
