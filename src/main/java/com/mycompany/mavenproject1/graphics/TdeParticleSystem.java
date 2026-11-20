@@ -51,6 +51,7 @@ public final class TdeParticleSystem implements AutoCloseable {
     private final int uRendCamForward;
     private final int uRendCamRight;
     private final int uRendCamUp;
+    private final int uRendBlackbodyLut;
     private final int uRendTanHalfFov;
     private final int uRendSpinA;
     private final int uRendHorizonR;
@@ -100,6 +101,7 @@ public final class TdeParticleSystem implements AutoCloseable {
         this.uRendCamForward = renderProgram.uniformLocation("uCamForward");
         this.uRendCamRight = renderProgram.uniformLocation("uCamRight");
         this.uRendCamUp = renderProgram.uniformLocation("uCamUp");
+        this.uRendBlackbodyLut = renderProgram.uniformLocation("uBlackbodyLut");
         this.uRendTanHalfFov = renderProgram.uniformLocation("uTanHalfFov");
         this.uRendSpinA = renderProgram.uniformLocation("uSpinA");
         this.uRendHorizonR = renderProgram.uniformLocation("uHorizonR");
@@ -226,7 +228,7 @@ public final class TdeParticleSystem implements AutoCloseable {
      * directly into the currently bound {@code hdrFbo}.
      */
     public void updateAndRender(int width, int height, double dt, boolean readbackCounters,
-                                SimulationState state, CameraController camera) {
+                                int blackbodyLutTex, SimulationState state, CameraController camera) {
         if (!hasAnyParticles || state.wormholeMode) {
             shearEnergy *= 0.92f;
             return;
@@ -272,6 +274,10 @@ public final class TdeParticleSystem implements AutoCloseable {
 
         renderProgram.use();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
+        glUniform1i(uRendBlackbodyLut, 0);
 
         glUniform2f(uRendResolution, width, height);
         glUniform3f(uRendCamPos, camera.posX, camera.posY, camera.posZ);

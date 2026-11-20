@@ -1,8 +1,9 @@
 package com.mycompany.mavenproject1.core;
 
 /**
- * Mutable simulation parameters, spacetime mode flags, wormhole metric controls,
- * audio controls, and physical constants shared across all subsystems.
+ * Mutable simulation parameters, spacetime mode flags, Doran free-fall plunge
+ * state & telemetry, wormhole metric controls, audio controls, and physical
+ * constants shared across all subsystems.
  */
 public final class SimulationState {
 
@@ -29,8 +30,19 @@ public final class SimulationState {
     public static final float MIN_WORMHOLE_M = 0.20f;
     public static final float MAX_WORMHOLE_M = 4.00f;
 
+    // Plunge & Audio bounds
+    public static final float MIN_PLUNGE_SPEED = 0.10f;
+    public static final float MAX_PLUNGE_SPEED = 2.00f;
     public static final float MIN_VOLUME = 0.00f;
     public static final float MAX_VOLUME = 1.00f;
+
+    // Plunge Zone IDs
+    public static final int ZONE_EXTERIOR = 0;
+    public static final int ZONE_PHOTON_SPHERE = 1;
+    public static final int ZONE_EVENT_HORIZON = 2;
+    public static final int ZONE_INTERIOR = 3;
+    public static final int ZONE_CAUCHY_HORIZON = 4;
+    public static final int ZONE_SINGULARITY = 5;
 
     public double simTime = 0.0;
 
@@ -51,6 +63,20 @@ public final class SimulationState {
     public boolean paused = false;
     public boolean vsync = true;
     public boolean audioEnabled = true;
+
+    // Interactive Doran / Kerr-Schild Free-Fall Plunge Simulator State
+    public boolean plungeActive = false;
+    public boolean plungeEnded = false;
+    public float plungeSpeed = 1.00f;         // Proper-time plunge speed multiplier [0.10 .. 2.00]
+    public double plungeProperTime = 0.0;     // Observer proper time tau (M units)
+    public double plungeCoordTime = 0.0;      // Distant observer time t_inf (diverges at r_+)
+    public boolean plungeHorizonCrossed = false;
+    public float plungeVelocityC = 0.0f;      // Infall velocity beta_in = v/c (1.0 at r_+)
+    public float plungeTidalGrad = 0.0f;      // Radial tidal gradient 2GM/r^3
+    public int plungeZone = ZONE_EXTERIOR;
+    public float cauchyFlashIntensity = 0.0f; // Kerr inner Cauchy horizon (r_-) mass-inflation flash [0..1]
+    public float spaghettification = 0.0f;    // Schwarzschild tidal optical stretching [0..1]
+    public float singularityFade = 0.0f;      // Smooth singularity impact fade [0..1]
 
     // Black Hole Physics & Optics Sliders
     public float spinParam = 0.98f;       // Kerr dimensionless spin a* [0.00 .. 0.998]
@@ -79,6 +105,12 @@ public final class SimulationState {
         return 1.0 + Math.sqrt(Math.max(0.0, 1.0 - a * a));
     }
 
+    /** Exact inner Kerr Cauchy horizon r_- = M - sqrt(M^2 - a^2) in geometric units (M = 1). */
+    public double innerHorizonRadius() {
+        double a = effectiveSpin();
+        return 1.0 - Math.sqrt(Math.max(0.0, 1.0 - a * a));
+    }
+
     /** Exact Bardeen-Press-Teukolsky prograde ISCO radius in geometric units (M = 1). */
     public double progradeIscoRadius() {
         double a = Math.max(0.0, Math.min(0.999, effectiveSpin()));
@@ -87,7 +119,33 @@ public final class SimulationState {
         return 3.0 + z2 - Math.sqrt(Math.max(0.0, (3.0 - z1) * (3.0 + z1 + 2.0 * z2)));
     }
 
+    public String plungeZoneName() {
+        return switch (plungeZone) {
+            case ZONE_PHOTON_SPHERE -> "PHOTON SPHERE";
+            case ZONE_EVENT_HORIZON -> "EVENT HORIZON (r+)";
+            case ZONE_INTERIOR -> "INTERIOR";
+            case ZONE_CAUCHY_HORIZON -> "CAUCHY HORIZON (r-)";
+            case ZONE_SINGULARITY -> "SINGULARITY";
+            default -> "EXTERIOR";
+        };
+    }
+
+    public void clearPlungeTelemetry() {
+        plungeActive = false;
+        plungeEnded = false;
+        plungeProperTime = 0.0;
+        plungeCoordTime = 0.0;
+        plungeHorizonCrossed = false;
+        plungeVelocityC = 0.0f;
+        plungeTidalGrad = 0.0f;
+        plungeZone = ZONE_EXTERIOR;
+        cauchyFlashIntensity = 0.0f;
+        spaghettification = 0.0f;
+        singularityFade = 0.0f;
+    }
+
     public void resetDefaults() {
+        clearPlungeTelemetry();
         autoOrbit = false;
         lensingEnabled = true;
         showDisk = true;
@@ -100,6 +158,7 @@ public final class SimulationState {
         orderVisualizer = false;
         paused = false;
 
+        plungeSpeed = 1.00f;
         spinParam = 0.98f;
         diskTempScale = 1.00f;
         diskDensity = 1.00f;

@@ -2,22 +2,25 @@ package com.mycompany.mavenproject1.graphics;
 
 import com.mycompany.mavenproject1.core.CameraController;
 import com.mycompany.mavenproject1.core.SimulationState;
+import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 
 import static org.lwjgl.opengl.GL43.*;
 
 /**
- * Manages GPU startup precomputations (128^3 3D turbulence volume + dual mipmapped
- * 1024x1024 HDR skybox cubemaps for Universe A and Universe B) and executes the
- * zero-allocation multi-pass Kerr-Schild / Morris-Thorne raytrace, OpenGL 4.3 TDE
- * compute + HDR sprite pass, 5-level Karis bloom pyramid, and ACES composite pipeline.
+ * Manages GPU startup precomputations (128^3 3D turbulence volume, dual mipmapped
+ * 1024x1024 HDR skybox cubemaps, and 512x1 RGB16F Planckian blackbody LUT) and
+ * executes the zero-allocation multi-pass Kerr-Schild / Morris-Thorne raytrace,
+ * OpenGL 4.3 TDE compute + HDR sprite pass, 5-level Karis bloom pyramid, and ACES composite.
  */
 public final class BlackHoleRenderer implements AutoCloseable {
 
     public static final int BLOOM_LEVELS = 5;
     private static final int NOISE_VOL_SIZE = 128;
     private static final int SKYBOX_FACE_SIZE = 1024;
+    private static final int BLACKBODY_LUT_WIDTH = 512;
 
     private final ShaderProgram rayProgram;
     private final ShaderProgram wormholeProgram;
@@ -28,6 +31,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
     private final int quadVao;
     private final int noise3dTex;
+    private final int blackbodyLutTex;
     private final int skyboxUniverseA;
     private final int skyboxUniverseB;
     private FramebufferSet framebuffers;
@@ -41,11 +45,18 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uCamUp;
     private final int uSkybox;
     private final int uNoiseVol;
+    private final int uBlackbodyLut;
     private final int uSpinA;
+    private final int uHorizonR;
+    private final int uInnerHorizonR;
+    private final int uIscoR;
     private final int uDiskTempScale;
     private final int uDiskDensity;
     private final int uJetPower;
     private final int uTanHalfFov;
+    private final int uCauchyFlash;
+    private final int uSpaghettify;
+    private final int uSingularityFade;
     private final int uDoppler;
     private final int uLensing;
     private final int uShowDisk;
@@ -94,6 +105,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
         this.quadVao = glGenVertexArrays();
         glBindVertexArray(quadVao);
 
+        this.blackbodyLutTex = createBlackbodyLutTexture(BLACKBODY_LUT_WIDTH);
+
         try (ShaderProgram noiseProg = ShaderProgram.fromResources("/shaders/fullscreen.vert", "/shaders/noise3d_bake.frag")) {
             this.noise3dTex = bake3dNoiseVolume(noiseProg, NOISE_VOL_SIZE);
         }
@@ -118,11 +131,18 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uCamUp = rayProgram.uniformLocation("uCamUp");
         uSkybox = rayProgram.uniformLocation("uSkybox");
         uNoiseVol = rayProgram.uniformLocation("uNoiseVol");
+        uBlackbodyLut = rayProgram.uniformLocation("uBlackbodyLut");
         uSpinA = rayProgram.uniformLocation("uSpinA");
+        uHorizonR = rayProgram.uniformLocation("uHorizonR");
+        uInnerHorizonR = rayProgram.uniformLocation("uInnerHorizonR");
+        uIscoR = rayProgram.uniformLocation("uIscoR");
         uDiskTempScale = rayProgram.uniformLocation("uDiskTempScale");
         uDiskDensity = rayProgram.uniformLocation("uDiskDensity");
         uJetPower = rayProgram.uniformLocation("uJetPower");
         uTanHalfFov = rayProgram.uniformLocation("uTanHalfFov");
+        uCauchyFlash = rayProgram.uniformLocation("uCauchyFlash");
+        uSpaghettify = rayProgram.uniformLocation("uSpaghettify");
+        uSingularityFade = rayProgram.uniformLocation("uSingularityFade");
         uDoppler = rayProgram.uniformLocation("uDoppler");
         uLensing = rayProgram.uniformLocation("uLensing");
         uShowDisk = rayProgram.uniformLocation("uShowDisk");
@@ -233,6 +253,10 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glBindTexture(GL_TEXTURE_3D, noise3dTex);
             glUniform1i(uNoiseVol, 1);
 
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
+            glUniform1i(uBlackbodyLut, 2);
+
             glUniform2f(uResolution, width, height);
             glUniform1f(uTime, (float) state.simTime);
             glUniform3f(uCamPos, camera.posX, camera.posY, camera.posZ);
@@ -240,15 +264,21 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform3f(uCamRight, camera.rightX, camera.rightY, camera.rightZ);
             glUniform3f(uCamUp, camera.upX, camera.upY, camera.upZ);
             glUniform1f(uSpinA, state.effectiveSpin());
+            glUniform1f(uHorizonR, (float) state.outerHorizonRadius());
+            glUniform1f(uInnerHorizonR, (float) state.innerHorizonRadius());
+            glUniform1f(uIscoR, (float) state.progradeIscoRadius());
             glUniform1f(uDiskTempScale, state.diskTempScale);
             glUniform1f(uDiskDensity, state.diskDensity);
             glUniform1f(uJetPower, state.jetPower);
             glUniform1f(uTanHalfFov, tanHalfFov);
+            glUniform1f(uCauchyFlash, state.cauchyFlashIntensity);
+            glUniform1f(uSpaghettify, state.spaghettification);
+            glUniform1f(uSingularityFade, state.singularityFade);
             glUniform1i(uDoppler, state.dopplerEnabled ? 1 : 0);
             glUniform1i(uLensing, state.lensingEnabled ? 1 : 0);
             glUniform1i(uShowDisk, state.showDisk ? 1 : 0);
             glUniform1i(uShowJets, state.showJets ? 1 : 0);
-            glUniform1i(uFreeFall, state.freeFallMode ? 1 : 0);
+            glUniform1i(uFreeFall, (state.freeFallMode || state.plungeActive) ? 1 : 0);
             glUniform1i(uShowGrid, state.showGrid ? 1 : 0);
             glUniform1i(uOrderVis, state.orderVisualizer ? 1 : 0);
             glUniform1i(uAdaptiveAa, state.adaptiveAa4x ? 1 : 0);
@@ -257,9 +287,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
         }
         timers.endRay();
 
-        // PASS 1B: OpenGL 4.3 Compute TDE + Additive HDR Sprites into hdrFbo (Always GPU Timed)
+        // PASS 1B: OpenGL 4.3 Compute TDE + Additive HDR Sprites (Instant no-op when inactive)
         timers.beginTde();
-        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, state, camera);
+        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, state, camera);
         timers.endTde();
 
         // PASS 2: 5-Level Karis-Averaged Bloom Pyramid (GPU Timed)
@@ -314,6 +344,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
             framebuffers.close();
         }
         tdeSystem.close();
+        glDeleteTextures(blackbodyLutTex);
         glDeleteTextures(skyboxUniverseA);
         glDeleteTextures(skyboxUniverseB);
         glDeleteTextures(noise3dTex);
@@ -323,6 +354,55 @@ public final class BlackHoleRenderer implements AutoCloseable {
         downsampleProgram.close();
         upsampleProgram.close();
         compositeProgram.close();
+    }
+
+    /** Precomputes a 512x1 sqrt-spaced RGB16F Planckian blackbody lookup table (900K..38000K). */
+    private static int createBlackbodyLutTexture(int width) {
+        FloatBuffer data = MemoryUtil.memAllocFloat(width * 3);
+        for (int i = 0; i < width; i++) {
+            double u = (i + 0.5) / width;
+            double tempK = 900.0 + (u * u) * 37100.0;
+            double t = Math.max(9.0, Math.min(380.0, tempK / 100.0));
+
+            double r, g, b;
+            if (t <= 66.0) {
+                r = 1.0;
+                g = clamp01((99.4708025861 * Math.log(Math.max(1.0, t)) - 161.1195681661) / 255.0);
+            } else {
+                r = clamp01((329.698727446 * Math.pow(t - 60.0, -0.1332047592)) / 255.0);
+                g = clamp01((288.1221695283 * Math.pow(t - 60.0, -0.0755148492)) / 255.0);
+            }
+            if (t >= 66.0) {
+                b = 1.0;
+            } else if (t <= 19.0) {
+                b = 0.0;
+            } else {
+                b = clamp01((138.5177312231 * Math.log(t - 10.0) - 305.0447927307) / 255.0);
+            }
+
+            // Convert sRGB curve to linear HDR space once at startup
+            data.put((float) Math.pow(r, 2.2));
+            data.put((float) Math.pow(g, 2.2));
+            data.put((float) Math.pow(b, 2.2));
+        }
+        data.flip();
+
+        int tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, 1, 0, GL_RGB, GL_FLOAT, data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        MemoryUtil.memFree(data);
+        ShaderProgram.checkGlError("createBlackbodyLutTexture");
+        return tex;
+    }
+
+    private static double clamp01(double v) {
+        return Math.max(0.0, Math.min(1.0, v));
     }
 
     private static int bake3dNoiseVolume(ShaderProgram noiseProg, int size) {
@@ -394,7 +474,6 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glDeleteFramebuffers(fbo);
 
-        // Generate full mipmap chain for screen-space ray differentials (textureGrad)
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
         glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0);

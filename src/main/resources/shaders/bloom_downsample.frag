@@ -5,6 +5,14 @@ out vec4 FragColor;
 uniform sampler2D uSource;
 uniform int uIsFirstPass;
 
+vec3 safeSample(vec2 uv) {
+    vec3 c = texture(uSource, uv).rgb;
+    bvec3 bad = bvec3(isnan(c.x) || isinf(c.x),
+                      isnan(c.y) || isinf(c.y),
+                      isnan(c.z) || isinf(c.z));
+    return clamp(mix(c, vec3(0.0), bad), vec3(0.0), vec3(48.0));
+}
+
 vec3 karisAverage(vec3 c) {
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
     return c / (1.0 + luma);
@@ -15,20 +23,20 @@ void main() {
     float x = texel.x;
     float y = texel.y;
 
-    vec3 a = texture(uSource, vec2(vUv.x - 2.0 * x, vUv.y + 2.0 * y)).rgb;
-    vec3 b = texture(uSource, vec2(vUv.x,           vUv.y + 2.0 * y)).rgb;
-    vec3 c = texture(uSource, vec2(vUv.x + 2.0 * x, vUv.y + 2.0 * y)).rgb;
-    vec3 d = texture(uSource, vec2(vUv.x - 2.0 * x, vUv.y)).rgb;
-    vec3 e = texture(uSource, vec2(vUv.x,           vUv.y)).rgb;
-    vec3 f = texture(uSource, vec2(vUv.x + 2.0 * x, vUv.y)).rgb;
-    vec3 g = texture(uSource, vec2(vUv.x - 2.0 * x, vUv.y - 2.0 * y)).rgb;
-    vec3 h = texture(uSource, vec2(vUv.x,           vUv.y - 2.0 * y)).rgb;
-    vec3 i = texture(uSource, vec2(vUv.x + 2.0 * x, vUv.y - 2.0 * y)).rgb;
+    vec3 a = safeSample(vec2(vUv.x - 2.0 * x, vUv.y + 2.0 * y));
+    vec3 b = safeSample(vec2(vUv.x,           vUv.y + 2.0 * y));
+    vec3 c = safeSample(vec2(vUv.x + 2.0 * x, vUv.y + 2.0 * y));
+    vec3 d = safeSample(vec2(vUv.x - 2.0 * x, vUv.y));
+    vec3 e = safeSample(vec2(vUv.x,           vUv.y));
+    vec3 f = safeSample(vec2(vUv.x + 2.0 * x, vUv.y));
+    vec3 g = safeSample(vec2(vUv.x - 2.0 * x, vUv.y - 2.0 * y));
+    vec3 h = safeSample(vec2(vUv.x,           vUv.y - 2.0 * y));
+    vec3 i = safeSample(vec2(vUv.x + 2.0 * x, vUv.y - 2.0 * y));
 
-    vec3 j = texture(uSource, vec2(vUv.x - x, vUv.y + y)).rgb;
-    vec3 k = texture(uSource, vec2(vUv.x + x, vUv.y + y)).rgb;
-    vec3 l = texture(uSource, vec2(vUv.x - x, vUv.y - y)).rgb;
-    vec3 m = texture(uSource, vec2(vUv.x + x, vUv.y - y)).rgb;
+    vec3 j = safeSample(vec2(vUv.x - x, vUv.y + y));
+    vec3 k = safeSample(vec2(vUv.x + x, vUv.y + y));
+    vec3 l = safeSample(vec2(vUv.x - x, vUv.y - y));
+    vec3 m = safeSample(vec2(vUv.x + x, vUv.y - y));
 
     vec3 downsample;
     if (uIsFirstPass == 1) {
