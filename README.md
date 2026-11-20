@@ -41,7 +41,7 @@
     <td align="center" width="50%">
       <img src="docs/media/tde_shredding.png" alt="65,536-particle Tidal Disruption Event wrapping around the black hole shadow" width="100%">
       <br>
-      <sub><b>Volumetric Lensed Compute TDE (`[E]`)</b> — 65,536-particle star sheared across periapsis under Paczyński–Wiita gravity &amp; Kerr frame-dragging torque.</sub>
+      <sub><b>Interactive TDE Lab (`[E]` / `[Shift+E]`)</b> — 4 stellar archetypes, penetration factor &beta; = <i>r<sub>t</sub>/r<sub>p</sub></i>, bound circularizing torus &amp; unbound escape tail.</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/media/wormhole_throat.png" alt="Morris-Thorne traversable wormhole showing Universe B nebula and lensed ghost arcs" width="100%">
@@ -56,9 +56,9 @@
       <sub><b>Horizon Plunge (`[P]`)</b> — Doran / Kerr–Schild free-fall interior view (<i>r</i> &lt; <i>r<sub>+</sub></i>) looking back at the blueshifted exterior sky &amp; disk ring.</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/media/hud_telemetry.png" alt="Glassmorphic GPU/CPU hardware profiler and spacetime optics console" width="100%">
+      <img src="docs/media/hud_telemetry.png" alt="Modular glassmorphic Observatory HUD with tabbed TDE Lab console and timelapse transport dock" width="100%">
       <br>
-      <sub><b>Hardware Profiler &amp; Optics Console (`[H]`)</b> — Asynchronous <code>GL_TIME_ELAPSED</code> pass timers, VRAM/thermal telemetry, and live spacetime controls.</sub>
+      <sub><b>Observatory HUD &amp; Timelapse Dock (`[H]`)</b> — 3-state HUD cycle, 4-tab console (<code>SCENE | PHYSICS | TDE LAB | OPTICS</code>), bottom timelapse dock, and live GPU timers.</sub>
     </td>
   </tr>
 </table>
@@ -81,10 +81,11 @@
 | **Binary Black Hole Merger (`[X]`)** | Deterministic Peters–Mathews inspiral ($\frac{da}{dt} = -\frac{64}{5}\frac{\eta M^3}{a^3}$), coalescence, and $(l=2,m=2)$ QNM ringdown forming a spinning Kerr remnant ($a_f \approx 3.464\eta - 2.9\eta^2$). Ray-traced via superposed Lorentz-boosted Kerr–Schild geodesics (`binary_merger.frag`) with mutual secondary "eyebrow" shadow lensing, $m=2$ circumbinary disk, companion mini-disks, shock-heated tidal bridge, retarded quadrupole $h_+, h_\times$ skybox deflection + `[G]` orbital-plane ripple overlay, MRT `GL_RG16F` TAA motion vectors, live LIGO chirp audio, and a 160-sample HUD strain oscilloscope. |
 | **Doran Horizon Plunge** | Horizon-penetrating Kerr–Schild / Doran observer frame (`[P]` / `[F]`) crossing $r_+$ cleanly ($\beta_{\text{in}} = c$ at $r_+$) with independent 360° free-look, proper time ($\tau$) vs. diverging coordinate time ($t_\infty \to \infty$), relativistic blueshift, Kerr inner Cauchy horizon ($r_-$) mass-inflation flash, Schwarzschild anisotropic optical spaghettification, and tidal camera micro-rumble. |
 | **Morris–Thorne Wormhole** | Exact *Interstellar* / Dneg embedding radius $r(l)$ with live throat radius $\rho$, throat half-length $a$, and lensing width $M_w$. Smooth bidirectional flight across $l = 0$ between GPU-baked `1024×1024×6` mipmapped HDR cubemaps (**Universe A**: Milky Way; **Universe B**: teal-amber nebula & ringed gas giant) with `textureGrad` ray differentials. |
-| **OpenGL 4.3 Compute TDE** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) stepped in `tidal_disruption.comp` with 2-substep Velocity-Verlet integration, Lense–Thirring frame-dragging torque, and periapsis nozzle-compression shock heating — rendered as instanced velocity-stretched volumetric plasma ribbons with analytic Kerr-calibrated gravitational lensing, 3D turbulence filamentation, and feathered shadow occlusion. |
+| **Global Timelapse (`-`/`=`/`0`)** | Unified `0.05×` slow-motion to `25×` timelapse across Kerr, Wormhole, Binary Merger, Horizon Plunge, and TDE without altering camera/UI wall-clock responsiveness. Fixed-substep integration prevents numerical blow-ups at `25×`, while TAA dynamically raises its blend floor above `4×` and OpenAL compresses pitch logarithmically. |
+| **Interactive Compute TDE Lab** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) across 4 stellar archetypes (**Solar G2V**, **Red Supergiant**, **Blue O-Type**, **White Dwarf**) with live penetration factor $\beta = r_t/r_p$ (`0.6`–`4.0`) and orbital inclination (`-65°` to `+65°`). Computes exact Paczyński–Wiita specific orbital energy ($\epsilon = \frac{1}{2}v^2 - \frac{1}{r - 0.88r_+}$) for bound fallback circularization shocks vs. unbound hyperbolic escape tails, with zero-stall ping-pong `GLsync` atomic counters driving an inner horizon accretion flare and audio surge. |
 | **Relativistic Temporal AA (TAA)** | 16-phase Halton(2,3) sub-pixel jittered 1-ray/px geodesics resolved via `taa_resolve.frag` with exact 3D camera parallax reprojection (using linear world hit distance in `hdrFbo.a`), 5-tap Catmull-Rom bicubic history sampling, and Karis-weighted 3×3 YCoCg variance clipping for flicker-free photon rings and 180+ FPS 1080p performance. |
 | **Karis Bloom + Anamorphic Glare** | 5-level HDR bloom pyramid (`GL_RGBA16F`) with weight-normalized Jimenez/Karis firefly suppression and quadratic soft-knee extraction, a 2-pass cascaded 13-tap *Interstellar*-style horizontal anamorphic streak at 1/8 resolution (shadow-guarded so black levels inside $r_+$ stay pure), ACES filmic tonemapping, and post-tonemap TPDF dithering. |
-| **MTSDF HUD Typography** | Pre-baked 3-channel MSDF + true-SDF alpha (`RGBA8`) JetBrains Mono Medium atlas loaded via `java.util.zip` (zero `java.desktop`/AWT dependency) with `median(r,g,b)` + `fwidth` analytical anti-aliasing and subtle dark legibility micro-halo over bright HDR plasma. |
+| **Modular Glassmorphic HUD** | 3-state `[H]` cycle (`CLEAN` → `COMPACT` → `FULL`), frosted vertical-gradient SDF panels with top specular rims, bottom-center **Timelapse Transport Bar**, 4-tab Observatory Console (`SCENE` \| `PHYSICS` \| `TDE LAB` \| `OPTICS`) with 1-line hover tooltips, and pre-baked 3-channel MSDF + SDF JetBrains Mono Medium typography (zero `java.desktop`/AWT dependency). |
 | **Procedural OpenAL Audio** | Zero-asset 44.1 kHz stereo PCM daemon synthesizer (`lwjgl-openal`) generating gravitational-redshift sub-bass drones, Doppler-panned accretion roar, TDE periapsis plasma crackle, and sweeping wormhole throat harmonics (with graceful silent fallback). |
 | **Hardware `GL_TIME_ELAPSED` Profiling** | 3-slot asynchronous ring-buffered OpenGL timer queries measuring **Raytrace**, **TDE**, **Bloom/TAA**, and **UI** passes independently alongside `nvidia-smi` / `GL_NVX_gpu_memory_info` telemetry, JVM/system CPU load, and a 120-frame oscilloscope trace — all with **zero per-frame Java heap allocations**. |
 
@@ -120,7 +121,8 @@ src/
 │   │       │   ├── BinaryMergerPhysics.java    # Peters-Mathews inspiral, merger & QNM ringdown
 │   │       │   ├── CameraController.java       # Orbit, Plunge, Binary, Wormhole & Attract Tour
 │   │       │   ├── SimulationEngine.java       # GLFW loop, async [F12] & --capture-showcase
-│   │       │   └── SimulationState.java
+│   │       │   ├── SimulationState.java
+│   │       │   └── StellarArchetype.java       # 4 TDE star classes, beta periapsis & substep plan
 │   │       ├── graphics/
 │   │       │   ├── BlackHoleRenderer.java
 │   │       │   ├── GpuTimerQueries.java
@@ -174,12 +176,13 @@ java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar -
 |---|---|
 | **Left-Drag** | Orbit camera (instantly disengages Attract Tour) / drag console sliders |
 | **Scroll Wheel** | Logarithmic zoom (Black Hole / Binary) · Fly through throat `l ∈ [-35, +35]` (Wormhole) · Plunge speed (`[P]`) |
-| `H` | Toggle Glassmorphic Console & Hardware Profiler (**Cinema Mode** ↔ **Telemetry HUD**) |
+| `H` | Cycle HUD Visibility: **Cinema Clean** → **Compact Dock** → **Full Observatory Console** |
+| `-` / `=` (or `,` / `.`) / `0` | Global Physics-Safe Timelapse (`0.05×` – `25×`) · `0`: Snap to `1.0×` Realtime |
 | `X` / `Shift+X` | Toggle **Binary Black Hole Merger & GW Sandbox** · `Shift+X`: Replay Merger |
 | `T` | Toggle **Director's Cut Attract Tour** |
 | `P` | Launch / Abort / Replay **Horizon Plunge Dive** (`r+` → Interior) |
 | `W` | Switch Spacetime: **Kerr–Schild Black Hole** ↔ **Morris–Thorne Wormhole** |
-| `E` | Inject & Shred a **65,536-particle Star** (Tidal Disruption Event) |
+| `E` / `Shift+E` / `Shift+C` | Launch Star (TDE Lab) · `Shift+E`: Cycle Stellar Archetype · `Shift+C`: Clear Debris |
 | `F12` / `S` | Capture clean HUD-free PNG screenshot to `captures/` |
 | `A` | Toggle Procedural OpenAL Soundscape (including live **LIGO Chirp** in Binary mode) |
 | `1` `2` `3` `4` | Presets — Black Hole: Edge / Polar / Photon Ring / Dive · Binary: Oblique / Top-Down / Close / Replay · Wormhole: Univ A / Throat / Univ B / Fly-Through |

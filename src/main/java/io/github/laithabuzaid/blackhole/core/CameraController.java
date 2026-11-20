@@ -63,6 +63,7 @@ public final class CameraController {
 
     // Tidal Camera Micro-Rumble state (plunge + close TDE periapsis shear)
     private double rumbleTime = 0.0;
+    private double autoOrbitPhase = 0.0;
     private double rumbleYawOffset = 0.0;
     private double rumblePitchOffset = 0.0;
     private double rumbleRollOffset = 0.0;
@@ -88,16 +89,17 @@ public final class CameraController {
         if (state.attractTourActive && !state.paused && !state.wormholeMode && !state.binaryMode && !state.plungeActive) {
             updateAttractTour(dt);
         } else if (!state.paused && state.autoOrbit && !state.plungeActive) {
+            autoOrbitPhase += dt;
             targetYaw += dt * 0.14;
             if (!state.wormholeMode) {
-                targetPitch = 0.14 + Math.sin(state.simTime * 0.20) * 0.28;
+                targetPitch = 0.14 + Math.sin(autoOrbitPhase * 0.20) * 0.28;
             }
         }
 
         if (state.wormholeMode) {
             updateWormholeFlight(dt, keyUpHeld, keyDownHeld);
         } else if (state.plungeActive) {
-            updatePlunge(dt, state);
+            updatePlunge(state.effectiveSimDt(dt), state);
         } else {
             autoFlyThrough = false;
             // Smoothly relax free-look back to 0 when returning to orbital mode
@@ -341,95 +343,101 @@ public final class CameraController {
 
     /**
      * Exact Doran / Kerr-Schild proper-time free-fall integrator from rest at infinity (L_z = 0).
-     * Reaches exact v/c = 1.000 at r_+ = M + sqrt(M^2 - a^2) and exceeds c inside r_+.
+     * Fixed-substepped so trajectory, horizon crossing ({@code v/c = 1.000} at {@code r_+}),
+     * and Cauchy/singularity climax remain deterministic from {@code 0.05x} to {@code 25.0x} timelapse.
      */
-    private void updatePlunge(double dt, SimulationState state) {
+    private void updatePlunge(double simDt, SimulationState state) {
         double a = state.effectiveSpin();
         double rPlus = state.outerHorizonRadius();
         double rMinus = state.innerHorizonRadius();
         boolean isKerr = (a > 0.05);
 
-        if (state.paused || state.plungeEnded) {
+        if (state.paused || state.plungeEnded || simDt <= 0.0) {
             return;
         }
 
-        // Scale proper time so exterior approach is brisk (~2.7s from 12.6M, ~8.4s from 38M)
-        // while interior crossing & climax last ~2.7s for full 360-degree observation
-        double r = camDist;
-        double paceFactor;
-        if (r > 12.0) {
-            paceFactor = 16.0;
-        } else if (r > rPlus) {
-            paceFactor = 7.5;
-        } else {
-            paceFactor = isKerr ? 0.14 : 0.48;
-        }
-        double dTau = dt * state.plungeSpeed * paceFactor;
+        final double maxSubDt = 0.008;
+        final int maxSubsteps = 80;
+        int substeps = Math.max(1, Math.min(maxSubsteps, (int) Math.ceil(simDt / maxSubDt)));
+        double subDt = Math.min(maxSubDt, simDt / substeps);
 
-        // Midpoint integration of exact Doran infall speed beta_in = sqrt(2 M r / (r^2 + a^2))
-        double beta0 = Math.sqrt(Math.max(0.0, (2.0 * r) / Math.max(1e-4, r * r + a * a)));
-        double rMid = Math.max(0.08, r - 0.5 * beta0 * dTau);
-        double betaMid = Math.sqrt(Math.max(0.0, (2.0 * rMid) / Math.max(1e-4, rMid * rMid + a * a)));
-        double rNext = r - betaMid * dTau;
-
-        // Prograde ZAMO frame-dragging spiral azimuth during Kerr plunge
-        if (a > 0.001) {
-            double sMid = rMid * rMid + a * a;
-            double omegaZamo = (2.0 * a * rMid) / Math.max(0.25, sMid * sMid);
-            camYaw += omegaZamo * dTau * 1.45;
-            targetYaw = camYaw;
-        }
-
-        // Proper time vs. distant Boyer-Lindquist coordinate time (diverging at r_+)
-        state.plungeProperTime += dTau;
-        if (rMid > rPlus * 1.003 && !state.plungeHorizonCrossed) {
-            double delta = Math.max(1e-4, rMid * rMid - 2.0 * rMid + a * a);
-            state.plungeCoordTime += dTau * ((rMid * rMid + a * a) / delta);
-        } else {
-            state.plungeHorizonCrossed = true;
-        }
-
-        // Interior Climax Handling
-        if (isKerr) {
-            double cauchyStop = rMinus + 0.032;
-            if (rNext <= cauchyStop) {
-                rNext = cauchyStop;
-                state.plungeEnded = true;
-            }
-            double interiorSpan = Math.max(0.10, (rPlus - rMinus) * 0.78);
-            double distCauchy = Math.max(0.0, rNext - cauchyStop);
-            if (rNext < rPlus) {
-                float flash = (float) Math.exp(-Math.pow(distCauchy / (interiorSpan * 0.26), 1.55));
-                state.cauchyFlashIntensity = Math.min(1.0f, flash);
+        for (int s = 0; s < substeps && !state.plungeEnded; s++) {
+            double r = camDist;
+            double paceFactor;
+            if (r > 12.0) {
+                paceFactor = 16.0;
+            } else if (r > rPlus) {
+                paceFactor = 7.5;
             } else {
-                state.cauchyFlashIntensity = 0.0f;
+                paceFactor = isKerr ? 0.14 : 0.48;
             }
-            state.spaghettification = 0.0f;
-            state.singularityFade = state.plungeEnded ? 0.65f : 0.0f;
-        } else {
-            double singStop = 0.12;
-            if (rNext <= singStop) {
-                rNext = singStop;
-                state.plungeEnded = true;
+            double dTau = subDt * state.plungeSpeed * paceFactor;
+
+            // Midpoint integration of exact Doran infall speed beta_in = sqrt(2 M r / (r^2 + a^2))
+            double beta0 = Math.sqrt(Math.max(0.0, (2.0 * r) / Math.max(1e-4, r * r + a * a)));
+            double rMid = Math.max(0.08, r - 0.5 * beta0 * dTau);
+            double betaMid = Math.sqrt(Math.max(0.0, (2.0 * rMid) / Math.max(1e-4, rMid * rMid + a * a)));
+            double rNext = r - betaMid * dTau;
+
+            // Prograde ZAMO frame-dragging spiral azimuth during Kerr plunge
+            if (a > 0.001) {
+                double sMid = rMid * rMid + a * a;
+                double omegaZamo = (2.0 * a * rMid) / Math.max(0.25, sMid * sMid);
+                camYaw += omegaZamo * dTau * 1.45;
+                targetYaw = camYaw;
             }
-            state.cauchyFlashIntensity = 0.0f;
-            if (rNext < 1.50) {
-                state.spaghettification = (float) Math.min(1.0, Math.pow(Math.max(0.0, (1.50 - rNext) / 1.32), 1.65));
+
+            // Proper time vs. distant Boyer-Lindquist coordinate time (diverging at r_+)
+            state.plungeProperTime += dTau;
+            if (rMid > rPlus * 1.003 && !state.plungeHorizonCrossed) {
+                double delta = Math.max(1e-4, rMid * rMid - 2.0 * rMid + a * a);
+                state.plungeCoordTime += dTau * ((rMid * rMid + a * a) / delta);
             } else {
+                state.plungeHorizonCrossed = true;
+            }
+
+            // Interior Climax Handling
+            if (isKerr) {
+                double cauchyStop = rMinus + 0.032;
+                if (rNext <= cauchyStop) {
+                    rNext = cauchyStop;
+                    state.plungeEnded = true;
+                }
+                double interiorSpan = Math.max(0.10, (rPlus - rMinus) * 0.78);
+                double distCauchy = Math.max(0.0, rNext - cauchyStop);
+                if (rNext < rPlus) {
+                    float flash = (float) Math.exp(-Math.pow(distCauchy / (interiorSpan * 0.26), 1.55));
+                    state.cauchyFlashIntensity = Math.min(1.0f, flash);
+                } else {
+                    state.cauchyFlashIntensity = 0.0f;
+                }
                 state.spaghettification = 0.0f;
-            }
-            if (rNext < 0.42) {
-                state.singularityFade = (float) Math.min(1.0, Math.max(0.0, (0.42 - rNext) / 0.30));
+                state.singularityFade = state.plungeEnded ? 0.65f : 0.0f;
             } else {
-                state.singularityFade = 0.0f;
+                double singStop = 0.12;
+                if (rNext <= singStop) {
+                    rNext = singStop;
+                    state.plungeEnded = true;
+                }
+                state.cauchyFlashIntensity = 0.0f;
+                if (rNext < 1.50) {
+                    state.spaghettification = (float) Math.min(1.0, Math.pow(Math.max(0.0, (1.50 - rNext) / 1.32), 1.65));
+                } else {
+                    state.spaghettification = 0.0f;
+                }
+                if (rNext < 0.42) {
+                    state.singularityFade = (float) Math.min(1.0, Math.max(0.0, (0.42 - rNext) / 0.30));
+                } else {
+                    state.singularityFade = 0.0f;
+                }
             }
-        }
 
-        camDist = rNext;
-        targetDist = rNext;
-        state.plungeVelocityC = (float) Math.sqrt(Math.max(0.0, (2.0 * rNext) / Math.max(1e-4, rNext * rNext + a * a)));
-        state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, rNext * rNext * rNext));
-        classifyPlungeZone(rNext, a, state);
+            camDist = rNext;
+            targetDist = rNext;
+            state.plungeVelocityC = (float) Math.sqrt(Math.max(0.0, (2.0 * rNext) / Math.max(1e-4, rNext * rNext + a * a)));
+            state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, rNext * rNext * rNext));
+            classifyPlungeZone(rNext, a, state);
+        }
     }
 
     private static void classifyPlungeZone(double r, double a, SimulationState state) {

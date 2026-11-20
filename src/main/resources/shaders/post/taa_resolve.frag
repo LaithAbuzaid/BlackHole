@@ -178,8 +178,8 @@ void main() {
     vec3 histYcc = rgbToYCoCg(toPerceptual(historyHdr));
     vec3 clippedHistYcc = clipAabb(boxMin, boxMax, currYcc, histYcc);
 
-    // Blend factor: exact progressive convergence when static/showcase, responsive when orbiting
-    float alpha = mix(uMinAlpha, 0.20, motionT);
+    // Blend factor: exact progressive convergence when static/showcase, responsive when orbiting or in timelapse
+    float alpha = max(uMinAlpha, mix(uMinAlpha, 0.22, motionT));
     vec3 resolvedYcc = mix(clippedHistYcc, currYcc, alpha);
     vec3 resolvedHdr = sanitize(fromPerceptual(yCoCgToRgb(resolvedYcc)));
 

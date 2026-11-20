@@ -63,6 +63,7 @@ public final class SimulationEngine {
     private double mouseY;
     private final double[] cursorXBuf = new double[1];
     private final double[] cursorYBuf = new double[1];
+    private final StringBuilder toastSb = new StringBuilder(64);
 
     private long window = NULL;
 
@@ -171,7 +172,8 @@ public final class SimulationEngine {
             }
 
             long elapsedNano = frameStartNano - lastFrameNano;
-            double dt = Math.min(elapsedNano * 1e-9, 0.05);
+            double wallDt = Math.min(elapsedNano * 1e-9, 0.05);
+            double simDt = state.effectiveSimDt(wallDt);
             float rawWallMs = elapsedNano * 1e-6f;
             telemetry.wallFrameMs = telemetry.wallFrameMs * 0.88f + rawWallMs * 0.12f;
             lastFrameNano = frameStartNano;
@@ -192,22 +194,28 @@ public final class SimulationEngine {
             }
 
             if (!state.paused) {
-                state.simTime += dt;
+                state.simTime += simDt;
                 if (state.binaryMode) {
-                    binaryPhysics.step(dt, state.binaryMassRatio, state.binaryTimeScale, state.binaryAutoLoop);
+                    binaryPhysics.step(wallDt, state.binaryMassRatio, state.timeScale, state.binaryAutoLoop);
                 }
             }
-            state.tickUiTimers(dt);
-            camera.update(dt, state, keyUpHeld, keyDownHeld, renderer.tdeShearEnergy(), true);
+            state.tickUiTimers(wallDt);
+            camera.update(wallDt, state, keyUpHeld, keyDownHeld, renderer.tdeShearEnergy(), true);
 
             if (camera.consumeAttractSpawnTrigger() && !state.wormholeMode && !state.binaryMode) {
                 renderer.spawnTdeStar(state);
-                state.showToast("STAR INJECTED: 65,536 PARTICLES");
+                toastSb.setLength(0);
+                toastSb.append("STAR LAUNCHED: ").append(state.currentTdeArchetype().displayName);
+                state.showToast(toastSb);
             }
 
             // Passes 1..3: Kerr-Schild / Binary Merger / Wormhole Raytrace, Compute TDE, TAA, Bloom, Anamorphic ACES
-            renderer.renderFrame(windowW, windowH, dt, telemetryTick, state, camera, binaryPhysics, gpuTimers, 0);
+            renderer.renderFrame(windowW, windowH, wallDt, simDt, state, camera, binaryPhysics, gpuTimers, 0);
             telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
+            telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
+            telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
+            telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
+            telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
             audio.updatePhysics(state, camera, renderer.tdeShearEnergy(), binaryPhysics);
 
             // [F12] Live HUD-free PNG capture read directly from clean post-composite backbuffer (zero flicker)
@@ -283,7 +291,7 @@ public final class SimulationEngine {
 
             // 1. hero_kerr_edge.png — Gargantua-style edge-on Kerr black hole (a* = 0.96, Doppler + anamorphic flare)
             state.resetDefaults();
-            state.showUi = false;
+            state.setHudMode(SimulationState.HUD_CLEAN);
             state.wormholeMode = false;
             state.spinParam = 0.96f;
             state.diskTempScale = 1.02f;
@@ -299,29 +307,55 @@ public final class SimulationEngine {
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/hero_kerr_edge.png"));
 
-            // 2. tde_shredding.png — Mid-disruption 65,536-particle spaghettified star wrapping around shadow
+            // 2. tde_shredding.png — Upgraded TDE Lab: Solar G2V (beta=1.85, +24 deg) bound fallback torus + unbound tail
             state.resetDefaults();
-            state.showUi = false;
+            state.setHudMode(SimulationState.HUD_CLEAN);
             state.wormholeMode = false;
             state.spinParam = 0.96f;
-            state.diskDensity = 0.50f;
+            state.tdeArchetypeIndex = 0; // Solar G2V
+            state.tdeBeta = 1.85f;
+            state.tdeInclinationDeg = 24.0f;
+            state.diskDensity = 0.44f;
             state.jetPower = 0.0f;
             state.bloomStrength = 0.44f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.48f;
-            state.exposure = 1.18f;
-            state.fovDeg = 22.5f;
+            state.anamorphicStrength = 0.44f;
+            state.exposure = 1.16f;
+            state.fovDeg = 24.0f;
             state.simTime = 8.5;
-            camera.setShowcasePose(28.0, 0.72, 0.48, -0.08, 0.0, 0.0, state);
+            camera.setShowcasePose(30.0, 0.85, 0.48, -0.08, 0.0, 0.0, state);
             renderer.clearTdeStars();
             renderer.spawnTdeStar(state);
-            renderer.stepTdeComputeOnly(680, 1.0 / 60.0, state);
+            renderer.stepTdeComputeOnly(760, 1.0 / 60.0, state);
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/tde_shredding.png"));
 
+            // Benchmark 10x TDE timelapse substepping at 1920x1080 on RTX 4060
+            state.setTimeScale(10.0f);
+            renderer.resetTaaHistory();
+            float tde10xRay = 0f, tde10xTde = 0f, tde10xBlm = 0f;
+            for (int f = 0; f < 24; f++) {
+                double wDt = 1.0 / 120.0;
+                double sDt = state.effectiveSimDt(wDt);
+                state.simTime += sDt;
+                renderer.renderFrame(w, h, wDt, sDt, state, camera, binaryPhysics, gpuTimers, captureFbo);
+                gpuTimers.beginUi();
+                gpuTimers.endUi();
+                glFinish();
+                if (gpuTimers.pollPreviousFrame() && f >= 8) {
+                    tde10xRay = gpuTimers.rayMs();
+                    tde10xTde = gpuTimers.tdeMs();
+                    tde10xBlm = gpuTimers.bloomMs();
+                }
+                gpuTimers.advanceFrame();
+            }
+            float tde10xTot = tde10xRay + tde10xTde + tde10xBlm;
+            System.out.printf("[Showcase] TDE 10x Timelapse 1080p TAA GPU timing: RAY=%.2f ms, TDE=%.2f ms, BLM=%.2f ms, TOTAL=%.2f ms (%.1f FPS)%n",
+                    tde10xRay, tde10xTde, tde10xBlm, tde10xTot, 1000.0f / Math.max(0.1f, tde10xTot));
+
             // 3. wormhole_throat.png — Morris-Thorne wormhole showing Universe B nebula & ringed planet ghost arcs
             state.resetDefaults();
-            state.showUi = false;
+            state.setHudMode(SimulationState.HUD_CLEAN);
             state.wormholeMode = true;
             state.wormholeRho = 2.60f;
             state.wormholeA = 0.45f;
@@ -337,7 +371,7 @@ public final class SimulationEngine {
 
             // 4. horizon_plunge.png — Interior Kerr plunge looking back at blueshifted exterior sky & disk ring
             state.resetDefaults();
-            state.showUi = false;
+            state.setHudMode(SimulationState.HUD_CLEAN);
             state.wormholeMode = false;
             state.spinParam = 0.98f;
             state.plungeActive = true;
@@ -358,30 +392,36 @@ public final class SimulationEngine {
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/horizon_plunge.png"));
 
-            // 5. hud_telemetry.png — Full simulation with glassmorphic GPU/CPU profiler & console expanded
+            // 5. hud_telemetry.png — Modular Glassmorphic Observatory HUD (TDE LAB Tab + Timelapse Dock + Live Counters)
             state.resetDefaults();
-            state.showUi = true;
+            state.setHudMode(SimulationState.HUD_FULL);
+            state.activeConsoleTab = SimulationState.TAB_TDE_LAB;
             state.controlsExpanded = true;
             state.wormholeMode = false;
             state.spinParam = 0.98f;
+            state.tdeArchetypeIndex = 2; // Blue O-Type showcase in TDE Lab
+            state.tdeBeta = 2.05f;
+            state.tdeInclinationDeg = 28.0f;
+            state.setTimeScale(1.00f);
             state.jetPower = 0.55f;
             state.bloomStrength = 0.40f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.60f;
+            state.anamorphicStrength = 0.56f;
             state.exposure = 1.16f;
             state.fovDeg = 22.5f;
             state.simTime = 6.0;
-            camera.setShowcasePose(36.0, 0.28, 0.145, -0.17, 0.0, 0.0, state);
+            camera.setShowcasePose(35.0, 0.34, 0.19, -0.14, 0.0, 0.0, state);
             renderer.clearTdeStars();
             renderer.spawnTdeStar(state);
-            renderer.stepTdeComputeOnly(210, 1.0 / 60.0, state);
-            // Warm up TDE + TAA + hardware GPU timers + full 120-frame oscilloscope trace
+            renderer.stepTdeComputeOnly(560, 1.0 / 60.0, state);
+            // Warm up 1x TAA + hardware GPU timers + full 120-frame oscilloscope trace
             renderer.resetTaaHistory();
             for (int f = 0; f < 135; f++) {
-                boolean readback = (f == 120);
                 long t0 = System.nanoTime();
-                state.simTime += 1.0 / 60.0;
-                renderer.renderFrame(w, h, 1.0 / 60.0, readback, state, camera, binaryPhysics, gpuTimers, captureFbo);
+                double wDt = 1.0 / 120.0;
+                double sDt = state.effectiveSimDt(wDt);
+                state.simTime += sDt;
+                renderer.renderFrame(w, h, wDt, sDt, state, camera, binaryPhysics, gpuTimers, captureFbo);
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
                 glViewport(0, 0, w, h);
                 gpuTimers.beginUi();
@@ -395,16 +435,28 @@ public final class SimulationEngine {
                                 gpuTimers.bloomMs(), gpuTimers.uiMs());
                     }
                     telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
+                    telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
+                    telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
+                    telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
+                    telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
                     telemetry.pollOpenGlVram();
                     telemetry.wallFrameMs = Math.max(1.0f, telemetry.gpuTotalMs > 0.1f ? telemetry.gpuTotalMs : submitMs);
                     telemetry.currentFps = 1000.0f / Math.max(1.0f, telemetry.wallFrameMs);
-                    telemetry.recordFrameSample(readback ? telemetry.cpuSubmitMs : submitMs);
+                    telemetry.recordFrameSample(submitMs);
                 }
                 gpuTimers.advanceFrame();
             }
-            // Render final crisp HUD frame into captureFbo
-            renderer.renderFrame(w, h, 1.0 / 60.0, true, state, camera, binaryPhysics, gpuTimers, captureFbo);
+            System.out.printf("[Showcase] Single Kerr + TDE 1x 1080p TAA GPU timing: RAY=%.2f ms, TDE=%.2f ms, BLM=%.2f ms, UI=%.2f ms, TOTAL=%.2f ms (%.1f FPS)%n",
+                    telemetry.gpuRayMs, telemetry.gpuTdeMs, telemetry.gpuBloomMs, telemetry.gpuUiMs,
+                    telemetry.gpuTotalMs, 1000.0f / Math.max(0.1f, telemetry.gpuTotalMs));
+            // Render final crisp HUD frame with 5.0x Timelapse badge active for showcase clarity
+            state.setTimeScale(5.0f);
+            renderer.renderFrame(w, h, 1.0 / 120.0, 0.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
             telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
+            telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
+            telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
+            telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
+            telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
             glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
             glViewport(0, 0, w, h);
             gpuTimers.beginUi();
@@ -415,11 +467,11 @@ public final class SimulationEngine {
 
             // 6. binary_merger.png — Late inspiral / pre-coalescence binary black holes with mutual eyebrow lensing & shock bridge
             state.resetDefaults();
-            state.showUi = false;
+            state.setHudMode(SimulationState.HUD_CLEAN);
             state.wormholeMode = false;
             state.binaryMode = true;
             state.binaryMassRatio = 0.65f;
-            state.binaryTimeScale = 1.00f;
+            state.setTimeScale(1.00f);
             state.binaryGwOverlay = true;
             state.diskTempScale = 1.00f;
             state.diskDensity = 1.08f;
@@ -429,8 +481,6 @@ public final class SimulationEngine {
             state.exposure = 1.12f;
             state.fovDeg = 23.0f;
             binaryPhysics.advanceToSeparation(state.binaryMassRatio, 5.25);
-            // Frame near-broadside (~82 deg) to the binary axis so both shadows (1.54:1),
-            // mutual secondary eyebrow lensing arcs, mini-disks, and the tidal shock bridge shine cleanly
             double broadsideYaw = Math.atan2(binaryPhysics.pos1X - binaryPhysics.pos2X,
                     binaryPhysics.pos1Z - binaryPhysics.pos2Z) + Math.PI * 0.5 - 0.14;
             camera.setShowcasePose(28.5, broadsideYaw, 0.38, -0.07, 0.0, 0.0, state);
@@ -438,7 +488,7 @@ public final class SimulationEngine {
             renderer.resetTaaHistory();
             float binRayMs = 0f, binBlmMs = 0f;
             for (int f = 0; f < 28; f++) {
-                renderer.renderFrame(w, h, 1.0 / 120.0, false, state, camera, binaryPhysics, gpuTimers, captureFbo);
+                renderer.renderFrame(w, h, 1.0 / 120.0, 1.0 / 120.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
                 gpuTimers.beginUi();
                 gpuTimers.endUi();
                 glFinish();
@@ -471,7 +521,7 @@ public final class SimulationEngine {
         // Converge 16 Halton(2,3) TAA sub-pixel jitter samples on the frozen showcase frame
         renderer.resetTaaHistory();
         for (int s = 0; s < 16; s++) {
-            renderer.renderFrame(w, h, 0.0, false, state, camera, binaryPhysics, gpuTimers, captureFbo);
+            renderer.renderFrame(w, h, 0.0, 0.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
             gpuTimers.beginUi();
             if (withHud && s == 15) {
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
@@ -573,10 +623,76 @@ public final class SimulationEngine {
                     state.showToast("SPACETIME: KERR-SCHILD BLACK HOLE");
                 }
             }
+            case HudOverlay.ACT_MODE_KERR -> {
+                camera.disengageAttractTour(state);
+                state.clearPlungeTelemetry();
+                state.wormholeMode = false;
+                state.binaryMode = false;
+                camera.applyPresetGargantuaEdge();
+                state.showToast("SPACETIME: KERR-SCHILD BLACK HOLE");
+            }
+            case HudOverlay.ACT_TAB_SCENE -> state.activeConsoleTab = SimulationState.TAB_SCENE;
+            case HudOverlay.ACT_TAB_PHYSICS -> state.activeConsoleTab = SimulationState.TAB_PHYSICS;
+            case HudOverlay.ACT_TAB_TDE_LAB -> state.activeConsoleTab = SimulationState.TAB_TDE_LAB;
+            case HudOverlay.ACT_TAB_OPTICS -> state.activeConsoleTab = SimulationState.TAB_OPTICS;
+            case HudOverlay.ACT_TIME_SLOWER -> {
+                state.stepTimeScaleDown();
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TIME_FASTER -> {
+                state.stepTimeScaleUp();
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TIME_RESET -> {
+                state.setTimeScale(1.0f);
+                state.paused = false;
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TIME_025 -> {
+                state.setTimeScale(0.25f);
+                state.paused = false;
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TIME_1 -> {
+                state.setTimeScale(1.0f);
+                state.paused = false;
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TIME_5 -> {
+                state.setTimeScale(5.0f);
+                state.paused = false;
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TIME_15 -> {
+                state.setTimeScale(15.0f);
+                state.paused = false;
+                showTimeScaleToast();
+            }
+            case HudOverlay.ACT_TDE_ARCH_0, HudOverlay.ACT_TDE_ARCH_1,
+                 HudOverlay.ACT_TDE_ARCH_2, HudOverlay.ACT_TDE_ARCH_3 -> {
+                state.tdeArchetypeIndex = actionId - HudOverlay.ACT_TDE_ARCH_0;
+                toastSb.setLength(0);
+                toastSb.append("TDE STAR: ").append(state.currentTdeArchetype().displayName);
+                state.showToast(toastSb);
+            }
+            case HudOverlay.ACT_TDE_CYCLE_ARCH -> {
+                state.cycleTdeArchetype();
+                toastSb.setLength(0);
+                toastSb.append("TDE STAR: ").append(state.currentTdeArchetype().displayName);
+                state.showToast(toastSb);
+            }
+            case HudOverlay.ACT_TDE_CLEAR -> {
+                pendingClearStars = true;
+                state.showToast("TDE DEBRIS CLEARED");
+            }
             case HudOverlay.ACT_SHRED_STAR -> {
                 if (!state.wormholeMode && !state.binaryMode) {
                     pendingSpawnStar = true;
-                    state.showToast("STAR INJECTED: 65,536 PARTICLES");
+                    toastSb.setLength(0);
+                    toastSb.append("LAUNCHED: ").append(state.currentTdeArchetype().displayName);
+                    state.showToast(toastSb);
+                } else {
+                    state.showToast("SWITCH TO KERR BH FOR TDE LAB");
                 }
             }
             case HudOverlay.ACT_FLY_THROUGH -> {
@@ -806,12 +922,17 @@ public final class SimulationEngine {
             switch (key) {
                 case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(win, true);
                 case GLFW_KEY_H -> {
-                    state.showUi = !state.showUi;
-                    if (!state.showUi) {
-                        state.cinemaHintAge = 0.0f;
-                    }
-                    state.showToast(state.showUi ? "CONSOLE & TELEMETRY: ON" : "CINEMA MODE");
+                    state.cycleHudMode();
+                    String msg = switch (state.hudMode) {
+                        case SimulationState.HUD_COMPACT -> "HUD: COMPACT DOCK";
+                        case SimulationState.HUD_FULL -> "HUD: FULL OBSERVATORY";
+                        default -> "HUD: CINEMA MODE";
+                    };
+                    state.showToast(msg);
                 }
+                case GLFW_KEY_MINUS, GLFW_KEY_COMMA -> triggerAction(HudOverlay.ACT_TIME_SLOWER);
+                case GLFW_KEY_EQUAL, GLFW_KEY_PERIOD -> triggerAction(HudOverlay.ACT_TIME_FASTER);
+                case GLFW_KEY_0 -> triggerAction(HudOverlay.ACT_TIME_RESET);
                 case GLFW_KEY_T -> triggerAction(HudOverlay.ACT_ATTRACT_TOUR);
                 case GLFW_KEY_F12, GLFW_KEY_S -> pendingScreenshot = true;
                 case GLFW_KEY_P -> triggerAction(HudOverlay.ACT_PLUNGE);
@@ -823,7 +944,13 @@ public final class SimulationEngine {
                         triggerAction(HudOverlay.ACT_BINARY);
                     }
                 }
-                case GLFW_KEY_E -> triggerAction(HudOverlay.ACT_SHRED_STAR);
+                case GLFW_KEY_E -> {
+                    if ((mods & GLFW_MOD_SHIFT) != 0) {
+                        triggerAction(HudOverlay.ACT_TDE_CYCLE_ARCH);
+                    } else {
+                        triggerAction(HudOverlay.ACT_SHRED_STAR);
+                    }
+                }
                 case GLFW_KEY_A -> triggerAction(HudOverlay.ACT_AUDIO);
                 case GLFW_KEY_1 -> triggerAction(state.binaryMode ? HudOverlay.PRESET_BIN_OBLIQUE
                         : (state.wormholeMode ? HudOverlay.PRESET_UNIV_A : HudOverlay.PRESET_EDGE));
@@ -841,7 +968,13 @@ public final class SimulationEngine {
                 case GLFW_KEY_K -> triggerAction(HudOverlay.ACT_KERR_SPIN);
                 case GLFW_KEY_F -> triggerAction(HudOverlay.ACT_FREE_FALL);
                 case GLFW_KEY_M -> triggerAction(HudOverlay.ACT_ADAPTIVE_AA);
-                case GLFW_KEY_C -> triggerAction(HudOverlay.ACT_SKY_GRID);
+                case GLFW_KEY_C -> {
+                    if ((mods & GLFW_MOD_SHIFT) != 0) {
+                        triggerAction(HudOverlay.ACT_TDE_CLEAR);
+                    } else {
+                        triggerAction(HudOverlay.ACT_SKY_GRID);
+                    }
+                }
                 case GLFW_KEY_I -> triggerAction(HudOverlay.ACT_ORDER_VIS);
                 case GLFW_KEY_O -> triggerAction(HudOverlay.ACT_AUTO_ORBIT);
                 case GLFW_KEY_V -> triggerAction(HudOverlay.ACT_VSYNC);
@@ -869,5 +1002,31 @@ public final class SimulationEngine {
                 }
             }
         });
+    }
+
+    private void showTimeScaleToast() {
+        toastSb.setLength(0);
+        toastSb.append("TIME SCALE: ");
+        float ts = state.timeScale;
+        if (ts >= 9.95f) {
+            toastSb.append(Math.round(ts)).append(".0x");
+        } else if (ts < 1.0f) {
+            int scaled = Math.round(ts * 100f);
+            toastSb.append(scaled / 100).append('.');
+            int frac = scaled % 100;
+            if (frac < 10) toastSb.append('0');
+            toastSb.append(frac).append('x');
+        } else {
+            int scaled = Math.round(ts * 10f);
+            toastSb.append(scaled / 10).append('.').append(scaled % 10).append('x');
+        }
+        if (ts > 1.02f) {
+            toastSb.append(" (TIMELAPSE)");
+        } else if (ts < 0.98f) {
+            toastSb.append(" (SLOW-MO)");
+        } else {
+            toastSb.append(" (REALTIME)");
+        }
+        state.showToast(toastSb);
     }
 }

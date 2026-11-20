@@ -20,6 +20,7 @@ uniform float uSpinA;
 uniform float uHorizonR;
 uniform int uDoppler;
 uniform vec2 uJitter;
+uniform vec4 uSlotStyle[2]; // .rgb = archetype tint, .a = ribbon width scale
 
 out vec2 vLocalUv;
 out vec3 vWorldPos;
@@ -126,13 +127,16 @@ void main() {
         gFactor = clamp(gravShift / (gamma * (1.0 - beta * cosAng)), 0.20, 2.60);
     }
 
-    float baseTemp = mix(1450.0, p.velTemp.w * 0.68, 0.80);
+    uint slot = (uint(gl_InstanceID) >> 16u) & 1u;
+    vec4 slotStyle = uSlotStyle[slot];
+
+    float baseTemp = mix(1450.0, p.velTemp.w * 0.72, 0.82);
     float obsTemp = baseTemp * gFactor;
     float g3 = gFactor * gFactor * gFactor;
     float boost = g3 / (1.0 + 0.38 * g3);
 
     float tempNorm = clamp((p.velTemp.w - 3000.0) / 18000.0, 0.0, 1.5);
-    vColor = sampleBlackbody(obsTemp) * boost * (0.24 + 0.88 * tempNorm);
+    vColor = sampleBlackbody(obsTemp) * slotStyle.rgb * boost * (0.24 + 0.88 * tempNorm);
     vTempNorm = tempNorm;
     vWorldPos = pos;
 
@@ -148,12 +152,12 @@ void main() {
     float tidalStrain = clamp(220.0 / (r * r * r), 0.0, 1.0);
     float screenSpeedFactor = clamp(svLen / max(0.8, zCam * 0.14), 0.30, 1.0);
     float stretch = (1.0 + (1.45 + 2.15 * beta) * smoothstep(0.08, 0.72, tidalStrain) * screenSpeedFactor) * lensStretch;
-    stretch = clamp(stretch, 1.0, 3.4);
+    stretch = clamp(stretch, 1.0, 3.6);
 
     // Generous volumetric overlap eliminates sandy point-sprite grain and weaves a fluid stream
     float pxScale = (uResolution.y * 0.5) / max(0.25, zCam * uTanHalfFov);
-    float halfW = clamp(pxScale * (0.112 + 0.058 * tempNorm), 3.6, 13.0);
-    float halfL = clamp(halfW * stretch, halfW, 28.0);
+    float halfW = clamp(pxScale * (0.112 + 0.058 * tempNorm) * slotStyle.a, 3.2, 14.5);
+    float halfL = clamp(halfW * stretch, halfW, 30.0);
 
     // Expand instanced triangle-strip quad aligned to screen-space plasma flow
     vec2 corner = vec2(float((gl_VertexID & 1) * 2 - 1),

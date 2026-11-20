@@ -21,6 +21,7 @@ uniform float uTanHalfFov;
 uniform float uCauchyFlash;
 uniform float uSpaghettify;
 uniform float uSingularityFade;
+uniform float uAccretionSurge;
 uniform int uDoppler;
 uniform int uLensing;
 uniform int uShowDisk;
@@ -600,7 +601,14 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                             }
 
                             float emitSuppression = 1.0 - 0.74 * dustLaneFactor;
-                            float emission = density * intensityBoost * emitSuppression * stepWeight * 0.78;
+                            float surgeBoost = 1.0;
+                            if (uAccretionSurge > 0.002) {
+                                float innerZone = exp(-max(0.0, hitR - iscoR) * 0.42);
+                                surgeBoost = 1.0 + uAccretionSurge * 0.58 * innerZone;
+                                emitCol = mix(emitCol, vec3(1.15, 0.96, 0.84) * max(emitCol.r, max(emitCol.g, emitCol.b)),
+                                        clamp(uAccretionSurge * 0.30 * innerZone, 0.0, 0.35));
+                            }
+                            float emission = density * intensityBoost * surgeBoost * emitSuppression * stepWeight * 0.78;
                             float opacity = clamp(density * stepWeight * (0.56 + 1.35 * uNorm + 1.45 * dustLaneFactor), 0.0, 0.96);
 
                             res.accumColor += res.transmittance * emission * emitCol;

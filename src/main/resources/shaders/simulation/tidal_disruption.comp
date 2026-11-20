@@ -13,12 +13,17 @@ layout(std430, binding = 0) buffer ParticleBuffer {
 layout(std430, binding = 1) buffer CounterBuffer {
     uint activeCount;
     uint shearCount;
+    uint boundCount;
+    uint unboundCount;
+    uint swallowedCount;
 };
 
 uniform uint uParticleCount;
 uniform float uDt;
 uniform float uSpinA;
 uniform float uHorizonR;
+uniform int uCountSnapshot;       // 1 on final substep of the frame; swallowedCount accumulates on all substeps
+uniform vec2 uSlotShockBeta[2];   // .x = archetype shockGain, .y = penetration factor beta
 
 // Relativistic Paczynski-Wiita gravitational acceleration + Kerr Lense-Thirring frame-dragging torque
 vec3 computeAccel(vec3 pos, vec3 vel, float spinA, float rPlus) {
@@ -34,7 +39,6 @@ vec3 computeAccel(vec3 pos, vec3 vel, float spinA, float rPlus) {
     if (spinA > 0.001) {
         float invR3 = 1.0 / max(1.0, r2 * r);
         vec3 spinVec = vec3(0.0, spinA, 0.0);
-        // Lense-Thirring velocity-dependent gravitomagnetic force + prograde azimuthal frame drag
         vec3 jCrossV = cross(spinVec, vel);
         vec3 rCrossV = cross(pos, vel);
         aKerr = (2.0 * invR3) * (jCrossV - (3.0 * dot(spinVec, pos) / max(1.0, r2)) * rCrossV);
@@ -60,13 +64,19 @@ void main() {
         return;
     }
 
+    uint slot = (idx >> 16u) & 1u;
+    float shockGain = uSlotShockBeta[slot].x;
+    float slotBeta = uSlotShockBeta[slot].y;
+    float massVal = p.posMass.w;
+
     vec3 pos = p.posMass.xyz;
     vec3 vel = p.velTemp.xyz;
     float temp = p.velTemp.w;
 
-    // 2 substeps of Velocity-Verlet integration for crisp conservation at periapsis
+    // 2 substeps of Velocity-Verlet integration per dispatch for crisp periapsis conservation
     float dtSub = uDt * 0.5;
-    bool captured = false;
+    bool swallowed = false;
+    bool escapedFar = false;
 
     for (int sub = 0; sub < 2; sub++) {
         vec3 a0 = computeAccel(pos, vel, uSpinA, uHorizonR);
@@ -74,8 +84,12 @@ void main() {
         pos += vHalf * dtSub;
 
         float r = length(pos);
-        if (r <= uHorizonR * 1.03 || r > 95.0) {
-            captured = true;
+        if (r <= uHorizonR * 1.03) {
+            swallowed = true;
+            break;
+        }
+        if (r > 118.0) {
+            escapedFar = true;
             break;
         }
 
@@ -86,19 +100,64 @@ void main() {
         float v2 = dot(vel, vel);
         if (v2 > 0.90) {
             vel *= inversesqrt(v2) * 0.948;
+            v2 = 0.90;
         }
 
-        // Tidal shear + periapsis nozzle-compression shock heating (~ 2M / r^3 * |v|^2) + radiative cooling
-        float tidalGrad = 2.0 / max(2.2, r * r * r);
-        float nozzleShock = 1.0 + 1.35 * exp(-pos.y * pos.y * 3.2) * smoothstep(7.8, 2.6, r);
-        float shearHeat = tidalGrad * (0.35 + v2) * nozzleShock * 54000.0 * dtSub;
-        float radCool = max(0.0, temp - 3600.0) * 0.14 * dtSub;
-        temp = clamp(temp + shearHeat - radCool, 2600.0, 42000.0);
+        // Exact Paczynski-Wiita specific orbital energy: epsilon = 0.5*v^2 - 1/(r - 0.88*r_+)
+        float rPw = max(0.32, r - 0.88 * uHorizonR);
+        float energy = 0.5 * v2 - (1.0 / rPw);
+
+        // Stream self-intersection & shock circularization for bound returning debris (epsilon < 0)
+        // Partial-disruption dense cores (low beta, high massVal) resist circularization so a surviving core escapes.
+        float shockFlash = 0.0;
+        if (energy < -0.002 && r < 8.6) {
+            float coreSurvival = smoothstep(1.12, 0.72, slotBeta) * smoothstep(0.74, 0.92, massVal);
+            float circScale = (1.0 - 0.85 * coreSurvival);
+
+            vec3 rHat = pos / max(1e-4, r);
+            float vRad = dot(vel, rHat);
+            vec3 vTanVec = vel - vRad * rHat;
+            float vTanLen = length(vTanVec);
+            float eccProxy = abs(vRad) / max(0.08, sqrt(v2));
+
+            // Mild relativistic apsidal precession & stream-crossing shock zone around r ~ 2.2..8.2M
+            float shockZone = smoothstep(8.6, 3.0, r) * smoothstep(0.12, 0.62, eccProxy) * circScale;
+            if (shockZone > 0.01) {
+                // Radiate eccentric radial kinetic energy into heat while settling toward a luminous torus
+                float dampRate = clamp(0.18 * shockZone * dtSub, 0.0, 0.22);
+                vel -= rHat * (vRad * dampRate);
+
+                // Gentle circularization nudge toward local Paczynski-Wiita circular speed
+                float vCirc = min(0.72, sqrt(r / max(0.35, rPw * rPw)));
+                if (vTanLen > 1e-4) {
+                    vec3 tHat = vTanVec / vTanLen;
+                    float targetTan = mix(vTanLen, vCirc, clamp(0.065 * shockZone * dtSub, 0.0, 0.12));
+                    vel += tHat * (targetTan - vTanLen);
+                }
+
+                // Subtle vertical settling toward equatorial orbital plane during circularization shock
+                vel.y *= (1.0 - clamp(0.06 * shockZone * dtSub, 0.0, 0.08));
+                shockFlash = shockZone * (0.65 + 1.40 * v2) * shockGain;
+            }
+        }
+
+        // Tidal shear + periapsis nozzle-compression + stream self-intersection shock heating
+        float tidalGrad = 2.0 / max(2.0, r * r * r);
+        float nozzleShock = 1.0 + 1.40 * exp(-pos.y * pos.y * 3.0) * smoothstep(7.8, 2.5, r);
+        float shearHeat = (tidalGrad * (0.35 + v2) * nozzleShock * 50000.0 * shockGain
+                         + shockFlash * 26000.0) * dtSub;
+        float coolFloor = (energy >= 0.0) ? 2800.0 : 3600.0;
+        float coolRate = (energy >= 0.0) ? 0.17 : 0.13;
+        float radCool = max(0.0, temp - coolFloor) * coolRate * dtSub;
+        temp = clamp(temp + shearHeat - radCool, 2400.0, 44000.0);
     }
 
-    if (captured) {
+    if (swallowed || escapedFar) {
         p.posMass.w = 0.0;
         particles[idx] = p;
+        if (swallowed) {
+            atomicAdd(swallowedCount, 1u);
+        }
         return;
     }
 
@@ -107,8 +166,19 @@ void main() {
     p.velTemp.w = temp;
     particles[idx] = p;
 
-    atomicAdd(activeCount, 1u);
-    if (length(pos) < 8.5 && temp > 10500.0) {
-        atomicAdd(shearCount, 1u);
+    if (uCountSnapshot == 1) {
+        atomicAdd(activeCount, 1u);
+        float rNow = length(pos);
+        float v2Now = dot(vel, vel);
+        float rPwNow = max(0.32, rNow - 0.88 * uHorizonR);
+        float epsNow = 0.5 * v2Now - (1.0 / rPwNow);
+        if (epsNow < 0.0) {
+            atomicAdd(boundCount, 1u);
+        } else {
+            atomicAdd(unboundCount, 1u);
+        }
+        if (rNow < 8.5 && temp > 10500.0) {
+            atomicAdd(shearCount, 1u);
+        }
     }
 }

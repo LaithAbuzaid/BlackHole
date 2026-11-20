@@ -94,4 +94,37 @@ final class CameraControllerTest {
         assertFalse(cam.isFlyingThrough(), "Fly-through should complete within 400 frames");
         assertTrue(cam.currentWormholeL() < -12.0, "Camera should arrive in Universe B (negative l)");
     }
+
+    @Test
+    void doranPlungeSubsteppingMatchesBetween1xAnd10xTimelapse() {
+        SimulationState slowState = new SimulationState();
+        slowState.spinParam = 0.96f;
+        slowState.attractTourActive = false;
+        slowState.setTimeScale(1.0f);
+
+        SimulationState fastState = new SimulationState();
+        fastState.spinParam = 0.96f;
+        fastState.attractTourActive = false;
+        fastState.setTimeScale(10.0f);
+
+        CameraController slowCam = new CameraController();
+        slowCam.setShowcasePose(12.0, 0.3, 0.15, 0.0, 0.0, 0.0, slowState);
+        slowCam.startPlunge(slowState);
+
+        CameraController fastCam = new CameraController();
+        fastCam.setShowcasePose(12.0, 0.3, 0.15, 0.0, 0.0, 0.0, fastState);
+        fastCam.startPlunge(fastState);
+
+        // Advance identical 1.0s of simulated plunge time: 60 frames @ 1x vs 6 frames @ 10x
+        for (int i = 0; i < 60; i++) {
+            slowCam.update(1.0 / 60.0, slowState, false, false, 0.0f, false);
+        }
+        for (int i = 0; i < 6; i++) {
+            fastCam.update(1.0 / 60.0, fastState, false, false, 0.0f, false);
+        }
+
+        assertEquals(slowCam.currentKerrRadius(), fastCam.currentKerrRadius(), 0.08,
+                "Fixed-substepped Doran plunge radius must stay consistent under 10x timelapse");
+        assertOrthonormalBasis(fastCam);
+    }
 }

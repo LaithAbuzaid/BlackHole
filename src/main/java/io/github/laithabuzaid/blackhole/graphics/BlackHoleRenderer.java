@@ -94,6 +94,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uCauchyFlash;
     private final int uSpaghettify;
     private final int uSingularityFade;
+    private final int uAccretionSurge;
     private final int uDoppler;
     private final int uLensing;
     private final int uShowDisk;
@@ -251,6 +252,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uCauchyFlash = rayProgram.uniformLocation("uCauchyFlash");
         uSpaghettify = rayProgram.uniformLocation("uSpaghettify");
         uSingularityFade = rayProgram.uniformLocation("uSingularityFade");
+        uAccretionSurge = rayProgram.uniformLocation("uAccretionSurge");
         uDoppler = rayProgram.uniformLocation("uDoppler");
         uLensing = rayProgram.uniformLocation("uLensing");
         uShowDisk = rayProgram.uniformLocation("uShowDisk");
@@ -390,18 +392,34 @@ public final class BlackHoleRenderer implements AutoCloseable {
         return tdeSystem.activeParticleCount();
     }
 
+    public int tdeBoundParticles() {
+        return tdeSystem.boundParticleCount();
+    }
+
+    public int tdeUnboundParticles() {
+        return tdeSystem.unboundParticleCount();
+    }
+
+    public int tdeSwallowedParticles() {
+        return tdeSystem.totalSwallowedCount();
+    }
+
     public float tdeShearEnergy() {
         return tdeSystem.shearEnergy();
     }
 
+    public float tdeHorizonSurge() {
+        return tdeSystem.horizonAccretionSurge();
+    }
+
     /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to default framebuffer with zero heap allocations. */
-    public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
+    public void renderFrame(int width, int height, double wallDt, double simDt,
                             SimulationState state, CameraController camera, GpuTimerQueries timers) {
-        renderFrame(width, height, dt, readbackTdeCounters, state, camera, null, timers, 0);
+        renderFrame(width, height, wallDt, simDt, state, camera, null, timers, 0);
     }
 
     /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to {@code outputFbo} with zero heap allocations. */
-    public void renderFrame(int width, int height, double dt, boolean readbackTdeCounters,
+    public void renderFrame(int width, int height, double wallDt, double simDt,
                             SimulationState state, CameraController camera, BinaryMergerPhysics binary,
                             GpuTimerQueries timers, int outputFbo) {
         glBindVertexArray(quadVao);
@@ -446,7 +464,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
             glUniform1i(uBinBlackbodyLut, 2);
 
-            float binDt = (state.paused || dt <= 0.0) ? 0.0f : (float) (dt * state.binaryTimeScale);
+            float binDt = (state.paused || simDt <= 0.0) ? 0.0f : (float) simDt;
             float pCamX = taaHistoryValid ? prevCamPosX : effCamX;
             float pCamY = taaHistoryValid ? prevCamPosY : effCamY;
             float pCamZ = taaHistoryValid ? prevCamPosZ : effCamZ;
@@ -560,6 +578,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1f(uCauchyFlash, state.cauchyFlashIntensity);
             glUniform1f(uSpaghettify, state.spaghettification);
             glUniform1f(uSingularityFade, state.singularityFade);
+            glUniform1f(uAccretionSurge, state.tdeHorizonSurge);
             glUniform1i(uDoppler, state.dopplerEnabled ? 1 : 0);
             glUniform1i(uLensing, state.lensingEnabled ? 1 : 0);
             glUniform1i(uShowDisk, state.showDisk ? 1 : 0);
@@ -577,7 +596,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         // PASS 1B: OpenGL 4.3 Compute TDE + Volumetric Lensed Plasma Ribbons (Single Kerr mode only)
         timers.beginTde();
         if (!runBinary) {
-            tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
+            tdeSystem.updateAndRender(width, height, wallDt, simDt, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
         }
         timers.endTde();
 
@@ -611,7 +630,12 @@ public final class BlackHoleRenderer implements AutoCloseable {
                 taaAccumCount = 0;
             }
             int readIdx = 1 - taaWriteIdx;
-            float minAlpha = Math.max(0.0625f, 1.0f / (taaAccumCount + 1));
+            float baseMinAlpha = 0.0625f;
+            if (!state.paused && simDt > 0.0 && state.timeScale > 4.0f) {
+                float tsT = Math.min(1.0f, (state.timeScale - 4.0f) / 21.0f);
+                baseMinAlpha = 0.18f + 0.12f * tsT;
+            }
+            float minAlpha = Math.max(baseMinAlpha, 1.0f / (taaAccumCount + 1));
 
             glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.taaFbo(taaWriteIdx));
             glViewport(0, 0, width, height);

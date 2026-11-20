@@ -56,6 +56,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
     private volatile float diskEnergy = 1.0f;
     private volatile float dopplerPan = -0.35f;
     private volatile float tdeShearEnergy = 0.0f;
+    private volatile float tdeConsumeSurge = 0.0f;
+    private volatile float timeScale = 1.0f;
     private volatile float wormholeL = 13.5f;
     private volatile float interiorShimmer = 0.0f;
     private volatile float singularitySilence = 0.0f;
@@ -117,6 +119,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         this.binaryMode = state.binaryMode && binary != null;
         this.paused = state.paused;
         this.tdeShearEnergy = tdeShear;
+        this.tdeConsumeSurge = state.tdeHorizonSurge;
+        this.timeScale = state.timeScale;
         this.wormholeL = (float) camera.currentWormholeL();
 
         if (binary != null) {
@@ -183,6 +187,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         double smDisk = 1.0;
         double smPan = -0.35;
         double smTde = 0.0;
+        double smTdeSurge = 0.0;
+        double smTimeScale = 1.0;
         double smWhL = 13.5;
         double smShimmer = 0.0;
         double smSilence = 0.0;
@@ -222,6 +228,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                 double targetDisk = diskEnergy;
                 double targetPan = dopplerPan;
                 double targetTde = tdeShearEnergy;
+                double targetTdeSurge = tdeConsumeSurge;
+                double targetTimeScale = timeScale;
                 double targetWhL = wormholeL;
                 double targetShimmer = interiorShimmer;
                 double targetSilence = singularitySilence;
@@ -245,6 +253,8 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         smDisk += (targetDisk - smDisk) * 0.0006;
                         smPan += (targetPan - smPan) * 0.0006;
                         smTde += (targetTde - smTde) * 0.0012;
+                        smTdeSurge += (targetTdeSurge - smTdeSurge) * 0.0016;
+                        smTimeScale += (targetTimeScale - smTimeScale) * 0.0008;
                         smWhL += (targetWhL - smWhL) * 0.0008;
                         smShimmer += (targetShimmer - smShimmer) * 0.0008;
                         smSilence += (targetSilence - smSilence) * 0.0010;
@@ -261,12 +271,18 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         double whiteL = ((rng & 0xFFFFL) / 32768.0) - 1.0;
                         double whiteR = (((rng >>> 16) & 0xFFFFL) / 32768.0) - 1.0;
 
+                        // Logarithmic timelapse audio compression: tense rushing swell at 25x without harsh high pitch
+                        double tsClamped = Math.max(0.05, Math.min(25.0, smTimeScale));
+                        double tsLog = Math.log(tsClamped) / Math.log(25.0); // [-0.93 .. +1.0]
+                        double tsPitchScale = 1.0 + 0.18 * tsLog;
+                        double tsRushBoost = 1.0 + 0.34 * Math.max(0.0, tsLog);
+
                         // LAYER 1: Gravitational Redshift Sub-Bass Drone
-                        lfoPhase += twoPi * 0.14 * invSr;
+                        lfoPhase += twoPi * (0.14 * Math.max(0.35, 1.0 + 0.65 * tsLog)) * invSr;
                         if (lfoPhase > twoPi) lfoPhase -= twoPi;
                         double lfo = 0.85 + 0.15 * Math.sin(lfoPhase);
 
-                        double droneHz = 26.0 + 38.0 * smRedshift;
+                        double droneHz = (26.0 + 38.0 * smRedshift) * Math.max(0.76, Math.min(1.22, tsPitchScale));
                         subPhase += twoPi * droneHz * invSr;
                         if (subPhase > twoPi) subPhase -= twoPi;
                         subHarmPhase += twoPi * (droneHz * 1.498) * invSr;
@@ -277,7 +293,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                                 + Math.sin(subHarmPhase) * 0.14) * lfo * (0.48 + 0.38 * (1.0 - smRedshift));
 
                         // LAYER 2: Accretion Disk Doppler-Panned Stereo Roar
-                        double cutoff = 0.018 + 0.025 * Math.min(1.5, smDisk);
+                        double cutoff = Math.min(0.085, (0.018 + 0.025 * Math.min(1.5, smDisk)) * tsRushBoost);
                         lpL += cutoff * (whiteL - lpL);
                         lpR += cutoff * (whiteR - lpR);
                         bpL += 0.006 * (lpL - bpL);
@@ -287,18 +303,20 @@ public final class RelativisticAudioEngine implements AutoCloseable {
 
                         double panL = Math.sqrt(Math.max(0.0, 0.5 * (1.0 - smPan)));
                         double panR = Math.sqrt(Math.max(0.0, 0.5 * (1.0 + smPan)));
-                        double diskScale = Math.min(0.65, smDisk * 0.24);
+                        double diskScale = Math.min(0.75, smDisk * 0.24 * (0.85 + 0.22 * tsRushBoost));
                         double diskL = roarRawL * diskScale * panL;
                         double diskR = roarRawR * diskScale * panR;
 
-                        // LAYER 3: TDE Crackling High-Energy Plasma Swell
+                        // LAYER 3: TDE Crackling High-Energy Plasma Swell + Horizon Accretion Surge
+                        double tdeEnergy = Math.min(1.25, smTde + smTdeSurge * 0.85);
                         double sparkTrig = (((rng >>> 32) & 0xFFFFL) / 65535.0);
-                        if (sparkTrig > (0.9965 - 0.012 * smTde)) {
-                            crackleEnv = Math.min(1.0, crackleEnv + 0.55 * smTde);
+                        if (sparkTrig > (0.9965 - 0.014 * tdeEnergy)) {
+                            crackleEnv = Math.min(1.0, crackleEnv + 0.58 * tdeEnergy);
                         }
-                        crackleEnv *= 0.9945;
-                        double crackleL = (whiteL * crackleEnv * 0.48 + Math.sin(subHarmPhase * 3.0) * smTde * 0.18);
-                        double crackleR = (whiteR * crackleEnv * 0.48 + Math.cos(subHarmPhase * 3.01) * smTde * 0.18);
+                        crackleEnv *= 0.9942;
+                        double surgeRumble = Math.sin(subPhase * 1.5) * smTdeSurge * 0.26;
+                        double crackleL = (whiteL * crackleEnv * 0.48 + Math.sin(subHarmPhase * 3.0) * tdeEnergy * 0.16 + surgeRumble);
+                        double crackleR = (whiteR * crackleEnv * 0.48 + Math.cos(subHarmPhase * 3.01) * tdeEnergy * 0.16 + surgeRumble);
 
                         // LAYER 4: Interior Horizon Blueshift & Cauchy Mass-Inflation Shimmer
                         double shimHz = 520.0 + 1650.0 * smShimmer * smShimmer;
@@ -337,7 +355,7 @@ public final class RelativisticAudioEngine implements AutoCloseable {
                         whR += (lpR * 0.28) * (0.25 + 0.75 * throatProx);
 
                         // LAYER 6: Binary Black Hole LIGO Gravitational-Wave Chirp + Coalescence Ringdown Thump
-                        double chirpHz = Math.max(38.0, Math.min(380.0, smBinFreq));
+                        double chirpHz = Math.max(38.0, Math.min(390.0, smBinFreq * (0.94 + 0.12 * Math.max(-0.5, tsLog))));
                         chirpPhase += twoPi * chirpHz * invSr;
                         if (chirpPhase > twoPi) chirpPhase -= twoPi;
 

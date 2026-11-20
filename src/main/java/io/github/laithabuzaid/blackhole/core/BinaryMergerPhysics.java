@@ -50,6 +50,7 @@ public final class BinaryMergerPhysics {
     private static final double MERGER_WALL_DURATION = 0.90;
     private static final double RINGDOWN_WALL_DURATION = 4.20;
     private static final double MAX_SUBSTEP_SEC = 0.004;
+    private static final int MAX_SUBSTEPS_PER_FRAME = 350;
     private static final double STRAIN_SAMPLE_PERIOD = 0.040; // 25 Hz -> 6.4s LIGO trace
 
     // Pre-allocated rolling LIGO h+(t) waveform ring buffer (zero allocations)
@@ -132,8 +133,10 @@ public final class BinaryMergerPhysics {
         double q = clampQ(massRatioQ);
         updateMassParameters(q);
 
-        double scaledDt = Math.min(0.10, dtSec) * Math.max(0.05, timeScale);
-        int substeps = Math.max(1, (int) Math.ceil(scaledDt / MAX_SUBSTEP_SEC));
+        double clampedWallDt = Math.min(0.05, dtSec);
+        double clampedScale = Math.max(SimulationState.MIN_TIME_SCALE, Math.min(SimulationState.MAX_TIME_SCALE, timeScale));
+        double scaledDt = clampedWallDt * clampedScale;
+        int substeps = Math.max(1, Math.min(MAX_SUBSTEPS_PER_FRAME, (int) Math.ceil(scaledDt / MAX_SUBSTEP_SEC)));
         double h = scaledDt / substeps;
 
         for (int s = 0; s < substeps; s++) {

@@ -35,6 +35,10 @@ public final class HardwareTelemetry {
     public float gpuUiMs = 0.08f;
     public float gpuTotalMs = 2.88f;
     public int tdeActiveParticles = 0;
+    public int tdeBoundParticles = 0;
+    public int tdeUnboundParticles = 0;
+    public int tdeSwallowedParticles = 0;
+    public float tdeHorizonSurge = 0.0f;
 
     // Rolling 120-frame frame-time oscilloscope buffers
     public final float[] gpuHistory = new float[HISTORY_LEN];

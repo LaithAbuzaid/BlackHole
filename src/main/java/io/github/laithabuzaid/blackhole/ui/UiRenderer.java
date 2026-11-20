@@ -23,7 +23,7 @@ import static org.lwjgl.opengl.GL33.*;
  */
 public final class UiRenderer implements AutoCloseable {
 
-    private static final int MAX_QUADS = 6144;
+    private static final int MAX_QUADS = 8192;
     private static final int FLOATS_PER_VERT = 14; // pos(2) + uv(2) + color(4) + rect(4) + params(2)
     private static final int MTSDF_MAGIC = 0x4D545344; // 'MTSD'
     private static final String MTSDF_RESOURCE = "/fonts/jetbrains_mono_mtsdf.bin";
@@ -129,6 +129,27 @@ public final class UiRenderer implements AutoCloseable {
                                float bdR, float bdG, float bdB, float bdA) {
         pushRoundedQuad(x, y, w, h, radius, 0f, bgR, bgG, bgB, bgA);
         pushRoundedQuad(x, y, w, h, radius, 1f, bdR, bdG, bdB, bdA);
+    }
+
+    /** Frosted-glass panel with subtle top-to-bottom luminance gradient and top inner rim. */
+    public void drawGradientGlassPanel(float x, float y, float w, float h, float radius,
+                                       float bgR, float bgG, float bgB, float bgA,
+                                       float bdR, float bdG, float bdB, float bdA) {
+        pushRoundedQuad(x, y, w, h, radius, 3f, bgR, bgG, bgB, bgA);
+        pushRoundedQuad(x, y, w, h, radius, 1f, bdR, bdG, bdB, bdA);
+    }
+
+    /** Thin rounded accent stripe for observatory panel headers and active tab indicators. */
+    public void drawAccentBar(float x, float y, float w, float h,
+                              float r, float g, float b, float a) {
+        pushRoundedQuad(x, y, w, h, h * 0.5f, 0f, r, g, b, a);
+    }
+
+    /** Crisp circular SDF status LED dot for active toggle pills and mode badges. */
+    public void drawIndicatorDot(float cx, float cy, float radiusPx,
+                                 float r, float g, float b, float a) {
+        float d = radiusPx * 2.0f;
+        pushRoundedQuad(cx - radiusPx, cy - radiusPx, d, d, radiusPx, 0f, r, g, b, a);
     }
 
     public void drawRect(float x, float y, float w, float h, float radius,

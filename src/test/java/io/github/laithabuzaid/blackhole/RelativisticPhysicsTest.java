@@ -2,6 +2,7 @@ package io.github.laithabuzaid.blackhole;
 
 import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
+import io.github.laithabuzaid.blackhole.core.StellarArchetype;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedInputStream;
@@ -209,5 +210,96 @@ final class RelativisticPhysicsTest {
             maxAbs = Math.max(maxAbs, Math.abs(h));
         }
         assertTrue(maxAbs > 0.2f, "Rolling LIGO strain buffer should capture active inspiral/merger waveform");
+    }
+
+    @Test
+    void globalTimelapseBoundsPresetSteppingAndPauseIndependenceWorkCleanly() {
+        SimulationState state = new SimulationState();
+        assertEquals(1.0f, state.timeScale, 1e-5f);
+        assertEquals(SimulationState.HUD_CLEAN, state.hudMode);
+
+        // Bounds clamping
+        state.setTimeScale(0.001f);
+        assertEquals(SimulationState.MIN_TIME_SCALE, state.timeScale, 1e-5f);
+        state.setTimeScale(999.0f);
+        assertEquals(SimulationState.MAX_TIME_SCALE, state.timeScale, 1e-5f);
+
+        // Discrete preset stepping up and down
+        state.setTimeScale(1.0f);
+        state.stepTimeScaleUp();
+        assertEquals(2.0f, state.timeScale, 1e-5f);
+        state.stepTimeScaleUp();
+        assertEquals(5.0f, state.timeScale, 1e-5f);
+        state.stepTimeScaleDown();
+        assertEquals(2.0f, state.timeScale, 1e-5f);
+
+        // Pause must zero simDt while strictly preserving chosen timeScale
+        state.setTimeScale(10.0f);
+        assertEquals(0.10, state.effectiveSimDt(0.01), 1e-6);
+        state.paused = true;
+        assertEquals(0.0, state.effectiveSimDt(0.01), 1e-9);
+        assertEquals(10.0f, state.timeScale, 1e-5f, "Pausing must not reset chosen timeScale");
+
+        // 3-state HUD visibility cycle: CLEAN -> COMPACT -> FULL -> CLEAN
+        state.cycleHudMode();
+        assertEquals(SimulationState.HUD_COMPACT, state.hudMode);
+        state.cycleHudMode();
+        assertEquals(SimulationState.HUD_FULL, state.hudMode);
+        assertTrue(state.showUi);
+        state.cycleHudMode();
+        assertEquals(SimulationState.HUD_CLEAN, state.hudMode);
+        assertFalse(state.showUi);
+    }
+
+    @Test
+    void tdeArchetypesBetaPeriapsisAndTimelapseSubstepClampingArePhysicallyValid() {
+        double horizonR = 1.20;
+        assertEquals(4, StellarArchetype.count());
+
+        for (int i = 0; i < StellarArchetype.count(); i++) {
+            StellarArchetype arch = StellarArchetype.fromIndex(i);
+            assertTrue(arch.photosphereTempK >= 3000f && arch.coreTempK > arch.photosphereTempK,
+                    arch.displayName + " core must be hotter than photosphere");
+            assertTrue(arch.starRadius > 0.3f && arch.tidalRadius > arch.starRadius,
+                    arch.displayName + " tidal radius must exceed stellar radius");
+
+            double rpLowBeta = arch.computePeriapsis(0.75, horizonR);
+            double rpMidBeta = arch.computePeriapsis(1.50, horizonR);
+            double rpHighBeta = arch.computePeriapsis(3.80, horizonR);
+
+            assertTrue(rpLowBeta > rpMidBeta && rpMidBeta >= rpHighBeta,
+                    "Higher penetration factor beta = r_t / r_p must lower periapsis radius");
+            assertTrue(rpHighBeta >= horizonR * 1.049,
+                    "Periapsis must remain safely outside the outer event horizon r_+");
+        }
+
+        // Verify Red Supergiant has larger tidal radius than compact White Dwarf
+        assertTrue(StellarArchetype.RED_SUPERGIANT.tidalRadius > StellarArchetype.WHITE_DWARF.tidalRadius);
+
+        // Verify physics-safe compute substep clamping across 0.05x .. 25x timelapse
+        assertEquals(0, StellarArchetype.computeSubstepCount(0.0));
+        assertEquals(1, StellarArchetype.computeSubstepCount(0.008));
+        assertTrue(StellarArchetype.computeSubstepDt(0.008) <= StellarArchetype.MAX_TDE_SUBSTEP_DT + 1e-9);
+
+        // Extreme 25x frame (25 * 0.0167s = 0.417s) must clamp substep count & per-substep dt
+        int extremeSteps = StellarArchetype.computeSubstepCount(0.417);
+        double extremeSubDt = StellarArchetype.computeSubstepDt(0.417);
+        assertEquals(StellarArchetype.MAX_TDE_SUBSTEPS_PER_FRAME, extremeSteps);
+        assertTrue(extremeSubDt <= StellarArchetype.MAX_TDE_SUBSTEP_DT + 1e-9,
+                "Per-substep dt must never exceed MAX_TDE_SUBSTEP_DT under 25x timelapse");
+
+        // Verify Binary Merger trajectory invariance between 1x and 25x over identical simulated time (2.0s)
+        BinaryMergerPhysics slow = new BinaryMergerPhysics();
+        BinaryMergerPhysics fast = new BinaryMergerPhysics();
+        slow.reset(0.65f);
+        fast.reset(0.65f);
+        for (int i = 0; i < 120; i++) {
+            slow.step(1.0 / 60.0, 0.65f, 1.0f, false);
+        }
+        for (int i = 0; i < 12; i++) {
+            fast.step(1.0 / 60.0, 0.65f, 10.0f, false);
+        }
+        assertEquals(slow.currentSeparation, fast.currentSeparation, 1e-3f,
+                "Fixed-substepped Binary Merger separation must match between 1x and 10x timelapse");
     }
 }

@@ -40,6 +40,24 @@ public final class SimulationState {
     public static final float MIN_BIN_TIME_SCALE = 0.20f;
     public static final float MAX_BIN_TIME_SCALE = 2.50f;
 
+    // Global Physics-Safe Timelapse Bounds & Discrete Quick-Step Presets
+    public static final float MIN_TIME_SCALE = 0.05f;
+    public static final float MAX_TIME_SCALE = 25.00f;
+    public static final float[] TIME_SCALE_PRESETS = {
+            0.10f, 0.25f, 0.50f, 1.00f, 2.00f, 5.00f, 10.00f, 25.00f
+    };
+
+    // 3-State HUD Visibility Cycle ([H] Key)
+    public static final int HUD_CLEAN = 0;
+    public static final int HUD_COMPACT = 1;
+    public static final int HUD_FULL = 2;
+
+    // 4-Tab Right Observatory Console IDs
+    public static final int TAB_SCENE = 0;
+    public static final int TAB_PHYSICS = 1;
+    public static final int TAB_TDE_LAB = 2;
+    public static final int TAB_OPTICS = 3;
+
     // Plunge & Audio bounds
     public static final float MIN_PLUNGE_SPEED = 0.10f;
     public static final float MAX_PLUNGE_SPEED = 2.00f;
@@ -56,12 +74,17 @@ public final class SimulationState {
 
     public double simTime = 0.0;
 
+    // Global Multi-Mode Simulation Time Scale (0.05x Ultra Slow-Mo .. 25.0x Timelapse)
+    public float timeScale = 1.00f;
+
     // Spacetime Mode & UI Toggles ("Cinema First, Console Second" startup)
     public boolean wormholeMode = false;
     public boolean binaryMode = false;
     public boolean binaryGwOverlay = false;
     public boolean binaryAutoLoop = true;
+    public int hudMode = HUD_CLEAN;
     public boolean showUi = false;
+    public int activeConsoleTab = TAB_SCENE;
     public boolean controlsExpanded = true;
     public boolean attractTourActive = true;
     public boolean lensingEnabled = true;
@@ -116,10 +139,80 @@ public final class SimulationState {
 
     // Binary Black Hole Merger Sliders
     public float binaryMassRatio = 0.65f; // Mass ratio q = M2 / M1 [0.25 .. 1.00]
-    public float binaryTimeScale = 1.00f; // Inspiral & merger time multiplier [0.20 .. 2.50]
+    public float binaryTimeScale = 1.00f; // Retained for compatibility; global timeScale drives all modes
+
+    // Interactive TDE Lab Parameters
+    public int tdeArchetypeIndex = 0;          // 0=Solar, 1=Red Giant, 2=Blue O-Type, 3=White Dwarf
+    public float tdeBeta = 1.55f;              // Penetration factor beta = r_t / r_p [0.60 .. 4.00]
+    public float tdeInclinationDeg = 22.0f;    // Launch orbital inclination [-65 .. +65 deg]
+    public float tdeHorizonSurge = 0.0f;       // Live horizon accretion surge [0..1]
 
     // Procedural Relativistic Audio
     public float audioVolume = 0.60f;     // Master volume [0.00 .. 1.00]
+
+    public StellarArchetype currentTdeArchetype() {
+        return StellarArchetype.fromIndex(tdeArchetypeIndex);
+    }
+
+    public void cycleTdeArchetype() {
+        tdeArchetypeIndex = (tdeArchetypeIndex + 1) % StellarArchetype.count();
+    }
+
+    public void setHudMode(int mode) {
+        this.hudMode = Math.max(HUD_CLEAN, Math.min(HUD_FULL, mode));
+        this.showUi = (this.hudMode == HUD_FULL);
+        if (this.hudMode == HUD_CLEAN) {
+            this.cinemaHintAge = 0.0f;
+        }
+    }
+
+    public void cycleHudMode() {
+        setHudMode((hudMode + 1) % 3);
+    }
+
+    public boolean isHudClean() {
+        return hudMode == HUD_CLEAN;
+    }
+
+    public boolean isHudCompact() {
+        return hudMode == HUD_COMPACT;
+    }
+
+    public boolean isHudFull() {
+        return hudMode == HUD_FULL;
+    }
+
+    public void setTimeScale(float scale) {
+        this.timeScale = Math.max(MIN_TIME_SCALE, Math.min(MAX_TIME_SCALE, scale));
+    }
+
+    public void stepTimeScaleUp() {
+        for (int i = 0; i < TIME_SCALE_PRESETS.length; i++) {
+            if (TIME_SCALE_PRESETS[i] > timeScale + 1e-3f) {
+                timeScale = TIME_SCALE_PRESETS[i];
+                return;
+            }
+        }
+        timeScale = MAX_TIME_SCALE;
+    }
+
+    public void stepTimeScaleDown() {
+        for (int i = TIME_SCALE_PRESETS.length - 1; i >= 0; i--) {
+            if (TIME_SCALE_PRESETS[i] < timeScale - 1e-3f) {
+                timeScale = TIME_SCALE_PRESETS[i];
+                return;
+            }
+        }
+        timeScale = MIN_TIME_SCALE;
+    }
+
+    /** Returns effective simulation delta (0 when paused, preserving chosen {@link #timeScale}). */
+    public double effectiveSimDt(double wallDt) {
+        if (paused || wallDt <= 0.0) {
+            return 0.0;
+        }
+        return wallDt * timeScale;
+    }
 
     public float effectiveSpin() {
         return kerrSpinEnabled ? spinParam : 0.0f;
@@ -194,7 +287,7 @@ public final class SimulationState {
     }
 
     public void tickUiTimers(double dt) {
-        if (!showUi) {
+        if (hudMode == HUD_CLEAN) {
             cinemaHintAge = Math.min(20.0f, cinemaHintAge + (float) dt);
         }
         synchronized (toastLock) {
@@ -258,5 +351,11 @@ public final class SimulationState {
         binaryTimeScale = 1.00f;
         binaryGwOverlay = false;
         binaryAutoLoop = true;
+
+        timeScale = 1.00f;
+        tdeArchetypeIndex = 0;
+        tdeBeta = 1.55f;
+        tdeInclinationDeg = 22.0f;
+        tdeHorizonSurge = 0.0f;
     }
 }
