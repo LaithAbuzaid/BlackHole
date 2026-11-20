@@ -8,4 +8,8 @@ module com.mycompany.mavenproject1 {
     requires jdk.management;
 
     exports com.mycompany.mavenproject1;
+    exports com.mycompany.mavenproject1.core;
+    exports com.mycompany.mavenproject1.graphics;
+    exports com.mycompany.mavenproject1.telemetry;
+    exports com.mycompany.mavenproject1.ui;
 }
