@@ -34,10 +34,16 @@ public final class RenderTargets implements AutoCloseable {
     private final int bloomLevels;
     private final int hdrFbo;
     private final int hdrColorTexture;
+    private final int[] taaFbo = new int[2];
+    private final int[] taaTexture = new int[2];
     private final int[] bloomFbo;
     private final int[] bloomTexture;
     private final int[] bloomWidth;
     private final int[] bloomHeight;
+    private final int[] anamorphicFbo = new int[2];
+    private final int[] anamorphicTexture = new int[2];
+    private final int anamorphicWidth;
+    private final int anamorphicHeight;
 
     public RenderTargets(int width, int height, int bloomLevels) {
         this.bloomLevels = bloomLevels;
@@ -53,6 +59,17 @@ public final class RenderTargets implements AutoCloseable {
                 hdrColorTexture, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             throw new RuntimeException("HDR Framebuffer incomplete");
+        }
+
+        for (int i = 0; i < 2; i++) {
+            taaFbo[i] = glGenFramebuffers();
+            glBindFramebuffer(GL_FRAMEBUFFER, taaFbo[i]);
+            taaTexture[i] = createHdrTexture(width, height);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                    taaTexture[i], 0);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                throw new RuntimeException("TAA history framebuffer " + i + " incomplete");
+            }
         }
 
         int bloomWidthValue = width;
@@ -72,6 +89,20 @@ public final class RenderTargets implements AutoCloseable {
                 throw new RuntimeException("Bloom mip framebuffer " + i + " incomplete");
             }
         }
+
+        int anaLevel = Math.min(2, bloomLevels - 1);
+        this.anamorphicWidth = bloomWidth[anaLevel];
+        this.anamorphicHeight = bloomHeight[anaLevel];
+        for (int i = 0; i < 2; i++) {
+            anamorphicFbo[i] = glGenFramebuffers();
+            glBindFramebuffer(GL_FRAMEBUFFER, anamorphicFbo[i]);
+            anamorphicTexture[i] = createHdrTexture(anamorphicWidth, anamorphicHeight);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                    anamorphicTexture[i], 0);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                throw new RuntimeException("Anamorphic framebuffer " + i + " incomplete");
+            }
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -81,6 +112,14 @@ public final class RenderTargets implements AutoCloseable {
 
     public int hdrColorTexture() {
         return hdrColorTexture;
+    }
+
+    public int taaFbo(int idx) {
+        return taaFbo[idx];
+    }
+
+    public int taaTexture(int idx) {
+        return taaTexture[idx];
     }
 
     public int bloomFbo(int level) {
@@ -99,6 +138,22 @@ public final class RenderTargets implements AutoCloseable {
         return bloomHeight[level];
     }
 
+    public int anamorphicFbo(int idx) {
+        return anamorphicFbo[idx];
+    }
+
+    public int anamorphicTexture(int idx) {
+        return anamorphicTexture[idx];
+    }
+
+    public int anamorphicWidth() {
+        return anamorphicWidth;
+    }
+
+    public int anamorphicHeight() {
+        return anamorphicHeight;
+    }
+
     @Override
     public void close() {
         if (hdrFbo != 0) {
@@ -107,12 +162,28 @@ public final class RenderTargets implements AutoCloseable {
         if (hdrColorTexture != 0) {
             glDeleteTextures(hdrColorTexture);
         }
+        for (int i = 0; i < 2; i++) {
+            if (taaFbo[i] != 0) {
+                glDeleteFramebuffers(taaFbo[i]);
+            }
+            if (taaTexture[i] != 0) {
+                glDeleteTextures(taaTexture[i]);
+            }
+        }
         for (int i = 0; i < bloomLevels; i++) {
             if (bloomFbo[i] != 0) {
                 glDeleteFramebuffers(bloomFbo[i]);
             }
             if (bloomTexture[i] != 0) {
                 glDeleteTextures(bloomTexture[i]);
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            if (anamorphicFbo[i] != 0) {
+                glDeleteFramebuffers(anamorphicFbo[i]);
+            }
+            if (anamorphicTexture[i] != 0) {
+                glDeleteTextures(anamorphicTexture[i]);
             }
         }
     }

@@ -22,44 +22,42 @@ vec3 toneMapACES(vec3 x) {
     return pow(clamp(mapped, 0.0, 1.0), vec3(1.0 / 2.2));
 }
 
-// Bright-pass luminance knee so anamorphic flare only emanates from hot ISCO / TDE peaks
-// without lifting black levels inside the pitch-black event horizon shadow.
-vec3 sampleAnamorphicTap(vec2 uv) {
-    vec3 s = sanitize(texture(uAnamorphicTex, clamp(uv, vec2(0.002), vec2(0.998))).rgb);
-    float luma = dot(s, vec3(0.2126, 0.7152, 0.0722));
-    float knee = smoothstep(0.48, 1.35, luma);
-    return s * knee;
+// Interleaved Gradient Noise (Jimenez 2014) for TPDF 8-bit post-tonemap dithering
+float ign(vec2 px) {
+    return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
 }
 
 void main() {
     vec2 fromCenter = vUv - 0.5;
     float r2 = dot(fromCenter, fromCenter);
-    vec2 caOffset = fromCenter * r2 * 0.0032;
+    vec2 caOffset = fromCenter * r2 * 0.0020;
 
     float r = texture(uHdrScene, vUv + caOffset).r;
     float g = texture(uHdrScene, vUv).g;
     float b = texture(uHdrScene, vUv - caOffset).b;
     vec3 hdr = sanitize(vec3(r, g, b));
 
+    // Proper HDR bloom pyramid (already Karis-filtered and soft-knee thresholded)
     vec3 bloom = sanitize(texture(uBloomTex, vUv).rgb);
 
-    // Subtle 7-tap wide horizontal Interstellar-style anamorphic lens streak
+    // 2-pass cascaded horizontal Interstellar-style anamorphic lens streak
     vec3 anamorphic = vec3(0.0);
     if (uAnamorphicStrength > 0.001) {
-        const float stepU = 0.034;
-        vec3 streak = sampleAnamorphicTap(vUv) * 0.24
-                    + (sampleAnamorphicTap(vUv + vec2( stepU, 0.0)) + sampleAnamorphicTap(vUv - vec2( stepU, 0.0))) * 0.21
-                    + (sampleAnamorphicTap(vUv + vec2( stepU * 2.2, 0.0)) + sampleAnamorphicTap(vUv - vec2( stepU * 2.2, 0.0))) * 0.14
-                    + (sampleAnamorphicTap(vUv + vec2( stepU * 3.8, 0.0)) + sampleAnamorphicTap(vUv - vec2( stepU * 3.8, 0.0))) * 0.08;
-        // Preserve pure pitch-black event horizon interior (zero lifted blacks inside shadow)
+        vec3 streak = sanitize(texture(uAnamorphicTex, vUv).rgb);
+        // Gentle shadow protection keeps the center of the event horizon pure pitch black
+        // while allowing realistic optical veil along the bright horizon silhouette.
         float hdrLuma = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
-        float shadowGuard = mix(0.06, 1.0, smoothstep(0.0, 0.045, hdrLuma));
-        vec3 lensTint = vec3(0.72, 0.88, 1.24);
-        anamorphic = streak * lensTint * (uAnamorphicStrength * 0.85 * shadowGuard);
+        float shadowGuard = mix(0.28, 1.0, smoothstep(0.0, 0.06, hdrLuma));
+        vec3 lensTint = vec3(0.74, 0.89, 1.32);
+        anamorphic = streak * lensTint * (uAnamorphicStrength * 0.92 * shadowGuard);
     }
 
-    vec3 combined = (hdr + bloom * uBloomStrength + anamorphic) * uExposure;
+    vec3 combined = (hdr + bloom * (uBloomStrength * 0.42) + anamorphic) * uExposure;
 
-    float vignette = 1.0 - r2 * 0.26;
-    FragColor = vec4(toneMapACES(combined * vignette), 1.0);
+    float vignette = 1.0 - r2 * 0.22;
+    vec3 ldr = toneMapACES(combined * vignette);
+
+    // TPDF dithering eliminates 8-bit quantization banding in deep-space & plunge gradients
+    float dither = (ign(gl_FragCoord.xy) - ign(gl_FragCoord.xy + vec2(17.0, 31.0))) * (1.0 / 255.0);
+    FragColor = vec4(clamp(ldr + dither, 0.0, 1.0), 1.0);
 }

@@ -13,9 +13,17 @@ vec3 safeSample(vec2 uv) {
     return clamp(mix(c, vec3(0.0), bad), vec3(0.0), vec3(48.0));
 }
 
-vec3 karisAverage(vec3 c) {
+float karisWeight(vec3 c) {
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    return c / (1.0 + luma);
+    return 1.0 / (1.0 + luma);
+}
+
+vec3 softKneeThreshold(vec3 c, float threshold, float knee) {
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float soft = clamp(lum - threshold + knee, 0.0, 2.0 * knee);
+    soft = (soft * soft) / (4.0 * knee + 1e-5);
+    float contrib = max(soft, lum - threshold) / max(lum, 1e-5);
+    return c * contrib;
 }
 
 void main() {
@@ -40,14 +48,23 @@ void main() {
 
     vec3 downsample;
     if (uIsFirstPass == 1) {
-        vec3 g0 = karisAverage((a + b + d + e) * 0.25);
-        vec3 g1 = karisAverage((b + c + e + f) * 0.25);
-        vec3 g2 = karisAverage((d + e + g + h) * 0.25);
-        vec3 g3 = karisAverage((e + f + h + i) * 0.25);
-        vec3 g4 = karisAverage((j + k + l + m) * 0.25);
-        downsample = g0 * 0.125 + g1 * 0.125 + g2 * 0.125 + g3 * 0.125 + g4 * 0.5;
-        float lum = dot(downsample, vec3(0.2126, 0.7152, 0.0722));
-        downsample *= smoothstep(0.60, 1.55, lum);
+        // Proper Jimenez/Karis normalized inverse-luma weighted average:
+        // suppresses single-pixel fireflies while preserving full HDR dynamic range.
+        vec3 g0 = (a + b + d + e) * 0.25;
+        vec3 g1 = (b + c + e + f) * 0.25;
+        vec3 g2 = (d + e + g + h) * 0.25;
+        vec3 g3 = (e + f + h + i) * 0.25;
+        vec3 g4 = (j + k + l + m) * 0.25;
+
+        float w0 = karisWeight(g0) * 0.125;
+        float w1 = karisWeight(g1) * 0.125;
+        float w2 = karisWeight(g2) * 0.125;
+        float w3 = karisWeight(g3) * 0.125;
+        float w4 = karisWeight(g4) * 0.500;
+        float wSum = max(1e-5, w0 + w1 + w2 + w3 + w4);
+
+        downsample = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / wSum;
+        downsample = softKneeThreshold(downsample, 0.85, 0.65);
     } else {
         downsample = e * 0.125;
         downsample += (a + c + g + i) * 0.03125;

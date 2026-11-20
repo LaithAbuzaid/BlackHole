@@ -28,13 +28,14 @@ uniform int uShowJets;
 uniform int uFreeFall;
 uniform int uShowGrid;
 uniform int uOrderVis;
-uniform int uAdaptiveAa;
+uniform vec2 uJitter;
+uniform int uFrameIndex;
 
 // Geometric units: G = c = M = 1, r_s = 2M = 2.0
 const float PI = 3.14159265359;
 const float M_BH = 1.0;
 const float R_DISK_OUT = 24.0;
-const float R_SHELL = 27.5;
+const float R_SHELL = 25.5;
 const int MAX_STEPS = 180;
 
 // ============================================================================
@@ -138,7 +139,7 @@ float hamiltonDeriv(vec3 x, vec3 p, float pt, float a, float a2,
     return r;
 }
 
-// FSAL-style RK4 in strong field (r <= 5.5M), RK2 midpoint in weak field (r > 5.5M)
+// FSAL-style RK4 in strong field (r <= 4.8M), RK2 midpoint in weak field (r > 4.8M)
 float geodesicStep(inout vec3 x, inout vec3 p, float h, float pt, float a, float a2, float rNow,
                    inout vec3 dxNow, inout vec3 dpNow) {
     vec3 k1x = dxNow;
@@ -146,7 +147,7 @@ float geodesicStep(inout vec3 x, inout vec3 p, float h, float pt, float a, float
     vec3 k2x, k2p;
     hamiltonDeriv(x + (0.5 * h) * k1x, p + (0.5 * h) * k1p, pt, a, a2, k2x, k2p);
 
-    if (rNow > 5.5) {
+    if (rNow > 4.8) {
         x += h * k2x;
         p += h * k2p;
         return hamiltonDeriv(x, p, pt, a, a2, dxNow, dpNow);
@@ -274,8 +275,8 @@ struct RayResult {
     vec3 exitDir;
     float skyShiftG;
     float rayPt;
+    float hitDist;
     bool escaped;
-    bool photonRingZone;
 };
 
 RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
@@ -300,7 +301,7 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
 
     float rPlus = uHorizonR;
     float iscoR = uIscoR;
-    float rEscape = max(44.0, rCam + 10.0);
+    float rEscape = max(38.0, rCam + 6.0);
 
     vec3 p;
     float pt;
@@ -335,20 +336,21 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
     res.exitDir = vLocal;
     res.skyShiftG = (uFreeFall == 1) ? clamp(1.0 / max(0.14, pt), 0.38, 3.80) : 1.0;
     res.rayPt = pt;
+    res.hitDist = 1e5;
     res.escaped = false;
-    res.photonRingZone = false;
 
     // Inside r_+, backward-traced rays with pt <= 0 can never escape to exterior infinity
     if (uLensing == 1 && startedInside && pt <= 0.0) {
         res.escaped = false;
+        res.hitDist = max(1.0, rCam);
         return res;
     }
 
-    // Analytic weak-field empty-space shortcut for far-field corner rays outside gravitational shell
+    // Analytic weak-field empty-space shortcut for far-field corner rays outside disk & gravitational shell
     vec3 x = uCamPos;
     float bProj = dot(-x, vLocal);
     float bSq = max(0.0, dot(x, x) - bProj * bProj);
-    if (uLensing == 1 && rCam > R_SHELL + 1.0 && (bProj <= 0.0 || bSq > 32.0 * 32.0)) {
+    if (uLensing == 1 && rCam > R_SHELL + 1.0 && (bProj <= 0.0 || bSq > 26.5 * 26.5)) {
         float b = sqrt(max(1.0, bSq));
         vec3 bVec = x + vLocal * max(0.0, bProj);
         float defl = (bProj > 0.0)
@@ -362,6 +364,7 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
     bool captured = false;
     float totalDeflection = 0.0;
     int diskCrossings = 0;
+    float firstDiskDist = -1.0;
 
     float r = rCam;
     vec3 dxNow = vLocal;
@@ -384,7 +387,7 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
 
     for (int step = 0; step < MAX_STEPS; step++) {
         float speed = length(dxNow);
-        float pNorm = length(p);
+        float pNormSq = dot(p, p);
         float radialOut = dot(x, dxNow);
 
         if (r > rEscape && radialOut > 0.0) {
@@ -400,7 +403,7 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
 
         if (uLensing == 1) {
             // True interior cutoff (r < 0.08M) with zero artificial walls at r_+ for plunging observers
-            if (r < 0.08 || pNorm > 85.0) {
+            if (r < 0.08 || pNormSq > 7225.0) {
                 captured = true;
                 break;
             }
@@ -413,33 +416,33 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
             break;
         }
 
-        // High-efficiency adaptive step sizing
+        // High-efficiency adaptive step sizing (exact strong field <= 5.0M, fast weak-field traversal)
         float distHorizon = abs(r - rPlus);
         float dsCoord;
         if (r < rPlus) {
             dsCoord = clamp(0.075 * r, 0.015, 0.12);
         } else if (r > R_DISK_OUT + 1.5) {
             dsCoord = (radialOut > 0.0)
-                    ? clamp(0.36 * r, 1.60, 8.50)
-                    : clamp(0.26 * distHorizon, 0.80, 4.80);
+                    ? clamp(0.42 * r, 1.90, 9.50)
+                    : clamp(0.30 * distHorizon, 0.90, 5.20);
         } else {
             float absY = abs(x.y);
-            float diskGuide = (absY > 2.0) ? 3.50 : (0.58 + absY * 0.72);
-            float fieldScale = (r > 5.5) ? (0.165 * distHorizon + 0.042) : (0.118 * distHorizon + 0.032);
-            dsCoord = clamp(min(fieldScale, diskGuide), 0.030, 3.20);
+            float diskGuide = (absY > 1.8) ? 4.20 : (0.62 + absY * 0.80);
+            float fieldScale = (r > 5.0) ? (0.215 * distHorizon + 0.055) : (0.118 * distHorizon + 0.032);
+            dsCoord = clamp(min(fieldScale, diskGuide), 0.030, 3.80);
         }
 
         if (jetsActive) {
             float absY = abs(x.y);
-            if (absY > rPlus * 1.2 && absY < 34.0) {
+            if (absY > rPlus * 2.1 && absY < 40.0) {
                 float rhoAxis = length(x.xz);
-                if (rhoAxis < 3.4) {
-                    dsCoord = min(dsCoord, 0.36 + rhoAxis * 0.25);
+                if (rhoAxis < 1.35) {
+                    dsCoord = min(dsCoord, 0.24 + rhoAxis * 0.26);
                 }
             }
         }
 
-        // Per-pixel IGN dithering eliminates volumetric slab/jet and grazing-angle banding
+        // Per-pixel animated IGN dithering eliminates volumetric slab/jet and grazing-angle banding
         if (step == 0) {
             dsCoord *= (0.60 + 0.40 * ign);
         } else if (startedInside && abs(x.y) < 0.85) {
@@ -452,6 +455,7 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
 
         float hStep;
         if (uLensing == 1) {
+            float pNorm = sqrt(pNormSq);
             hStep = dsCoord / max(1.0, max(speed, pNorm * 0.45));
             r = geodesicStep(x, p, hStep, pt, a, a2, r, dxNow, dpNow);
         } else {
@@ -460,13 +464,14 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
             r = kerrRadius(x, a2);
         }
 
-        float segLen = length(x - prevX);
-        float lenPrev = max(1e-5, length(prevX));
-        float lenCur = max(1e-5, length(x));
-        totalDeflection += length(cross(prevX, x)) / (lenPrev * lenCur);
+        if (uOrderVis == 1) {
+            float lenPrev = max(1e-5, length(prevX));
+            float lenCur = max(1e-5, length(x));
+            totalDeflection += length(cross(prevX, x)) / (lenPrev * lenCur);
+        }
 
         if (uLensing == 1) {
-            if (r < 0.08 || length(p) > 85.0) {
+            if (r < 0.08 || dot(p, p) > 7225.0) {
                 captured = true;
                 break;
             }
@@ -485,7 +490,9 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
         if (uShowDisk == 1 && r > rPlus * 1.03 && r <= R_DISK_OUT + 1.5) {
             bool crossed = (prevX.y > 0.0 && x.y <= 0.0) || (prevX.y < 0.0 && x.y >= 0.0);
             if (crossed || abs(x.y) < 0.52) {
-                float slabHalfH = 0.040 * pow(max(0.0, r - iscoR), 0.76) + 0.024;
+                float drIsco = max(0.0, r - iscoR);
+                float sqrtDr = sqrt(drIsco);
+                float slabHalfH = 0.040 * sqrtDr * sqrt(sqrtDr) + 0.024;
                 bool inSlab = (!crossed) && (abs(x.y) < slabHalfH) && (r <= R_DISK_OUT);
 
                 if (crossed || inSlab) {
@@ -501,6 +508,7 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                     } else {
                         hitP = x;
                         hitPCov = p;
+                        float segLen = length(x - prevX);
                         float vProf = exp(-(hitP.y * hitP.y) / max(1e-5, slabHalfH * slabHalfH * 0.36));
                         stepWeight = min(0.28, segLen * 0.58) * vProf;
                     }
@@ -522,37 +530,44 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                             float plungeU = clamp((hitR - rPlus * 1.04) / max(0.05, iscoR - rPlus * 1.04), 0.0, 1.0);
                             float spiral = phi - uTime * 2.2 + 5.2 * log(max(0.06, plungeU));
                             vec3 volCoord = vec3(cos(spiral) * 0.28, hitP.y * 0.65, sin(spiral) * 0.28);
-                            float stream = texture(uNoiseVol, volCoord).r;
-                            float filament = pow(max(0.0, sin(spiral * 3.0 + stream * 5.8)), 3.5);
-                            float fadeHorizon = smoothstep(0.0, 0.38, plungeU);
-                            density = filament * fadeHorizon * 0.48 * uDiskDensity;
+                            float stream = textureLod(uNoiseVol, volCoord, 0.5).r;
+                            float filament = pow(max(0.0, sin(spiral * 2.0 + stream * 5.2)), 2.8);
+                            float fadeHorizon = smoothstep(0.0, 0.42, plungeU);
+                            density = filament * fadeHorizon * 0.42 * uDiskDensity;
                             structure = 0.45 + 0.55 * filament;
                         } else {
+                            // Differentially sheared Keplerian plasma turbulence (alias-free mipmapped 3D fBm)
                             float omegaVis = 2.05 * pow(max(1.0, iscoR) / hitR, 1.38);
-                            float logSpiral = phi - uTime * omegaVis + 7.8 * log(hitR / max(1.0, iscoR));
+                            float logSpiral = phi - uTime * omegaVis + 6.4 * log(hitR / max(1.0, iscoR));
+                            float mipLod = clamp(float(max(0, diskCrossings - 1)) * 0.75 + uNorm * 0.45, 0.0, 2.2);
 
+                            float rWrap = 0.22 + uNorm * 0.62;
                             vec3 volCoord = vec3(
-                                cos(logSpiral) * (0.24 + uNorm * 0.68),
-                                hitP.y * 0.55 - uTime * 0.018,
-                                sin(logSpiral) * (0.24 + uNorm * 0.68) + uNorm * 0.85
+                                cos(logSpiral) * rWrap + uNorm * 0.45,
+                                hitP.y * 0.50 - uTime * 0.016,
+                                sin(logSpiral) * rWrap + uNorm * 0.85
                             );
-                            float turb = texture(uNoiseVol, volCoord).r;
-                            float turbFine = texture(uNoiseVol, volCoord * 2.35 + vec3(0.41, -0.19, 0.27)).r;
+                            float turbMacro = textureLod(uNoiseVol, volCoord * 0.72, mipLod).r;
+                            float turbMid = textureLod(uNoiseVol, volCoord * 1.75 + vec3(0.31, -0.17, 0.23), mipLod).r;
 
-                            float mainWaves = 0.5 + 0.5 * sin(uNorm * 68.0 + turb * 7.8);
-                            float fineThreads = 0.5 + 0.5 * cos(uNorm * 165.0 - turbFine * 10.5 + logSpiral * 2.0);
-                            structure = 0.56 * mainWaves + 0.44 * fineThreads;
+                            // Smooth magnetized MRI filaments & broad density waves (replaces harsh corduroy sine grooves)
+                            float broadBands = 0.5 + 0.5 * sin(uNorm * 26.0 + turbMacro * 6.8);
+                            float shearStream = 0.5 + 0.5 * cos(logSpiral * 2.0 + uNorm * 42.0 - turbMid * 7.2);
+                            float ridgeFilament = 1.0 - abs(turbMid * 2.0 - 1.0);
+                            float plasmaKnots = smoothstep(0.30, 0.84, turbMacro * 0.52 + turbMid * 0.32 + ridgeFilament * 0.16);
 
-                            if (uNorm > 0.22) {
-                                float dustNoise = texture(uNoiseVol, volCoord * 1.35 + vec3(0.17, 0.62, -0.33)).r;
-                                dustLaneFactor = smoothstep(0.22, 0.80, uNorm) * smoothstep(0.38, 0.70, dustNoise);
+                            structure = 0.36 * broadBands + 0.34 * shearStream + 0.30 * plasmaKnots;
+
+                            if (uNorm > 0.24) {
+                                float dustNoise = textureLod(uNoiseVol, volCoord * 1.25 + vec3(0.17, 0.62, -0.33), mipLod).r;
+                                dustLaneFactor = smoothstep(0.24, 0.84, uNorm) * smoothstep(0.42, 0.74, dustNoise);
                             }
 
-                            float innerRamp = smoothstep(0.0, 0.032, uNorm);
-                            float outerFade = pow(max(0.0, 1.0 - uNorm), 1.45);
-                            float iscoPeak = exp(-pow((uNorm - 0.028) / 0.055, 2.0)) * 0.68;
+                            float innerRamp = smoothstep(0.0, 0.036, uNorm);
+                            float outerFade = pow(max(0.0, 1.0 - uNorm), 1.55);
+                            float iscoPeak = exp(-pow((uNorm - 0.024) / 0.048, 2.0)) * 0.82;
 
-                            density = max(0.0, (structure * 1.08 + iscoPeak) * innerRamp * outerFade) * uDiskDensity;
+                            density = max(0.0, (structure * 1.05 + iscoPeak) * innerRamp * outerFade) * uDiskDensity;
                         }
 
                         if (density > 0.0025) {
@@ -570,24 +585,29 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                                 }
                                 intensityBoost = 1.0;
                             } else {
-                                float effR = max(iscoR * 0.95, hitR);
-                                float baseTemp = (11800.0 * uDiskTempScale)
-                                               * pow(max(1.0, iscoR) / effR, 0.72)
-                                               * (0.64 + 0.56 * structure);
-                                baseTemp *= (1.0 - 0.55 * dustLaneFactor);
+                                float effR = max(iscoR * 0.96, hitR);
+                                float baseTemp = (9800.0 * uDiskTempScale)
+                                               * pow(max(1.0, iscoR) / effR, 0.75)
+                                               * (0.62 + 0.58 * structure);
+                                baseTemp *= (1.0 - 0.52 * dustLaneFactor);
 
                                 emitCol = sampleBlackbody(baseTemp * gFactor);
 
-                                float g4 = gFactor * gFactor * gFactor * gFactor;
-                                intensityBoost = g4 / (1.0 + 0.34 * g4);
+                                // Relativistic specific intensity I_obs = g^3 * I_emit with gentle high-HDR shoulder
+                                // preserves bright-approaching vs dim-receding asymmetry without flat white clipping.
+                                float g3 = gFactor * gFactor * gFactor;
+                                intensityBoost = g3 / (1.0 + 0.055 * g3);
                             }
 
-                            float emitSuppression = 1.0 - 0.76 * dustLaneFactor;
-                            float emission = density * intensityBoost * emitSuppression * stepWeight * 0.92;
-                            float opacity = clamp(density * stepWeight * (0.58 + 1.40 * uNorm + 1.55 * dustLaneFactor), 0.0, 0.96);
+                            float emitSuppression = 1.0 - 0.74 * dustLaneFactor;
+                            float emission = density * intensityBoost * emitSuppression * stepWeight * 0.78;
+                            float opacity = clamp(density * stepWeight * (0.56 + 1.35 * uNorm + 1.45 * dustLaneFactor), 0.0, 0.96);
 
                             res.accumColor += res.transmittance * emission * emitCol;
                             res.transmittance *= (1.0 - opacity);
+                            if (firstDiskDist < 0.0 && opacity > 0.04) {
+                                firstDiskDist = length(hitP - uCamPos);
+                            }
                         }
                     }
                 }
@@ -599,37 +619,36 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
         // --------------------------------------------------------------------
         if (jetsActive) {
             float absY = abs(x.y);
-            if (absY > rPlus * 1.45 && absY < 34.0) {
-                float rFunnel = (0.28 + 0.15 * a) * pow(1.0 + absY * 0.22, 0.52);
+            if (absY > rPlus * 2.2 && absY < 40.0) {
+                float rFunnel = (0.18 + 0.08 * a) * pow(1.0 + absY * 0.14, 0.52);
                 float rho = length(x.xz);
-                if (rho < rFunnel * 2.15) {
+                if (rho < rFunnel * 2.20) {
                     float jetSign = (x.y >= 0.0) ? 1.0 : -1.0;
                     float uJet = rho / max(0.05, rFunnel);
 
-                    float spine = exp(-uJet * uJet * 6.0) * 1.05;
-                    float sheath = exp(-pow((uJet - 0.76) / 0.28, 2.0)) * 0.70;
-                    float radialProfile = spine + sheath;
+                    float spine = exp(-uJet * uJet * 4.8) * 1.15;
+                    float sheath = exp(-pow((uJet - 0.82) / 0.38, 2.0)) * 0.34;
+                    float radialProfile = (spine + sheath) * smoothstep(2.20, 1.25, uJet);
 
-                    float baseLaunch = smoothstep(rPlus * 1.45, rPlus * 3.10, absY);
-                    float topFade = exp(-absY * 0.034);
+                    float baseLaunch = smoothstep(rPlus * 2.20, rPlus * 6.40, absY);
+                    float topFade = exp(-absY * 0.015) * smoothstep(40.0, 22.0, absY);
 
                     float phiJet = safeAtan2(x.z, x.x);
-                    float helixPhase = phiJet * 2.0 - jetSign * (absY * (1.05 + 1.15 * a) - uTime * 5.2);
+                    float helixPhase = phiJet * 2.0 - jetSign * (absY * (0.48 + 0.55 * a) - uTime * 4.2);
                     vec3 jetNoiseCoord = vec3(
-                        x.x * 0.20,
-                        absY * 0.085 - uTime * 0.85,
-                        x.z * 0.20
+                        x.x * 0.18,
+                        absY * 0.048 - uTime * 0.68,
+                        x.z * 0.18
                     );
-                    float jTurb = texture(uNoiseVol, jetNoiseCoord).r;
-                    float jFine = texture(uNoiseVol, jetNoiseCoord * 2.2 + vec3(0.31, -0.42, 0.18)).r;
-                    float filament = 0.52 + 0.48 * pow(0.5 + 0.5 * sin(helixPhase + jTurb * 6.2), 1.8);
-                    float knots = 0.58 + 0.42 * jFine;
+                    float jTurb = textureLod(uNoiseVol, jetNoiseCoord, 0.4).r;
+                    float filament = 0.64 + 0.36 * pow(0.5 + 0.5 * sin(helixPhase + jTurb * 4.4), 1.5);
+                    float knots = 0.70 + 0.30 * jTurb;
 
                     float jetDensity = radialProfile * baseLaunch * topFade * filament * knots * uJetPower;
-                    if (jetDensity > 0.004) {
+                    if (jetDensity > 0.003) {
                         float gJet = 1.0;
                         if (uDoppler == 1) {
-                            float betaJet = 0.78;
+                            float betaJet = 0.66;
                             vec3 vJet = vec3(0.0, jetSign * betaJet, 0.0);
                             float rJ, Hj;
                             vec3 lJ;
@@ -638,17 +657,18 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                             float normJ = 1.0 - betaJet * betaJet - 2.0 * Hj * (1.0 + lvJ) * (1.0 + lvJ);
                             float utJ = inversesqrt(max(0.05, normJ));
                             float emitFreqJ = utJ * (pt + dot(p, vJet));
-                            gJet = clamp(obsFreq / max(0.08, emitFreqJ), 0.18, 3.20);
+                            gJet = clamp(obsFreq / max(0.08, emitFreqJ), 0.35, 2.50);
                         }
 
-                        float synchTemp = (18000.0 + 10000.0 * jFine) * clamp(gJet, 0.55, 1.85);
-                        vec3 synchCol = mix(sampleBlackbody(synchTemp), vec3(0.36, 0.70, 1.58), 0.42);
+                        float synchTemp = (18000.0 + 9000.0 * jTurb) * clamp(gJet, 0.65, 1.70);
+                        vec3 synchCol = mix(sampleBlackbody(synchTemp), vec3(0.36, 0.64, 1.55), 0.48);
 
                         float g3 = gJet * gJet * gJet;
-                        float jetBoost = g3 / (1.0 + 0.22 * g3);
+                        float jetBoost = g3 / (1.0 + 0.28 * g3);
 
-                        float jetEmit = jetDensity * jetBoost * segLen * 0.34;
-                        float jetAlpha = clamp(jetDensity * segLen * 0.020, 0.0, 0.24);
+                        float segLenJet = length(x - prevX);
+                        float jetEmit = jetDensity * jetBoost * segLenJet * 0.24;
+                        float jetAlpha = clamp(jetDensity * segLenJet * 0.008, 0.0, 0.10);
 
                         res.accumColor += res.transmittance * jetEmit * synchCol;
                         res.transmittance *= (1.0 - jetAlpha);
@@ -662,22 +682,28 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
         res.escaped = false;
     }
 
-    res.photonRingZone = (diskCrossings >= 3) || (res.escaped && totalDeflection > 2.35);
+    if (firstDiskDist > 0.0) {
+        res.hitDist = firstDiskDist;
+    } else if (!res.escaped) {
+        res.hitDist = max(1.0, rCam);
+    } else {
+        res.hitDist = 1e5;
+    }
     return res;
 }
 
 vec3 applyInteriorClimax(vec3 col, float rayPt) {
-    // Kerr Inner Cauchy Horizon (r_-) Mass-Inflation Blueshift Flash:
-    // Infinitely blueshifted external radiation piles up along the horizon caustic boundary (rayPt ~ 0)
-    // as an intense electric blue-white celestial ring rather than washing out the viewport to flat white.
+    // Kerr Inner Cauchy Horizon (r_-) Mass-Inflation Blueshift Caustic:
+    // Tightly hugs the horizon caustic boundary (rayPt ~ 0) as a crisp electric blue-white
+    // celestial ring without fogging over the exterior sky and warped accretion disk.
     if (uCauchyFlash > 0.001) {
-        float sharpRing = exp(-pow(rayPt / (0.045 + 0.055 * uCauchyFlash), 2.0));
-        float coronaHalo = exp(-pow(rayPt / (0.18 + 0.16 * uCauchyFlash), 2.0));
-        vec3 coreCol = vec3(0.88, 0.96, 1.65);
-        vec3 haloCol = vec3(0.24, 0.62, 1.55);
-        col += coreCol * sharpRing * uCauchyFlash * 5.8
-             + haloCol * coronaHalo * uCauchyFlash * 1.35
-             + haloCol * (uCauchyFlash * uCauchyFlash * 0.14);
+        float sharpRing = exp(-pow(rayPt / (0.014 + 0.022 * uCauchyFlash), 2.0));
+        float coronaHalo = exp(-pow(rayPt / (0.052 + 0.055 * uCauchyFlash), 2.0));
+        vec3 coreCol = vec3(0.82, 0.94, 1.70);
+        vec3 haloCol = vec3(0.18, 0.54, 1.48);
+        col += coreCol * sharpRing * uCauchyFlash * 4.2
+             + haloCol * coronaHalo * uCauchyFlash * 0.72
+             + haloCol * (uCauchyFlash * uCauchyFlash * 0.035);
     }
 
     // Schwarzschild Singularity Impact Fade (r -> 0)
@@ -692,20 +718,20 @@ void main() {
     float a = clamp(uSpinA, 0.0, 0.998);
     float a2 = a * a;
 
-    // Hoisted camera metric evaluation: computed ONCE per pixel instead of 4x during AA
     float rCam, Hcam;
     vec3 lCam;
     kerrMetricHL(uCamPos, a, a2, rCam, Hcam, lCam);
 
-    float ign = interleavedGradientNoise(gl_FragCoord.xy);
-    RayResult primary = traceGeodesic(gl_FragCoord.xy, a, a2, rCam, Hcam, lCam, ign);
+    // Temporally animated Interleaved Gradient Noise + Halton(2,3) sub-pixel TAA jitter
+    float frameShift = float(uFrameIndex & 63) * 5.588238;
+    float ign = interleavedGradientNoise(gl_FragCoord.xy + vec2(frameShift));
+    RayResult primary = traceGeodesic(gl_FragCoord.xy + uJitter, a, a2, rCam, Hcam, lCam, ign);
 
     // Hardware 2x2 quad derivatives evaluated unconditionally in uniform control flow
     vec3 rawDdx = dFdx(primary.exitDir);
     vec3 rawDdy = dFdy(primary.exitDir);
-    float dirGrad = length(rawDdx) + length(rawDdy);
 
-    float maxGrad = 0.16;
+    float maxGrad = 0.14;
     vec3 ddx = rawDdx * min(1.0, maxGrad / max(1e-6, length(rawDdx)));
     vec3 ddy = rawDdy * min(1.0, maxGrad / max(1e-6, length(rawDdy)));
 
@@ -715,45 +741,6 @@ void main() {
     }
     c0 = applyInteriorClimax(c0, primary.rayPt);
 
-    // Edge-aware adaptive AA mask in perceptual tone-mapped luma space:
-    // preserves 4x AA on shadow silhouette, photon ring, Einstein ring, stars & crisp edges
-    // while avoiding redundant 4x oversampling on smooth HDR mid-disk regions.
-    float escMask = primary.escaped ? 1.0 : 0.0;
-    bool shadowEdge = fwidth(escMask) > 0.01;
-    float luma0 = dot(c0, vec3(0.2126, 0.7152, 0.0722));
-    float percLuma = luma0 / (1.0 + luma0);
-    float edgeContrast = fwidth(percLuma);
-
-    bool needsAa = shadowEdge
-                || primary.photonRingZone
-                || (primary.escaped && dirGrad > 0.080)
-                || (edgeContrast > 0.055);
-
-    if (uAdaptiveAa == 0 || !needsAa) {
-        FragColor = vec4(c0, 1.0);
-        return;
-    }
-
-    // Edge-aware Adaptive 4x Stratified AA using R2 quasi-random sub-pixel offsets
-    vec2 r2Offsets[3] = vec2[](
-        vec2( 0.254878,  0.069840),
-        vec2(-0.490245, -0.360319),
-        vec2(-0.235367,  0.209521)
-    );
-
-    vec3 sum = c0;
-    vec3 subDdx = ddx * 0.5;
-    vec3 subDdy = ddy * 0.5;
-
-    for (int s = 0; s < 3; s++) {
-        float subIgn = fract(ign + 0.3183098 * float(s + 1));
-        RayResult sub = traceGeodesic(gl_FragCoord.xy + r2Offsets[s], a, a2, rCam, Hcam, lCam, subIgn);
-        vec3 cs = sub.accumColor;
-        if (sub.escaped && sub.transmittance > 0.005) {
-            cs += sub.transmittance * sampleSkyWithGrid(sub.exitDir, subDdx, subDdy, sub.skyShiftG);
-        }
-        sum += applyInteriorClimax(cs, sub.rayPt);
-    }
-
-    FragColor = vec4(sanitizeHdr(sum * 0.25), 1.0);
+    // Store world hit distance in alpha channel for exact 3D camera parallax TAA reprojection
+    FragColor = vec4(sanitizeHdr(c0), primary.hitDist);
 }

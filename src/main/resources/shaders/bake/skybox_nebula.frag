@@ -22,16 +22,16 @@ vec3 getCubemapDir(int face, vec2 uv) {
     return normalize(vec3(-uv.x, -uv.y, -1.0));
 }
 
-// Ray-sphere & ray-ring renderer for a large banded gas giant positioned near the wormhole throat axis
+// Ray-sphere & ray-ring renderer for a large banded gas giant positioned across the wormhole caustic
 vec3 renderRingedGasGiant(vec3 dir, inout float skyMask) {
-    vec3 planetCenter = normalize(vec3(0.22, 0.08, -0.972)) * 11.5;
-    float planetR = 1.65;
+    vec3 planetCenter = normalize(vec3(0.42, 0.16, -0.893)) * 6.8;
+    float planetR = 1.72;
 
     // Tilted ring plane normal and orthonormal basis
-    vec3 ringNormal = normalize(vec3(-0.34, 0.88, 0.33));
+    vec3 ringNormal = normalize(vec3(-0.36, 0.86, 0.36));
     vec3 ringU = normalize(cross(ringNormal, vec3(0.0, 0.0, 1.0)));
     vec3 ringV = cross(ringNormal, ringU);
-    vec3 sunDir = normalize(vec3(-0.72, 0.42, 0.55));
+    vec3 sunDir = normalize(vec3(-0.74, 0.40, 0.54));
 
     // Ray-sphere intersection (camera at origin)
     float b = dot(dir, planetCenter);
@@ -173,62 +173,73 @@ void main() {
     vec2 uv = (gl_FragCoord.xy / uFaceSize) * 2.0 - 1.0;
     vec3 dir = getCubemapDir(uFace, uv);
 
-    // Distinct tilted golden-amber & teal emission nebula belt (orthogonal tilt vs Universe A)
+    // High-contrast astrophotography-style deep-space teal & golden-amber nebula belt
     float nebLat = dir.y * 0.72 + dir.x * 0.64 - dir.z * 0.27;
-    float belt = exp(-(nebLat * nebLat) / 0.085);
-    float coreBelt = exp(-(nebLat * nebLat) / 0.018);
+    float belt = exp(-(nebLat * nebLat) / 0.055);
+    float coreBelt = exp(-(nebLat * nebLat) / 0.014);
 
-    float n1 = texture(uNoiseVol, dir * 0.65 + vec3(0.41, -0.28, 0.19)).r;
-    float n2 = texture(uNoiseVol, dir * 1.65 - vec3(0.22, 0.55, -0.34)).r;
-    float n3 = texture(uNoiseVol, dir * 3.40 + vec3(-0.18, 0.27, 0.61)).r;
-    float filaments = pow(clamp(n1 * 0.52 + n2 * 0.33 + n3 * 0.15, 0.0, 1.0), 1.35);
-    float darkPillars = smoothstep(0.46, 0.76, n2 * 0.65 + n3 * 0.35);
+    // Domain-warped multi-scale nebula wisps (eliminates flat Perlin-cloud wallpaper look)
+    vec3 warp = vec3(
+        texture(uNoiseVol, dir * 0.70 + vec3(0.11, 0.37, -0.21)).r,
+        texture(uNoiseVol, dir * 0.70 + vec3(-0.42, 0.19, 0.53)).r,
+        texture(uNoiseVol, dir * 0.70 + vec3(0.28, -0.61, 0.14)).r
+    ) - 0.5;
+    vec3 wDir = dir + warp * 0.32;
 
-    vec3 deepTeal = vec3(0.05, 0.36, 0.46);
-    vec3 brightCyan = vec3(0.14, 0.74, 0.82);
-    vec3 goldenAmber = vec3(1.12, 0.62, 0.18);
-    vec3 warmGold = vec3(1.38, 0.94, 0.42);
+    float n1 = texture(uNoiseVol, wDir * 0.65 + vec3(0.41, -0.28, 0.19)).r;
+    float n2 = texture(uNoiseVol, wDir * 1.75 - vec3(0.22, 0.55, -0.34)).r;
+    float n3 = texture(uNoiseVol, wDir * 3.80 + vec3(-0.18, 0.27, 0.61)).r;
+    float ridge = 1.0 - abs(n2 * 2.0 - 1.0);
+    float wisps = pow(clamp(n1 * 0.45 + ridge * 0.40 + n3 * 0.15, 0.0, 1.0), 2.15);
+    float darkPillars = smoothstep(0.44, 0.72, n1 * 0.50 + n2 * 0.35 + n3 * 0.15);
 
-    vec3 nebula = mix(deepTeal, brightCyan, smoothstep(0.28, 0.74, n1)) * (0.42 + 0.60 * belt);
-    nebula += mix(goldenAmber, warmGold, coreBelt * n2) * (0.35 + 1.35 * belt) * smoothstep(0.26, 0.70, filaments) * 1.35;
-    nebula *= (1.0 - 0.70 * darkPillars * exp(-(nebLat * nebLat) / 0.028));
+    vec3 deepSapphire = vec3(0.015, 0.09, 0.17);
+    vec3 brightTeal = vec3(0.06, 0.46, 0.58);
+    vec3 goldenAmber = vec3(0.95, 0.48, 0.14);
+    vec3 warmGold = vec3(1.32, 0.84, 0.36);
 
-    // Rich cosmic emerald-indigo background
-    vec3 col = vec3(0.0020, 0.0052, 0.0078) + nebula * 0.62;
+    vec3 nebula = mix(deepSapphire, brightTeal, smoothstep(0.36, 0.78, n1 * 0.6 + ridge * 0.4))
+                * (0.14 + 0.86 * belt) * smoothstep(0.22, 0.72, wisps);
+    nebula += mix(goldenAmber, warmGold, coreBelt * ridge)
+            * (0.18 + 1.25 * belt) * smoothstep(0.34, 0.78, wisps) * 1.15;
+    nebula *= (1.0 - 0.82 * darkPillars * exp(-(nebLat * nebLat) / 0.022));
 
-    // Bright golden illuminating star cluster on opposite limb
-    vec3 sunAxis = normalize(vec3(-0.72, 0.42, 0.55));
+    // Deep dark cosmic space so nebula filaments, stars, and ringed gas giant pop dramatically
+    vec3 col = vec3(0.0007, 0.0018, 0.0034) + nebula * 0.72;
+
+    // Bright golden illuminating star on opposite limb
+    vec3 sunAxis = normalize(vec3(-0.74, 0.40, 0.54));
     float sunDot = max(0.0, dot(dir, sunAxis));
-    col += vec3(1.65, 1.24, 0.72) * (pow(sunDot, 1200.0) * 6.5 + pow(sunDot, 45.0) * 0.55);
+    col += vec3(1.65, 1.22, 0.72) * (pow(sunDot, 1600.0) * 6.0 + pow(sunDot, 55.0) * 0.35);
 
-    // Dense sparkling star clusters (4 layers including dense golden cluster near throat)
-    vec3 clusterDir = normalize(vec3(-0.28, -0.14, -0.95));
-    float clusterGlow = exp(-pow(length(dir - clusterDir) / 0.16, 2.0));
-    col += vec3(0.48, 0.36, 0.18) * clusterGlow * 0.45;
+    // Dense sparkling golden star cluster offset from throat center
+    vec3 clusterDir = normalize(vec3(-0.34, -0.18, -0.92));
+    float clusterGlow = exp(-pow(length(dir - clusterDir) / 0.14, 2.0));
+    col += vec3(0.42, 0.30, 0.15) * clusterGlow * 0.35;
 
     for (int layer = 0; layer < 3; layer++) {
-        float scale = (layer == 0) ? 235.0 : ((layer == 1) ? 124.0 : 62.0);
+        float scale = (layer == 0) ? 265.0 : ((layer == 1) ? 160.0 : 94.0);
         vec3 cell = floor(dir * scale);
         vec3 local = fract(dir * scale) - 0.5;
         float rnd = hash31(cell + float(layer) * 73.0 + 19.0);
 
-        float baseThresh = (layer == 0) ? 0.946 : ((layer == 1) ? 0.974 : 0.989);
-        float thresh = baseThresh - clusterGlow * 0.035 - belt * 0.012;
+        float baseThresh = (layer == 0) ? 0.946 : ((layer == 1) ? 0.978 : 0.992);
+        float thresh = baseThresh - clusterGlow * 0.032 - belt * 0.014;
         if (rnd > thresh) {
             vec3 jitter = vec3(
                 hash31(cell + 3.1) - 0.5,
                 hash31(cell + 5.7) - 0.5,
                 hash31(cell + 7.3) - 0.5
-            ) * 0.62;
+            ) * 0.58;
             float d = length(local - jitter);
             float mag = (rnd - thresh) / max(1e-4, 1.0 - thresh);
 
-            float core = exp(-d * d * (layer == 2 ? 76.0 : 126.0));
-            float halo = exp(-d * d * (layer == 2 ? 14.0 : 24.0)) * 0.24;
+            float core = exp(-d * d * (layer == 2 ? 205.0 : 190.0));
+            float halo = exp(-d * d * (layer == 2 ? 38.0 : 48.0)) * (layer == 2 ? 0.14 : 0.08);
 
             vec3 tint = starTintB(hash31(cell + 11.4));
-            float gain = (layer == 0) ? 2.0 : ((layer == 1) ? 3.8 : 8.2);
-            col += tint * (core + halo) * pow(mag, 1.85) * gain;
+            float gain = (layer == 0) ? 1.55 : ((layer == 1) ? 2.85 : 4.80);
+            col += tint * (core + halo) * pow(mag, 2.0) * gain;
         }
     }
 

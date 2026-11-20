@@ -22,10 +22,26 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private static final int SKYBOX_FACE_SIZE = 1024;
     private static final int BLACKBODY_LUT_WIDTH = 512;
 
+    // 16-phase low-discrepancy Halton(2, 3) sub-pixel TAA jitter sequence in [-0.5, +0.5) px
+    private static final float[] HALTON_X = {
+        0.000000f, -0.250000f,  0.250000f, -0.375000f,
+        0.125000f, -0.125000f,  0.375000f, -0.437500f,
+        0.062500f, -0.187500f,  0.312500f, -0.312500f,
+        0.187500f, -0.062500f,  0.437500f, -0.468750f
+    };
+    private static final float[] HALTON_Y = {
+       -0.166667f,  0.166667f, -0.388889f, -0.055556f,
+        0.277778f, -0.277778f,  0.055556f,  0.388889f,
+       -0.462963f, -0.129630f,  0.203704f, -0.351852f,
+       -0.018519f,  0.314815f, -0.240741f,  0.092593f
+    };
+
     private final ShaderProgram rayProgram;
     private final ShaderProgram wormholeProgram;
+    private final ShaderProgram taaProgram;
     private final ShaderProgram downsampleProgram;
     private final ShaderProgram upsampleProgram;
+    private final ShaderProgram anamorphicProgram;
     private final ShaderProgram compositeProgram;
     private final TidalDisruptionSystem tdeSystem;
 
@@ -35,6 +51,23 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int skyboxUniverseA;
     private final int skyboxUniverseB;
     private RenderTargets renderTargets;
+
+    // Temporal Anti-Aliasing (TAA) state (zero per-frame heap allocations)
+    private int frameIndex = 0;
+    private int taaWriteIdx = 0;
+    private int taaAccumCount = 0;
+    private boolean taaHistoryValid = false;
+    private float prevCamPosX, prevCamPosY, prevCamPosZ;
+    private float prevCamFwdX, prevCamFwdY, prevCamFwdZ;
+    private float prevCamRightX, prevCamRightY, prevCamRightZ;
+    private float prevCamUpX, prevCamUpY, prevCamUpZ;
+    private float prevTanHalfFov = 0.4f;
+    private boolean prevWormholeMode;
+    private boolean prevOrderVis;
+    private boolean prevShowGrid;
+    private boolean prevLensing;
+    private boolean prevShowDisk;
+    private boolean prevFreeFall;
 
     // Cached Black Hole uniform locations
     private final int uResolution;
@@ -64,7 +97,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uFreeFall;
     private final int uShowGrid;
     private final int uOrderVis;
-    private final int uAdaptiveAa;
+    private final int uJitter;
+    private final int uFrameIndex;
 
     // Cached Wormhole uniform locations
     private final int uWhResolution;
@@ -80,13 +114,33 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uWhM;
     private final int uWhTanHalfFov;
     private final int uWhShowGrid;
-    private final int uWhAdaptiveAa;
+    private final int uWhJitter;
 
-    // Bloom & Composite uniform locations
+    // Cached TAA Resolve uniform locations
+    private final int uTaaCurrent;
+    private final int uTaaHistory;
+    private final int uTaaResolution;
+    private final int uTaaCamPos;
+    private final int uTaaCamForward;
+    private final int uTaaCamRight;
+    private final int uTaaCamUp;
+    private final int uTaaTanHalfFov;
+    private final int uTaaPrevCamPos;
+    private final int uTaaPrevCamForward;
+    private final int uTaaPrevCamRight;
+    private final int uTaaPrevCamUp;
+    private final int uTaaPrevTanHalfFov;
+    private final int uTaaResetHistory;
+    private final int uTaaMinAlpha;
+
+    // Bloom, Anamorphic & Composite uniform locations
     private final int uDownSource;
     private final int uIsFirstPass;
     private final int uUpSource;
     private final int uFilterRadius;
+    private final int uAnaSource;
+    private final int uAnaStepScale;
+    private final int uAnaExtractThreshold;
     private final int uCompHdr;
     private final int uCompBloom;
     private final int uCompAnamorphic;
@@ -99,8 +153,10 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
         this.rayProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/kerr_blackhole.frag");
         this.wormholeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/morris_thorne_wormhole.frag");
+        this.taaProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/taa_resolve.frag");
         this.downsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_downsample.frag");
         this.upsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_upsample.frag");
+        this.anamorphicProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/anamorphic_blur.frag");
         this.compositeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/tonemap_composite.frag");
         this.tdeSystem = new TidalDisruptionSystem();
 
@@ -152,7 +208,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uFreeFall = rayProgram.uniformLocation("uFreeFall");
         uShowGrid = rayProgram.uniformLocation("uShowGrid");
         uOrderVis = rayProgram.uniformLocation("uOrderVis");
-        uAdaptiveAa = rayProgram.uniformLocation("uAdaptiveAa");
+        uJitter = rayProgram.uniformLocation("uJitter");
+        uFrameIndex = rayProgram.uniformLocation("uFrameIndex");
 
         // Cache Wormhole uniform locations
         uWhResolution = wormholeProgram.uniformLocation("uResolution");
@@ -168,13 +225,34 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uWhM = wormholeProgram.uniformLocation("uWormholeM");
         uWhTanHalfFov = wormholeProgram.uniformLocation("uTanHalfFov");
         uWhShowGrid = wormholeProgram.uniformLocation("uShowGrid");
-        uWhAdaptiveAa = wormholeProgram.uniformLocation("uAdaptiveAa");
+        uWhJitter = wormholeProgram.uniformLocation("uJitter");
 
-        // Cache Bloom & Composite uniform locations
+        // Cache TAA Resolve uniform locations
+        uTaaCurrent = taaProgram.uniformLocation("uCurrentTex");
+        uTaaHistory = taaProgram.uniformLocation("uHistoryTex");
+        uTaaResolution = taaProgram.uniformLocation("uResolution");
+        uTaaCamPos = taaProgram.uniformLocation("uCamPos");
+        uTaaCamForward = taaProgram.uniformLocation("uCamForward");
+        uTaaCamRight = taaProgram.uniformLocation("uCamRight");
+        uTaaCamUp = taaProgram.uniformLocation("uCamUp");
+        uTaaTanHalfFov = taaProgram.uniformLocation("uTanHalfFov");
+        uTaaPrevCamPos = taaProgram.uniformLocation("uPrevCamPos");
+        uTaaPrevCamForward = taaProgram.uniformLocation("uPrevCamForward");
+        uTaaPrevCamRight = taaProgram.uniformLocation("uPrevCamRight");
+        uTaaPrevCamUp = taaProgram.uniformLocation("uPrevCamUp");
+        uTaaPrevTanHalfFov = taaProgram.uniformLocation("uPrevTanHalfFov");
+        uTaaResetHistory = taaProgram.uniformLocation("uResetHistory");
+        uTaaMinAlpha = taaProgram.uniformLocation("uMinAlpha");
+
+        // Cache Bloom, Anamorphic & Composite uniform locations
         uDownSource = downsampleProgram.uniformLocation("uSource");
         uIsFirstPass = downsampleProgram.uniformLocation("uIsFirstPass");
         uUpSource = upsampleProgram.uniformLocation("uSource");
         uFilterRadius = upsampleProgram.uniformLocation("uFilterRadius");
+
+        uAnaSource = anamorphicProgram.uniformLocation("uSource");
+        uAnaStepScale = anamorphicProgram.uniformLocation("uStepScale");
+        uAnaExtractThreshold = anamorphicProgram.uniformLocation("uExtractThreshold");
 
         uCompHdr = compositeProgram.uniformLocation("uHdrScene");
         uCompBloom = compositeProgram.uniformLocation("uBloomTex");
@@ -189,6 +267,14 @@ public final class BlackHoleRenderer implements AutoCloseable {
             renderTargets.close();
         }
         renderTargets = new RenderTargets(width, height, BLOOM_LEVELS);
+        resetTaaHistory();
+    }
+
+    /** Invalidates temporal history cleanly on camera cuts, mode switches, or showcase shots. */
+    public void resetTaaHistory() {
+        taaHistoryValid = false;
+        taaAccumCount = 0;
+        frameIndex = 0;
     }
 
     public void spawnTdeStar(SimulationState state) {
@@ -224,12 +310,29 @@ public final class BlackHoleRenderer implements AutoCloseable {
                             SimulationState state, CameraController camera, GpuTimerQueries timers, int outputFbo) {
         glBindVertexArray(quadVao);
 
-        // PASS 1: Exact Kerr-Schild Black Hole OR Morris-Thorne Wormhole Ray-Tracer (GPU Timed)
+        boolean useTaa = state.adaptiveAa4x;
+        int phase = frameIndex & 15;
+        float jitterX = useTaa ? HALTON_X[phase] : 0.0f;
+        float jitterY = useTaa ? HALTON_Y[phase] : 0.0f;
+        float tanHalfFov = (float) Math.tan(Math.toRadians(state.fovDeg));
+
+        // Effective 3D camera origin for exact parallax TAA reprojection (BH origin or wormhole throat)
+        float effCamX, effCamY, effCamZ;
+        if (state.wormholeMode) {
+            float absL = Math.abs((float) camera.currentWormholeL());
+            effCamX = camera.radialX * absL;
+            effCamY = camera.radialY * absL;
+            effCamZ = camera.radialZ * absL;
+        } else {
+            effCamX = camera.posX;
+            effCamY = camera.posY;
+            effCamZ = camera.posZ;
+        }
+
+        // PASS 1: Exact Kerr-Schild Black Hole OR Morris-Thorne Wormhole Ray-Tracer (1 ray/px, Halton jitter)
         timers.beginRay();
         glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.hdrFbo());
         glViewport(0, 0, width, height);
-
-        float tanHalfFov = (float) Math.tan(Math.toRadians(state.fovDeg));
 
         if (state.wormholeMode) {
             wormholeProgram.use();
@@ -253,7 +356,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1f(uWhM, state.wormholeM);
             glUniform1f(uWhTanHalfFov, tanHalfFov);
             glUniform1i(uWhShowGrid, state.showGrid ? 1 : 0);
-            glUniform1i(uWhAdaptiveAa, state.adaptiveAa4x ? 1 : 0);
+            glUniform2f(uWhJitter, jitterX, jitterY);
 
             glDrawArrays(GL_TRIANGLES, 0, 3);
         } else {
@@ -295,20 +398,97 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1i(uFreeFall, (state.freeFallMode || state.plungeActive) ? 1 : 0);
             glUniform1i(uShowGrid, state.showGrid ? 1 : 0);
             glUniform1i(uOrderVis, state.orderVisualizer ? 1 : 0);
-            glUniform1i(uAdaptiveAa, state.adaptiveAa4x ? 1 : 0);
+            glUniform2f(uJitter, jitterX, jitterY);
+            glUniform1i(uFrameIndex, frameIndex);
 
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         timers.endRay();
 
-        // PASS 1B: OpenGL 4.3 Compute TDE + Additive HDR Sprites (Instant no-op when inactive)
+        // PASS 1B: OpenGL 4.3 Compute TDE + Additive HDR Sprites (matching Halton jitter, preserves .a hitDist)
         timers.beginTde();
-        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, state, camera);
+        tdeSystem.updateAndRender(width, height, dt, readbackTdeCounters, blackbodyLutTex, jitterX, jitterY, state, camera);
         timers.endTde();
 
-        // PASS 2: 5-Level Karis-Averaged Bloom Pyramid (GPU Timed)
+        // PASS 1C + 2 + 2B + 3: Relativistic TAA Resolve + Karis Bloom + Anamorphic Flare + ACES Composite
         glBindVertexArray(quadVao);
         timers.beginBloom();
+
+        int resolvedHdrTex = renderTargets.hdrColorTexture();
+        if (useTaa) {
+            boolean curFreeFall = state.freeFallMode || state.plungeActive;
+            float dxCam = effCamX - prevCamPosX;
+            float dyCam = effCamY - prevCamPosY;
+            float dzCam = effCamZ - prevCamPosZ;
+            float camJumpSq = dxCam * dxCam + dyCam * dyCam + dzCam * dzCam;
+            float fwdDot = camera.forwardX * prevCamFwdX + camera.forwardY * prevCamFwdY + camera.forwardZ * prevCamFwdZ;
+
+            boolean resetHist = !taaHistoryValid
+                    || (state.wormholeMode != prevWormholeMode)
+                    || (state.orderVisualizer != prevOrderVis)
+                    || (state.showGrid != prevShowGrid)
+                    || (state.lensingEnabled != prevLensing)
+                    || (state.showDisk != prevShowDisk)
+                    || (curFreeFall != prevFreeFall)
+                    || (camJumpSq > 6.25f)
+                    || (fwdDot < 0.94f)
+                    || (Math.abs(tanHalfFov - prevTanHalfFov) > 0.04f);
+
+            if (resetHist) {
+                taaAccumCount = 0;
+            }
+            int readIdx = 1 - taaWriteIdx;
+            float minAlpha = Math.max(0.0625f, 1.0f / (taaAccumCount + 1));
+
+            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.taaFbo(taaWriteIdx));
+            glViewport(0, 0, width, height);
+            taaProgram.use();
+            glUniform1i(uTaaCurrent, 0);
+            glUniform1i(uTaaHistory, 1);
+            glUniform2f(uTaaResolution, width, height);
+            glUniform3f(uTaaCamPos, effCamX, effCamY, effCamZ);
+            glUniform3f(uTaaCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(uTaaCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(uTaaCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(uTaaTanHalfFov, tanHalfFov);
+            glUniform3f(uTaaPrevCamPos, prevCamPosX, prevCamPosY, prevCamPosZ);
+            glUniform3f(uTaaPrevCamForward, prevCamFwdX, prevCamFwdY, prevCamFwdZ);
+            glUniform3f(uTaaPrevCamRight, prevCamRightX, prevCamRightY, prevCamRightZ);
+            glUniform3f(uTaaPrevCamUp, prevCamUpX, prevCamUpY, prevCamUpZ);
+            glUniform1f(uTaaPrevTanHalfFov, prevTanHalfFov);
+            glUniform1i(uTaaResetHistory, resetHist ? 1 : 0);
+            glUniform1f(uTaaMinAlpha, minAlpha);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, renderTargets.hdrColorTexture());
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, renderTargets.taaTexture(readIdx));
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            resolvedHdrTex = renderTargets.taaTexture(taaWriteIdx);
+            taaWriteIdx = readIdx;
+            taaHistoryValid = true;
+            taaAccumCount = Math.min(16, taaAccumCount + 1);
+            prevWormholeMode = state.wormholeMode;
+            prevOrderVis = state.orderVisualizer;
+            prevShowGrid = state.showGrid;
+            prevLensing = state.lensingEnabled;
+            prevShowDisk = state.showDisk;
+            prevFreeFall = curFreeFall;
+        } else {
+            taaHistoryValid = false;
+            taaAccumCount = 0;
+        }
+
+        // Record current camera pose for next frame's temporal reprojection
+        prevCamPosX = effCamX; prevCamPosY = effCamY; prevCamPosZ = effCamZ;
+        prevCamFwdX = camera.forwardX; prevCamFwdY = camera.forwardY; prevCamFwdZ = camera.forwardZ;
+        prevCamRightX = camera.rightX; prevCamRightY = camera.rightY; prevCamRightZ = camera.rightZ;
+        prevCamUpX = camera.upX; prevCamUpY = camera.upY; prevCamUpZ = camera.upZ;
+        prevTanHalfFov = tanHalfFov;
+        frameIndex++;
+
+        // PASS 2: 5-Level Karis-Averaged Bloom Pyramid (reads temporally resolved HDR scene)
         downsampleProgram.use();
         glUniform1i(uDownSource, 0);
         glActiveTexture(GL_TEXTURE0);
@@ -316,7 +496,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         for (int i = 0; i < BLOOM_LEVELS; i++) {
             glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
             glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
-            glBindTexture(GL_TEXTURE_2D, (i == 0) ? renderTargets.hdrColorTexture() : renderTargets.bloomTexture(i - 1));
+            glBindTexture(GL_TEXTURE_2D, (i == 0) ? resolvedHdrTex : renderTargets.bloomTexture(i - 1));
             glUniform1i(uIsFirstPass, (i == 0) ? 1 : 0);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
@@ -334,9 +514,31 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         glDisable(GL_BLEND);
-        timers.endBloom();
 
-        // PASS 3: Final Composite + Anamorphic Glare + Lens Dispersion + Vignette + ACES Tone Mapping
+        // PASS 2B: 2-Pass Cascaded Horizontal Anamorphic Lens Flare at 1/8 Res (zero discrete ghosts)
+        boolean runAnamorphic = state.anamorphicEnabled && state.anamorphicStrength > 0.001f;
+        if (runAnamorphic) {
+            anamorphicProgram.use();
+            glUniform1i(uAnaSource, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glViewport(0, 0, renderTargets.anamorphicWidth(), renderTargets.anamorphicHeight());
+
+            // Horizontal pass 1: extract hot peaks from mip 2 + medium streak
+            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.anamorphicFbo(0));
+            glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(2));
+            glUniform1f(uAnaStepScale, 1.35f);
+            glUniform1i(uAnaExtractThreshold, 1);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            // Horizontal pass 2: wide cinema streak cascade
+            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.anamorphicFbo(1));
+            glBindTexture(GL_TEXTURE_2D, renderTargets.anamorphicTexture(0));
+            glUniform1f(uAnaStepScale, 4.20f);
+            glUniform1i(uAnaExtractThreshold, 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        // PASS 3: Final Composite + Anamorphic Glare + Lens Dispersion + Vignette + ACES + TPDF Dither
         glBindFramebuffer(GL_FRAMEBUFFER, outputFbo);
         glViewport(0, 0, width, height);
         compositeProgram.use();
@@ -344,16 +546,17 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glUniform1i(uCompBloom, 1);
         glUniform1i(uCompAnamorphic, 2);
         glUniform1f(uCompStrength, state.bloomStrength);
-        glUniform1f(uCompAnamorphicStrength, state.anamorphicEnabled ? state.anamorphicStrength : 0.0f);
+        glUniform1f(uCompAnamorphicStrength, runAnamorphic ? state.anamorphicStrength : 0.0f);
         glUniform1f(uCompExposure, state.exposure);
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, renderTargets.hdrColorTexture());
+        glBindTexture(GL_TEXTURE_2D, resolvedHdrTex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(0));
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(2));
+        glBindTexture(GL_TEXTURE_2D, renderTargets.anamorphicTexture(1));
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        timers.endBloom();
     }
 
     @Override
@@ -369,8 +572,10 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glDeleteVertexArrays(quadVao);
         rayProgram.close();
         wormholeProgram.close();
+        taaProgram.close();
         downsampleProgram.close();
         upsampleProgram.close();
+        anamorphicProgram.close();
         compositeProgram.close();
     }
 
@@ -451,6 +656,13 @@ public final class BlackHoleRenderer implements AutoCloseable {
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glDeleteFramebuffers(fbo);
+
+        // Generate 3D mipmaps so grazing accretion-disk lookups stay alias-free and cache-friendly
+        glBindTexture(GL_TEXTURE_3D, tex);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_3D);
+        glBindTexture(GL_TEXTURE_3D, 0);
+
         ShaderProgram.checkGlError("bake3dNoiseVolume");
         return tex;
     }

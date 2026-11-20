@@ -14,10 +14,10 @@ uniform float uWormholeA;
 uniform float uWormholeM;
 uniform float uTanHalfFov;
 uniform int uShowGrid;
-uniform int uAdaptiveAa;
+uniform vec2 uJitter;
 
 const float PI = 3.14159265359;
-const int MAX_STEPS = 200;
+const int MAX_STEPS = 320;
 
 vec3 safeNormalize(vec3 v, vec3 fallback) {
     float len2 = dot(v, v);
@@ -85,7 +85,7 @@ WormholeRay traceWormholeRay(vec2 pixelCoord, vec3 eR, float r0, float mw, float
         }
 
         float distThroat = max(0.0, abs(l) - uWormholeA);
-        float h = clamp(0.075 * distThroat + 0.070 * uWormholeRho, 0.045, 2.50);
+        float h = clamp(0.058 * distThroat + 0.022 * uWormholeRho, 0.014, 2.20);
 
         float k1l, k1v, k1p;
         wormholeDeriv(l, vl, H, mw, k1l, k1v, k1p);
@@ -137,58 +137,38 @@ vec3 sampleUniverse(WormholeRay ray, vec3 ddx, vec3 ddy) {
         col += vec3(1.00, 0.56, 0.18) * max(equator, prime) * 0.85;
     }
 
-    float rimCaustic = smoothstep(2.6, 5.8, ray.totalPhi) * 0.08;
-    col += vec3(0.75, 0.90, 1.15) * rimCaustic;
+    // Delicate gravitational caustic shimmer right on the photon-sphere rim (no thick artificial bezel)
+    float rimCaustic = smoothstep(3.8, 7.6, ray.totalPhi) * 0.045;
+    col += vec3(0.68, 0.88, 1.15) * rimCaustic;
     return sanitizeHdr(col);
 }
 
 void main() {
-    // Hoist per-frame camera wormhole invariants out of AA loop
     vec3 eR = safeNormalize(uCamRadial, vec3(0.0, 0.0, 1.0));
     float mw = max(0.08, uWormholeM);
     float r0, dr0;
     wormholeMetric(uWormholeL, mw, r0, dr0);
     float lEscape = max(42.0, abs(uWormholeL) + 22.0);
 
-    WormholeRay primary = traceWormholeRay(gl_FragCoord.xy, eR, r0, mw, lEscape);
+    // Pure 1 ray/px Halton-jittered geodesic (16-phase temporal super-sampling handled by TAA resolve)
+    WormholeRay primary = traceWormholeRay(gl_FragCoord.xy + uJitter, eR, r0, mw, lEscape);
+
+    float sideMask = (primary.endL >= 0.0) ? 1.0 : 0.0;
+    bool portalRimEdge = fwidth(sideMask) > 0.01;
 
     vec3 rawDdx = dFdx(primary.exitDir);
     vec3 rawDdy = dFdy(primary.exitDir);
-    float dirGrad = length(rawDdx) + length(rawDdy);
 
-    float maxGrad = 0.14;
+    // Prevent cross-universe finite differences from pulling coarse mipmaps along the throat rim
+    float maxGrad = (portalRimEdge || primary.totalPhi > 3.0) ? 0.004 : 0.12;
     vec3 ddx = rawDdx * min(1.0, maxGrad / max(1e-6, length(rawDdx)));
     vec3 ddy = rawDdy * min(1.0, maxGrad / max(1e-6, length(rawDdy)));
 
     vec3 c0 = sampleUniverse(primary, ddx, ddy);
 
-    float sideMask = (primary.endL >= 0.0) ? 1.0 : 0.0;
-    bool portalRimEdge = fwidth(sideMask) > 0.01;
-    float luma0 = dot(c0, vec3(0.2126, 0.7152, 0.0722));
-    bool needsAa = portalRimEdge
-                || (primary.totalPhi > 2.2)
-                || (dirGrad > 0.045)
-                || (fwidth(luma0) > 0.15);
+    // Throat-crossing & strongly-lensed rim rays reproject at throat distance; exterior sky at infinity
+    bool crossedThroat = (primary.endL * uWormholeL < 0.0) || (primary.totalPhi > 1.35);
+    float hitDist = crossedThroat ? max(0.5, abs(uWormholeL)) : 1e5;
 
-    if (uAdaptiveAa == 0 || !needsAa) {
-        FragColor = vec4(c0, 1.0);
-        return;
-    }
-
-    vec2 r2Offsets[3] = vec2[](
-        vec2( 0.254878,  0.069840),
-        vec2(-0.490245, -0.360319),
-        vec2(-0.235367,  0.209521)
-    );
-
-    vec3 sum = c0;
-    vec3 subDdx = ddx * 0.5;
-    vec3 subDdy = ddy * 0.5;
-
-    for (int s = 0; s < 3; s++) {
-        WormholeRay sub = traceWormholeRay(gl_FragCoord.xy + r2Offsets[s], eR, r0, mw, lEscape);
-        sum += sampleUniverse(sub, subDdx, subDdy);
-    }
-
-    FragColor = vec4(sanitizeHdr(sum * 0.25), 1.0);
+    FragColor = vec4(sanitizeHdr(c0), hitDist);
 }

@@ -56,6 +56,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private final int uRendSpinA;
     private final int uRendHorizonR;
     private final int uRendDoppler;
+    private final int uRendJitter;
 
     private int nextSlot = 0;
     private int spawnCounter = 0;
@@ -106,6 +107,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         this.uRendSpinA = renderProgram.uniformLocation("uSpinA");
         this.uRendHorizonR = renderProgram.uniformLocation("uHorizonR");
         this.uRendDoppler = renderProgram.uniformLocation("uDoppler");
+        this.uRendJitter = renderProgram.uniformLocation("uJitter");
 
         ShaderProgram.checkGlError("TidalDisruptionSystem.init");
     }
@@ -228,20 +230,20 @@ public final class TidalDisruptionSystem implements AutoCloseable {
      * directly into the currently bound {@code hdrFbo}.
      */
     public void updateAndRender(int width, int height, double dt, boolean readbackCounters,
-                                int blackbodyLutTex, SimulationState state, CameraController camera) {
+                                int blackbodyLutTex, float jitterX, float jitterY,
+                                SimulationState state, CameraController camera) {
         if (!hasAnyParticles || state.wormholeMode) {
             shearEnergy *= 0.92f;
             return;
         }
 
-        // 1. Compute pass (only step physics when unpaused)
-        if (!state.paused) {
+        // 1. Compute pass (only step physics when unpaused and dt > 0)
+        if (!state.paused && dt > 0.0) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, counterSsbo);
 
-            zeroCounters.rewind();
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSsbo);
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, zeroCounters);
+            glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
 
             computeProgram.use();
             glUniform1ui(uCompParticleCount, TOTAL_PARTICLES);
@@ -268,9 +270,10 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         }
 
         // 2. Volumetric Additive HDR Sprite Render Pass directly into hdrFbo
+        // Preserve hdrFbo.a (world hitDist) via separate alpha blend for exact TAA parallax reprojection.
         glEnable(GL_PROGRAM_POINT_SIZE);
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
 
         renderProgram.use();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
@@ -288,6 +291,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glUniform1f(uRendSpinA, state.effectiveSpin());
         glUniform1f(uRendHorizonR, (float) state.outerHorizonRadius());
         glUniform1i(uRendDoppler, state.dopplerEnabled ? 1 : 0);
+        glUniform2f(uRendJitter, jitterX, jitterY);
 
         glBindVertexArray(emptyVao);
         glDrawArrays(GL_POINTS, 0, TOTAL_PARTICLES);
@@ -322,9 +326,8 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glUniform1f(uCompHorizonR, (float) state.outerHorizonRadius());
 
         for (int i = 0; i < steps; i++) {
-            zeroCounters.rewind();
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSsbo);
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, zeroCounters);
+            glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
             glDispatchCompute(TOTAL_PARTICLES / WORKGROUP_SIZE, 1, 1);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         }

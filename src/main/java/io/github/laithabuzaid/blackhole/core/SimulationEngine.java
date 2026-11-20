@@ -282,16 +282,16 @@ public final class SimulationEngine {
             state.showUi = false;
             state.wormholeMode = false;
             state.spinParam = 0.96f;
-            state.diskTempScale = 1.05f;
-            state.diskDensity = 1.06f;
-            state.jetPower = 0.75f;
-            state.bloomStrength = 0.32f;
+            state.diskTempScale = 1.02f;
+            state.diskDensity = 1.08f;
+            state.jetPower = 0.55f;
+            state.bloomStrength = 0.42f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.55f;
-            state.exposure = 1.16f;
+            state.anamorphicStrength = 0.72f;
+            state.exposure = 1.18f;
             state.fovDeg = 22.0f;
             state.simTime = 4.2;
-            camera.setShowcasePose(36.0, 0.25, 0.145, -0.17, 0.0, 0.0, state);
+            camera.setShowcasePose(34.0, 0.28, 0.145, -0.17, 0.0, 0.0, state);
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/hero_kerr_edge.png"));
 
@@ -300,11 +300,11 @@ public final class SimulationEngine {
             state.showUi = false;
             state.wormholeMode = false;
             state.spinParam = 0.96f;
-            state.diskDensity = 0.52f;
-            state.jetPower = 0.30f;
-            state.bloomStrength = 0.34f;
+            state.diskDensity = 0.50f;
+            state.jetPower = 0.0f;
+            state.bloomStrength = 0.44f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.45f;
+            state.anamorphicStrength = 0.48f;
             state.exposure = 1.18f;
             state.fovDeg = 22.5f;
             state.simTime = 8.5;
@@ -315,19 +315,19 @@ public final class SimulationEngine {
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/tde_shredding.png"));
 
-            // 3. wormhole_throat.png — Morris-Thorne wormhole showing Universe B nebula & lensed ghost arcs
+            // 3. wormhole_throat.png — Morris-Thorne wormhole showing Universe B nebula & ringed planet ghost arcs
             state.resetDefaults();
             state.showUi = false;
             state.wormholeMode = true;
             state.wormholeRho = 2.60f;
             state.wormholeA = 0.45f;
             state.wormholeM = 1.25f;
-            state.bloomStrength = 0.28f;
+            state.bloomStrength = 0.34f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.24f;
-            state.exposure = 1.18f;
+            state.anamorphicStrength = 0.26f;
+            state.exposure = 1.20f;
             state.fovDeg = 22.5f;
-            camera.setShowcaseWormholePose(9.8, 0.06, 0.04, 0.0);
+            camera.setShowcaseWormholePose(9.4, 0.06, 0.04, 0.0);
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/wormhole_throat.png"));
 
@@ -342,15 +342,15 @@ public final class SimulationEngine {
             state.plungeVelocityC = 1.01f;
             state.plungeTidalGrad = 2.15f;
             state.plungeZone = SimulationState.ZONE_INTERIOR;
-            state.cauchyFlashIntensity = 0.16f;
-            state.bloomStrength = 0.30f;
+            state.cauchyFlashIntensity = 0.22f;
+            state.bloomStrength = 0.36f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.40f;
-            state.exposure = 1.14f;
-            state.fovDeg = 24.0f;
+            state.anamorphicStrength = 0.42f;
+            state.exposure = 1.08f;
+            state.fovDeg = 26.0f;
             state.simTime = 7.5;
             renderer.clearTdeStars();
-            camera.setShowcasePose(0.98, 0.42, 0.10, 0.0, 1.48, -0.12, state);
+            camera.setShowcasePose(1.02, 0.42, 0.14, -0.06, 1.85, -0.08, state);
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/horizon_plunge.png"));
 
@@ -360,27 +360,31 @@ public final class SimulationEngine {
             state.controlsExpanded = true;
             state.wormholeMode = false;
             state.spinParam = 0.98f;
-            state.bloomStrength = 0.30f;
+            state.jetPower = 0.55f;
+            state.bloomStrength = 0.40f;
             state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.42f;
-            state.exposure = 1.15f;
+            state.anamorphicStrength = 0.60f;
+            state.exposure = 1.16f;
             state.fovDeg = 22.5f;
             state.simTime = 6.0;
-            camera.setShowcasePose(38.0, 0.26, 0.145, -0.17, 0.0, 0.0, state);
+            camera.setShowcasePose(36.0, 0.28, 0.145, -0.17, 0.0, 0.0, state);
             renderer.clearTdeStars();
             renderer.spawnTdeStar(state);
-            renderer.stepTdeComputeOnly(340, 1.0 / 60.0, state);
-            // Warm up TDE + hardware GPU timers + telemetry oscilloscope samples so profiler HUD is rich & accurate
-            for (int f = 0; f < 160; f++) {
+            renderer.stepTdeComputeOnly(210, 1.0 / 60.0, state);
+            // Warm up TDE + TAA + hardware GPU timers + full 120-frame oscilloscope trace
+            renderer.resetTaaHistory();
+            for (int f = 0; f < 135; f++) {
+                boolean readback = (f == 120);
                 long t0 = System.nanoTime();
                 state.simTime += 1.0 / 60.0;
-                renderer.renderFrame(w, h, 1.0 / 60.0, f >= 152, state, camera, gpuTimers, captureFbo);
+                renderer.renderFrame(w, h, 1.0 / 60.0, readback, state, camera, gpuTimers, captureFbo);
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
                 glViewport(0, 0, w, h);
                 gpuTimers.beginUi();
-                hud.render(uiRenderer, w, h, -10.0, -10.0, f >= 152, false, state, camera, telemetry);
+                hud.render(uiRenderer, w, h, -10.0, -10.0, false, false, state, camera, telemetry);
                 gpuTimers.endUi();
-                if (f >= 120) {
+                float submitMs = (System.nanoTime() - t0) * 1e-6f;
+                if (f >= 12) {
                     glFinish();
                     if (gpuTimers.pollPreviousFrame()) {
                         telemetry.updateGpuPassTimings(gpuTimers.rayMs(), gpuTimers.tdeMs(),
@@ -388,10 +392,9 @@ public final class SimulationEngine {
                     }
                     telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
                     telemetry.pollOpenGlVram();
-                    float submitMs = (System.nanoTime() - t0) * 1e-6f;
                     telemetry.wallFrameMs = Math.max(1.0f, telemetry.gpuTotalMs > 0.1f ? telemetry.gpuTotalMs : submitMs);
                     telemetry.currentFps = 1000.0f / Math.max(1.0f, telemetry.wallFrameMs);
-                    telemetry.recordFrameSample(Math.min(submitMs, 0.35f));
+                    telemetry.recordFrameSample(readback ? telemetry.cpuSubmitMs : submitMs);
                 }
                 gpuTimers.advanceFrame();
             }
@@ -420,15 +423,19 @@ public final class SimulationEngine {
     private void renderAndSaveShowcase(BlackHoleRenderer renderer, UiRenderer uiRenderer,
                                        GpuTimerQueries gpuTimers, int captureFbo,
                                        int w, int h, boolean withHud, Path outPath) throws IOException {
-        renderer.renderFrame(w, h, 1.0 / 60.0, false, state, camera, gpuTimers, captureFbo);
-        gpuTimers.beginUi();
-        if (withHud) {
-            glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
-            glViewport(0, 0, w, h);
-            hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, telemetry);
+        // Converge 16 Halton(2,3) TAA sub-pixel jitter samples on the frozen showcase frame
+        renderer.resetTaaHistory();
+        for (int s = 0; s < 16; s++) {
+            renderer.renderFrame(w, h, 0.0, false, state, camera, gpuTimers, captureFbo);
+            gpuTimers.beginUi();
+            if (withHud && s == 15) {
+                glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
+                glViewport(0, 0, w, h);
+                hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, telemetry);
+            }
+            gpuTimers.endUi();
+            gpuTimers.advanceFrame();
         }
-        gpuTimers.endUi();
-        gpuTimers.advanceFrame();
         saveCaptureFbo(captureFbo, w, h, outPath);
     }
 
@@ -537,7 +544,7 @@ public final class SimulationEngine {
             }
             case HudOverlay.ACT_ADAPTIVE_AA -> {
                 state.adaptiveAa4x = !state.adaptiveAa4x;
-                state.showToast(state.adaptiveAa4x ? "ADAPTIVE 4X AA: ON" : "ADAPTIVE 4X AA: OFF");
+                state.showToast(state.adaptiveAa4x ? "TEMPORAL AA (TAA): ON" : "TEMPORAL AA (TAA): OFF");
             }
             case HudOverlay.ACT_SKY_GRID -> {
                 state.showGrid = !state.showGrid;

@@ -545,9 +545,9 @@ public final class HudOverlay {
         if (!expanded) {
             rh = 42f;
         } else if (state.wormholeMode) {
-            rh = 494f;
+            rh = 450f;
         } else {
-            rh = 668f;
+            rh = 578f;
         }
 
         ui.drawGlassPanel(rx, ry, rw, rh, 10f,
@@ -586,7 +586,7 @@ public final class HudOverlay {
                     "[W] WORMHOLE", true, ACT_WORMHOLE,
                     px + colW + 6f, "[FLY THROUGH]", camera.isFlyingThrough(), ACT_FLY_THROUGH);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
-                    "[M] 4X ADPT AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
+                    "[M] TEMPORAL AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
                     px + colW + 6f, "[C] SKY GRID", state.showGrid, ACT_SKY_GRID);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[O] AUTO ORBIT", state.autoOrbit, ACT_AUTO_ORBIT,
@@ -675,7 +675,7 @@ public final class HudOverlay {
                     "[K] KERR SPIN", state.kerrSpinEnabled, ACT_KERR_SPIN,
                     px + colW + 6f, "[F] FREE-FALL", state.freeFallMode, ACT_FREE_FALL);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
-                    "[M] 4X ADPT AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
+                    "[M] TEMPORAL AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
                     px + colW + 6f, "[C] SKY GRID", state.showGrid, ACT_SKY_GRID);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[I] ORDER VIS", state.orderVisualizer, ACT_ORDER_VIS,

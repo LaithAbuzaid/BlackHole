@@ -11,7 +11,7 @@ void main() {
         discard;
     }
 
-    // Soft volumetric Gaussian plasma kernel feeding cleanly into additive HDR bloom
-    float gauss = exp(-r2 * 4.5);
+    // Soft volumetric Gaussian plasma kernel that blends smoothly into continuous tidal streams
+    float gauss = exp(-r2 * 2.5) * (1.0 - r2);
     FragColor = vec4(vColor, vAlpha * gauss);
 }

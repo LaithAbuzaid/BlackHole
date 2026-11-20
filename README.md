@@ -25,7 +25,7 @@
 <p align="center">
   <img src="docs/media/hero_kerr_edge.png" alt="Gargantua-style edge-on Kerr black hole (a* = 0.96) with relativistic Doppler beaming and anamorphic flare" width="100%">
   <br>
-  <sub><b>Kerr-Schild Spacetime (<i>a<sub>*</sub></i> = 0.96)</b> — Asymmetric frame-dragged shadow, Doppler-beamed accretion disk, Einstein photon ring, and horizontal anamorphic glare rendered in real time at 1080p.</sub>
+  <sub><b>Kerr-Schild Spacetime (<i>a<sub>*</sub></i> = 0.96)</b> — Asymmetric frame-dragged shadow, Doppler-beamed accretion disk, lensed photon ring (<i>n</i> &ge; 1), and horizontal anamorphic glare rendered in real time at 1080p.</sub>
 </p>
 
 ## Visual Showcase
@@ -75,7 +75,8 @@
 | **Doran Horizon Plunge** | Horizon-penetrating Kerr–Schild / Doran observer frame (`[P]` / `[F]`) crossing $r_+$ cleanly ($\beta_{\text{in}} = c$ at $r_+$) with independent 360° free-look, proper time ($\tau$) vs. diverging coordinate time ($t_\infty \to \infty$), relativistic blueshift, Kerr inner Cauchy horizon ($r_-$) mass-inflation flash, Schwarzschild anisotropic optical spaghettification, and tidal camera micro-rumble. |
 | **Morris–Thorne Wormhole** | Exact *Interstellar* / Dneg embedding radius $r(l)$ with live throat radius $\rho$, throat half-length $a$, and lensing width $M_w$. Smooth bidirectional flight across $l = 0$ between GPU-baked `1024×1024×6` mipmapped HDR cubemaps (**Universe A**: Milky Way; **Universe B**: teal-amber nebula & ringed gas giant) with `textureGrad` ray differentials. |
 | **OpenGL 4.3 Compute TDE** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) stepped in `tidal_disruption.comp` with 2-substep Velocity-Verlet integration, Lense–Thirring frame-dragging torque, tidal shear shock heating, and analytical shadow-cone occlusion rendered as additive HDR sprites directly into `hdrFbo`. |
-| **Karis Bloom + Anamorphic Glare** | 5-level HDR bloom pyramid (`GL_RGBA16F`) with Karis-averaged firefly suppression, a subtle 7-tap *Interstellar*-style horizontal anamorphic streak from coarse bloom mip 2 (shadow-guarded so black levels inside $r_+$ stay pure), and ACES filmic tonemapping. |
+| **Relativistic Temporal AA (TAA)** | 16-phase Halton(2,3) sub-pixel jittered 1-ray/px geodesics resolved via `taa_resolve.frag` with exact 3D camera parallax reprojection (using linear world hit distance in `hdrFbo.a`), 5-tap Catmull-Rom bicubic history sampling, and Karis-weighted 3×3 YCoCg variance clipping for flicker-free photon rings and 120+ FPS 1080p performance. |
+| **Karis Bloom + Anamorphic Glare** | 5-level HDR bloom pyramid (`GL_RGBA16F`) with weight-normalized Jimenez/Karis firefly suppression and quadratic soft-knee extraction, a 2-pass cascaded 13-tap *Interstellar*-style horizontal anamorphic streak at 1/8 resolution (shadow-guarded so black levels inside $r_+$ stay pure), ACES filmic tonemapping, and post-tonemap TPDF dithering. |
 | **Procedural OpenAL Audio** | Zero-asset 44.1 kHz stereo PCM daemon synthesizer (`lwjgl-openal`) generating gravitational-redshift sub-bass drones, Doppler-panned accretion roar, TDE periapsis plasma crackle, and sweeping wormhole throat harmonics (with graceful silent fallback). |
 | **Hardware `GL_TIME_ELAPSED` Profiling** | 3-slot asynchronous ring-buffered OpenGL timer queries measuring **Raytrace**, **TDE**, **Bloom**, and **UI** passes independently alongside `nvidia-smi` / `GL_NVX_gpu_memory_info` telemetry, JVM/system CPU load, and a 120-frame oscilloscope trace — all with **zero per-frame Java heap allocations**. |
 
@@ -168,6 +169,6 @@ java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar -
 | `1` `2` `3` `4` | Presets — Black Hole: Edge / Polar / Photon Ring / Horizon Dive · Wormhole: Univ A / Throat / Univ B / Fly-Through |
 | `Up` / `Down` | Fly forward / backward through the wormhole throat |
 | `L` `D` `J` `B` `K` | Toggle Lensing · Accretion Disk · Bipolar Jets · Doppler Beaming · Kerr Spin |
-| `F` `M` `C` `I` `O` | Toggle Free-Fall Frame · 4× Adaptive AA · Celestial Grid · Image-Order Vis · Auto Orbit |
+| `F` `M` `C` `I` `O` | Toggle Free-Fall Frame · Temporal AA (TAA) · Celestial Grid · Image-Order Vis · Auto Orbit |
 | `U` `G` `[` `]` `V` | Toggle Camera Roll · Cycle Bloom · Exposure `−`/`+` · V-Sync |
 | `Space` / `R` / `Esc` | Pause · Reset Simulation · Quit |

@@ -58,62 +58,62 @@ void main() {
 
     // Tilted Milky Way galactic plane with dark molecular dust rift & H-alpha clouds
     float galLat = dir.y * 0.838 - dir.x * 0.545;
-    float band = exp(-(galLat * galLat) / 0.038);
-    float coreBand = exp(-(galLat * galLat) / 0.010);
+    float band = exp(-(galLat * galLat) / 0.030);
+    float coreBand = exp(-(galLat * galLat) / 0.0085);
 
     float neb1 = texture(uNoiseVol, dir * 0.55 + vec3(0.15, 0.42, -0.26)).r;
-    float neb2 = texture(uNoiseVol, dir * 1.45 - vec3(0.51, 0.22, 0.36)).r;
-    float neb3 = texture(uNoiseVol, dir * 3.10 + vec3(0.32, -0.44, 0.18)).r;
-    float dustRift = smoothstep(0.34, 0.66, neb1 * 0.55 + neb2 * 0.30 + neb3 * 0.15);
+    float neb2 = texture(uNoiseVol, dir * 1.55 - vec3(0.51, 0.22, 0.36)).r;
+    float neb3 = texture(uNoiseVol, dir * 3.40 + vec3(0.32, -0.44, 0.18)).r;
+    float dustRift = smoothstep(0.32, 0.64, neb1 * 0.52 + neb2 * 0.32 + neb3 * 0.16);
 
-    vec3 warmBulge = vec3(0.58, 0.35, 0.20);
-    vec3 blueNebula = vec3(0.13, 0.24, 0.50);
-    vec3 hAlpha = vec3(0.62, 0.11, 0.26) * smoothstep(0.58, 0.82, neb2 * 0.7 + neb3 * 0.3);
-    vec3 nebCol = mix(blueNebula, warmBulge, coreBand * (0.4 + 0.6 * neb2)) + hAlpha;
+    vec3 warmBulge = vec3(0.46, 0.27, 0.14);
+    vec3 blueNebula = vec3(0.08, 0.16, 0.36);
+    vec3 hAlpha = vec3(0.52, 0.09, 0.22) * smoothstep(0.60, 0.84, neb2 * 0.68 + neb3 * 0.32);
+    vec3 nebCol = mix(blueNebula, warmBulge, coreBand * (0.38 + 0.62 * neb2)) + hAlpha;
 
-    // Deep cosmic background + Milky Way band carved by dark dust rift
-    vec3 col = vec3(0.0010, 0.0016, 0.0036)
-             + nebCol * band * (0.24 + 0.56 * neb1)
-             * (1.0 - 0.86 * dustRift * exp(-(galLat * galLat) / 0.0060));
+    // Deep dark cosmic space + sculpted Milky Way band carved by dark dust rift
+    vec3 col = vec3(0.00045, 0.00075, 0.0018)
+             + nebCol * band * (0.18 + 0.52 * neb1)
+             * (1.0 - 0.90 * dustRift * exp(-(galLat * galLat) / 0.0055));
 
-    // Spiral background galaxies strategically positioned to stretch into Einstein rings & double-lensed arcs
-    col += renderSpiralGalaxy(dir, normalize(vec3(-0.22, 0.06, -0.97)),
-            normalize(vec3(0.97, 0.0, -0.22)), vec3(0.0, 1.0, 0.0), 0.056, 0.42,
-            vec3(1.25, 0.96, 0.70), vec3(0.76, 0.88, 1.24));
-    col += renderSpiralGalaxy(dir, normalize(vec3(0.16, -0.09, -0.98)),
-            normalize(vec3(0.98, 0.0, 0.16)), vec3(0.0, 1.0, 0.0), 0.044, 0.48,
-            vec3(1.18, 0.90, 0.68), vec3(0.68, 0.92, 1.32));
+    // Spiral background galaxies placed for subtle lensed arcs without overwhelming the hero black hole
+    col += renderSpiralGalaxy(dir, normalize(vec3(-0.34, 0.14, -0.93)),
+            normalize(vec3(0.93, 0.0, -0.34)), vec3(0.0, 1.0, 0.0), 0.048, 0.42,
+            vec3(1.10, 0.84, 0.62), vec3(0.64, 0.78, 1.12));
+    col += renderSpiralGalaxy(dir, normalize(vec3(0.24, -0.15, -0.96)),
+            normalize(vec3(0.96, 0.0, 0.24)), vec3(0.0, 1.0, 0.0), 0.040, 0.46,
+            vec3(1.05, 0.80, 0.60), vec3(0.58, 0.82, 1.18));
     col += renderSpiralGalaxy(dir, normalize(vec3(-0.88, 0.14, 0.45)),
-            normalize(vec3(0.45, 0.0, 0.88)), vec3(0.0, 1.0, 0.0), 0.050, 0.40,
-            vec3(1.15, 0.88, 0.64), vec3(0.82, 0.90, 1.18));
+            normalize(vec3(0.45, 0.0, 0.88)), vec3(0.0, 1.0, 0.0), 0.046, 0.40,
+            vec3(1.05, 0.82, 0.60), vec3(0.74, 0.84, 1.12));
     col += renderSpiralGalaxy(dir, normalize(vec3(0.48, 0.22, 0.85)),
-            normalize(vec3(-0.85, 0.0, 0.48)), vec3(0.0, 1.0, 0.0), 0.046, 0.45,
-            vec3(1.20, 0.92, 0.72), vec3(0.78, 0.86, 1.22));
+            normalize(vec3(-0.85, 0.0, 0.48)), vec3(0.0, 1.0, 0.0), 0.044, 0.45,
+            vec3(1.08, 0.84, 0.64), vec3(0.72, 0.82, 1.14));
 
-    // Multi-scale Harvard spectral starfield (denser along Milky Way band)
+    // Crisp multi-scale Harvard spectral starfield (tight sub-degree pinpoints prevent bloated Einstein hoops)
     for (int layer = 0; layer < 3; layer++) {
-        float scale = (layer == 0) ? 220.0 : ((layer == 1) ? 118.0 : 58.0);
+        float scale = (layer == 0) ? 265.0 : ((layer == 1) ? 162.0 : 96.0);
         vec3 cell = floor(dir * scale);
         vec3 local = fract(dir * scale) - 0.5;
-        float rnd = hash31(cell + float(layer) * 47.0);
+        float rnd = hash31(cell + float(layer) * 53.0 + 13.7);
 
-        float baseThresh = (layer == 0) ? 0.952 : ((layer == 1) ? 0.976 : 0.990);
-        float thresh = baseThresh - band * (layer == 0 ? 0.018 : 0.006);
+        float baseThresh = (layer == 0) ? 0.948 : ((layer == 1) ? 0.978 : 0.9925);
+        float thresh = baseThresh - band * (layer == 0 ? 0.022 : (layer == 1 ? 0.008 : 0.002));
         if (rnd > thresh) {
             vec3 jitter = vec3(
                 hash31(cell + 1.3) - 0.5,
                 hash31(cell + 2.7) - 0.5,
                 hash31(cell + 4.1) - 0.5
-            ) * 0.62;
+            ) * 0.58;
             float d = length(local - jitter);
             float mag = (rnd - thresh) / max(1e-4, 1.0 - thresh);
 
-            float core = exp(-d * d * (layer == 2 ? 78.0 : 128.0));
-            float halo = exp(-d * d * (layer == 2 ? 14.0 : 24.0)) * 0.20;
+            float core = exp(-d * d * (layer == 2 ? 210.0 : (layer == 1 ? 185.0 : 195.0)));
+            float halo = exp(-d * d * (layer == 2 ? 38.0 : 46.0)) * (layer == 2 ? 0.14 : 0.08);
 
             vec3 starTint = harvardStarColor(hash31(cell + 8.9));
-            float gain = (layer == 0) ? 1.85 : ((layer == 1) ? 3.6 : 7.8);
-            col += starTint * (core + halo) * pow(mag, 1.95) * gain;
+            float gain = (layer == 0) ? 1.45 : ((layer == 1) ? 2.75 : 4.60);
+            col += starTint * (core + halo) * pow(mag, 2.05) * gain;
         }
     }
 
