@@ -97,6 +97,10 @@ public final class SimulationState {
     public boolean anamorphicEnabled = true;
     public boolean showGrid = false;
     public boolean orderVisualizer = false;
+    public boolean ehtPolarization = false;
+    public boolean ehtRadioPalette = false;
+    public boolean showReticle = false;
+    public boolean fullscreen = false;
     public boolean autoOrbit = false;
     public boolean paused = false;
     public boolean vsync = true;
@@ -331,6 +335,9 @@ public final class SimulationState {
         anamorphicEnabled = true;
         showGrid = false;
         orderVisualizer = false;
+        ehtPolarization = false;
+        ehtRadioPalette = false;
+        showReticle = false;
         paused = false;
 
         plungeSpeed = 1.00f;

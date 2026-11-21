@@ -68,6 +68,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private boolean prevBinaryMode;
     private boolean prevBinaryGwOverlay;
     private boolean prevOrderVis;
+    private boolean prevEhtPol;
+    private boolean prevEhtRadio;
     private boolean prevShowGrid;
     private boolean prevLensing;
     private boolean prevShowDisk;
@@ -102,6 +104,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uFreeFall;
     private final int uShowGrid;
     private final int uOrderVis;
+    private final int uEhtPolarization;
+    private final int uEhtRadio;
     private final int uJitter;
     private final int uFrameIndex;
 
@@ -260,6 +264,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uFreeFall = rayProgram.uniformLocation("uFreeFall");
         uShowGrid = rayProgram.uniformLocation("uShowGrid");
         uOrderVis = rayProgram.uniformLocation("uOrderVis");
+        uEhtPolarization = rayProgram.uniformLocation("uEhtPolarization");
+        uEhtRadio = rayProgram.uniformLocation("uEhtRadio");
         uJitter = rayProgram.uniformLocation("uJitter");
         uFrameIndex = rayProgram.uniformLocation("uFrameIndex");
 
@@ -586,6 +592,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1i(uFreeFall, (state.freeFallMode || state.plungeActive) ? 1 : 0);
             glUniform1i(uShowGrid, state.showGrid ? 1 : 0);
             glUniform1i(uOrderVis, state.orderVisualizer ? 1 : 0);
+            glUniform1i(uEhtPolarization, state.ehtPolarization ? 1 : 0);
+            glUniform1i(uEhtRadio, state.ehtRadioPalette ? 1 : 0);
             glUniform2f(uJitter, jitterX, jitterY);
             glUniform1i(uFrameIndex, frameIndex);
 
@@ -618,6 +626,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
                     || (runBinary != prevBinaryMode)
                     || (state.binaryGwOverlay != prevBinaryGwOverlay)
                     || (state.orderVisualizer != prevOrderVis)
+                    || (state.ehtPolarization != prevEhtPol)
+                    || (state.ehtRadioPalette != prevEhtRadio)
                     || (state.showGrid != prevShowGrid)
                     || (state.lensingEnabled != prevLensing)
                     || (state.showDisk != prevShowDisk)
@@ -674,6 +684,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             prevBinaryMode = runBinary;
             prevBinaryGwOverlay = state.binaryGwOverlay;
             prevOrderVis = state.orderVisualizer;
+            prevEhtPol = state.ehtPolarization;
+            prevEhtRadio = state.ehtRadioPalette;
             prevShowGrid = state.showGrid;
             prevLensing = state.lensingEnabled;
             prevShowDisk = state.showDisk;

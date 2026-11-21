@@ -68,6 +68,13 @@ public final class HudOverlay {
     public static final int ACT_TDE_CYCLE_ARCH = 54;
     public static final int ACT_TDE_CLEAR = 55;
     public static final int ACT_MODE_KERR = 56;
+    public static final int ACT_EHT_POLARIZATION = 57;
+    public static final int ACT_EHT_RADIO = 58;
+    public static final int ACT_RETICLE = 59;
+    public static final int ACT_FULLSCREEN = 60;
+    public static final int ACT_LIGO_GW150914 = 61;
+    public static final int ACT_LIGO_GW190412 = 62;
+    public static final int ACT_LIGO_EQUAL = 63;
 
     public static final int ACT_TOGGLE_PANEL = 100;
 
@@ -128,10 +135,11 @@ public final class HudOverlay {
     private int hoveredId = 0;
     private int pressedId = 0;
 
-    // Reusable scratch StringBuilders (zero heap allocs per frame)
+    // Reusable scratch StringBuilders & projection buffer (zero heap allocs per frame)
     private final StringBuilder sb = new StringBuilder(128);
     private final StringBuilder sb2 = new StringBuilder(96);
     private final StringBuilder toastScratch = new StringBuilder(96);
+    private final float[] projBuf = new float[2];
 
     // 250ms Cached Hardware Telemetry StringBuilders
     private final StringBuilder cachedFpsLine = new StringBuilder(64);
@@ -282,6 +290,10 @@ public final class HudOverlay {
         }
 
         ui.begin(windowW, windowH);
+
+        if (state.showReticle && !state.wormholeMode && !state.plungeActive) {
+            renderAstrophysicalReticle(ui, windowW, windowH, state, camera, binary);
+        }
 
         boolean plungeBannerDrawn = false;
         if (state.hudMode == SimulationState.HUD_FULL) {
@@ -843,7 +855,7 @@ public final class HudOverlay {
         float rx = windowW - rw - 16f;
         float ry = 16f;
         boolean expanded = state.controlsExpanded && windowH >= 500;
-        float rh = expanded ? Math.min(408f, windowH - 68f) : 44f;
+        float rh = expanded ? Math.min(430f, windowH - 68f) : 44f;
 
         float accR = modeAccentR(state);
         float accG = modeAccentG(state);
@@ -1043,6 +1055,17 @@ public final class HudOverlay {
             sb.append('x');
             py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "PLASMA DENSITY", state.diskDensity,
                     SimulationState.MIN_DENSITY, SimulationState.MAX_DENSITY, sb, SLIDER_DENSITY);
+
+            py += 4f;
+            ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
+            py += 7f;
+            ui.drawText("LIGO EVENT PRESETS", px, py, 0.92f, 0.66f, 0.78f, 0.92f, 0.92f);
+            py += 14f;
+            float evW = (innerW - 12f) / 3f;
+            drawPresetButton(ui, mouseX, mouseY, px, py, evW, 21f, "GW150914", ACT_LIGO_GW150914);
+            drawPresetButton(ui, mouseX, mouseY, px + (evW + 6f), py, evW, 21f, "GW190412", ACT_LIGO_GW190412);
+            drawPresetButton(ui, mouseX, mouseY, px + (evW + 6f) * 2f, py, evW, 21f, "EQUAL 1:1", ACT_LIGO_EQUAL);
+            py += 25f;
         } else if (state.wormholeMode) {
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[FLY THROUGH]", camera.isFlyingThrough(), ACT_FLY_THROUGH,
@@ -1077,6 +1100,9 @@ public final class HudOverlay {
                     px + colW + 6f, "[F] FREE-FALL", state.freeFallMode, ACT_FREE_FALL);
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[I] ORDER VIS", state.orderVisualizer, ACT_ORDER_VIS,
+                    px + colW + 6f, "[N] EHT B-FIELD", state.ehtPolarization, ACT_EHT_POLARIZATION);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "EHT 230GHz", state.ehtRadioPalette, ACT_EHT_RADIO,
                     px + colW + 6f, "[J] JETS", state.showJets, ACT_JETS);
 
             py += 4f;
@@ -1203,6 +1229,9 @@ public final class HudOverlay {
         py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                 "[M] TEMPORAL AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
                 px + colW + 6f, "ANAMORPHIC", state.anamorphicEnabled, ACT_ANAMORPHIC);
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                "[Q] RETICLE", state.showReticle, ACT_RETICLE,
+                px + colW + 6f, "[F11] FULLSCRN", state.fullscreen, ACT_FULLSCREEN);
         py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                 "[A] AUDIO", state.audioEnabled, ACT_AUDIO,
                 px + colW + 6f, "[V] V-SYNC", state.vsync, ACT_VSYNC);
@@ -1569,9 +1598,129 @@ public final class HudOverlay {
             case ACT_ADAPTIVE_AA -> "Toggle 16-phase Halton Temporal Anti-Aliasing (TAA)";
             case ACT_BINARY_GW_OVERLAY -> "Toggle orbital-plane quadrupole GW ripple contours [G]";
             case ACT_BINARY_REPLAY -> "Restart binary inspiral from separation a_0 = 9.0 M";
+            case ACT_EHT_POLARIZATION -> "Kerr-dragged EHT synchrotron B-field polarization swirl [N]";
+            case ACT_EHT_RADIO -> "Event Horizon Telescope 230 GHz (1.3 mm) VLBI palette [Sh+N]";
+            case ACT_RETICLE -> "Projected gravitational scale bar & horizon/binary reticle [Q]";
+            case ACT_FULLSCREEN -> "Toggle borderless fullscreen display [F11 / Alt+Enter]";
+            case ACT_LIGO_GW150914 -> "GW150914 preset: q=0.81 (36+29 M_sun, first LIGO detection)";
+            case ACT_LIGO_GW190412 -> "GW190412 preset: q=0.28 asymmetric high-spin merger";
+            case ACT_LIGO_EQUAL -> "Equal-mass binary (q=1.00): peak GW strain & 4.8% radiated M";
             case ACT_TOGGLE_PANEL -> "Collapse or expand the right Observatory Console";
             default -> "Hover control for notes \u2022 [H] Cycle HUD";
         };
+    }
+
+    /**
+     * Renders a calibrated screen-space gravitational scale ruler ({@code r_g = GM/c^2}),
+     * Kerr critical shadow & ISCO markers, and live Binary M1/M2 tracking brackets with zero allocations.
+     */
+    private void renderAstrophysicalReticle(UiRenderer ui, int windowW, int windowH,
+                                            SimulationState state, CameraController camera,
+                                            BinaryMergerPhysics binary) {
+        float tanHalfFov = (float) Math.tan(Math.toRadians(state.fovDeg));
+        float camDist = (float) Math.max(2.0, Math.sqrt(
+                camera.posX * camera.posX + camera.posY * camera.posY + camera.posZ * camera.posZ));
+        float pxPerRg = (windowH * 0.5f) / Math.max(0.1f, camDist * tanHalfFov);
+
+        // 1. Calibrated Gravitational Scale Bar (picks clean 2, 5, 10, or 20 r_g span)
+        float rulerRg = 10.0f;
+        if (pxPerRg * 10.0f > 220f) rulerRg = 5.0f;
+        if (pxPerRg * 5.0f > 220f) rulerRg = 2.0f;
+        if (pxPerRg * 10.0f < 65f) rulerRg = 20.0f;
+        float rulerPx = Math.max(40f, Math.min(260f, pxPerRg * rulerRg));
+
+        float rx = 24f;
+        float ry = windowH - (state.hudMode == SimulationState.HUD_CLEAN ? 62f : 64f);
+        ui.drawLine(rx, ry, rx + rulerPx, ry, 1.8f, 0.45f, 0.90f, 1.00f, 0.82f);
+        ui.drawLine(rx, ry - 5f, rx, ry + 5f, 1.6f, 0.45f, 0.90f, 1.00f, 0.82f);
+        ui.drawLine(rx + rulerPx, ry - 5f, rx + rulerPx, ry + 5f, 1.6f, 0.45f, 0.90f, 1.00f, 0.82f);
+        ui.drawLine(rx + rulerPx * 0.5f, ry - 3f, rx + rulerPx * 0.5f, ry + 3f, 1.2f, 0.45f, 0.90f, 1.00f, 0.55f);
+
+        sb.setLength(0);
+        sb.append(Math.round(rulerRg)).append(" r_g (GM/c^2)");
+        ui.drawText(sb, rx, ry - 16f, 0.92f, 0.72f, 0.92f, 1.00f, 0.88f);
+
+        // 2. Projected Spacetime Brackets
+        if (state.binaryMode && binary != null && binary.mergeBlend < 0.85f) {
+            boolean ok1 = projectWorldToScreen(binary.pos1X, binary.pos1Y, binary.pos1Z, windowW, windowH, tanHalfFov, camera);
+            float x1 = projBuf[0], y1 = projBuf[1];
+            boolean ok2 = projectWorldToScreen(binary.pos2X, binary.pos2Y, binary.pos2Z, windowW, windowH, tanHalfFov, camera);
+            float x2 = projBuf[0], y2 = projBuf[1];
+
+            if (ok1) {
+                float r1Px = Math.max(18f, Math.min(180f, binary.mass1 * 5.2f * pxPerRg));
+                drawCornerBrackets(ui, x1, y1, r1Px, 0.36f, 0.88f, 1.00f, 0.72f);
+                sb.setLength(0);
+                sb.append("M1 ");
+                appendFixed2(sb, binary.mass1);
+                sb.append('M');
+                ui.drawText(sb, x1 - r1Px, y1 - r1Px - 14f, 0.90f, 0.45f, 0.92f, 1.00f, 0.90f);
+            }
+            if (ok2) {
+                float r2Px = Math.max(14f, Math.min(140f, binary.mass2 * 5.2f * pxPerRg));
+                drawCornerBrackets(ui, x2, y2, r2Px, 1.00f, 0.76f, 0.38f, 0.74f);
+                sb.setLength(0);
+                sb.append("M2 ");
+                appendFixed2(sb, binary.mass2);
+                sb.append('M');
+                ui.drawText(sb, x2 - r2Px, y2 + r2Px + 6f, 0.90f, 1.00f, 0.82f, 0.46f, 0.90f);
+            }
+            if (ok1 && ok2) {
+                ui.drawLine(x1, y1, x2, y2, 1.1f, 0.82f, 0.90f, 1.00f, 0.30f);
+            }
+        } else if (projectWorldToScreen(0f, 0f, 0f, windowW, windowH, tanHalfFov, camera)) {
+            float cx = projBuf[0];
+            float cy = projBuf[1];
+            float bCritPx = Math.max(20f, Math.min(windowH * 0.42f, 5.196f * pxPerRg));
+            drawCornerBrackets(ui, cx, cy, bCritPx, 0.96f, 0.78f, 0.44f, 0.56f);
+
+            sb.setLength(0);
+            sb.append("SHADOW b_c=5.20M  r+=");
+            appendFixed2(sb, (float) state.outerHorizonRadius());
+            sb.append("M  ISCO=");
+            appendFixed2(sb, (float) state.progradeIscoRadius());
+            sb.append('M');
+            float tw = sb.length() * 8f * 0.88f;
+            ui.drawText(sb, cx - tw * 0.5f, cy - bCritPx - 15f, 0.88f, 0.98f, 0.84f, 0.54f, 0.86f);
+        }
+    }
+
+    private boolean projectWorldToScreen(float wx, float wy, float wz,
+                                         int w, int h, float tanHalfFov, CameraController cam) {
+        float rx = wx - cam.posX;
+        float ry = wy - cam.posY;
+        float rz = wz - cam.posZ;
+        float zCam = rx * cam.forwardX + ry * cam.forwardY + rz * cam.forwardZ;
+        if (zCam <= 0.25f) {
+            return false;
+        }
+        float xCam = rx * cam.rightX + ry * cam.rightY + rz * cam.rightZ;
+        float yCam = rx * cam.upX + ry * cam.upY + rz * cam.upZ;
+        float aspect = (float) w / Math.max(1, h);
+        float ndcX = xCam / (zCam * aspect * tanHalfFov);
+        float ndcY = yCam / (zCam * tanHalfFov);
+        projBuf[0] = (ndcX * 0.5f + 0.5f) * w;
+        projBuf[1] = (0.5f - ndcY * 0.5f) * h;
+        return projBuf[0] >= -80f && projBuf[0] <= w + 80f && projBuf[1] >= -80f && projBuf[1] <= h + 80f;
+    }
+
+    private static void drawCornerBrackets(UiRenderer ui, float cx, float cy, float r,
+                                           float cr, float cg, float cb, float ca) {
+        float arm = Math.max(8f, Math.min(22f, r * 0.28f));
+        float x0 = cx - r, x1 = cx + r;
+        float y0 = cy - r, y1 = cy + r;
+        // Top-left
+        ui.drawLine(x0, y0, x0 + arm, y0, 1.5f, cr, cg, cb, ca);
+        ui.drawLine(x0, y0, x0, y0 + arm, 1.5f, cr, cg, cb, ca);
+        // Top-right
+        ui.drawLine(x1, y0, x1 - arm, y0, 1.5f, cr, cg, cb, ca);
+        ui.drawLine(x1, y0, x1, y0 + arm, 1.5f, cr, cg, cb, ca);
+        // Bottom-left
+        ui.drawLine(x0, y1, x0 + arm, y1, 1.5f, cr, cg, cb, ca);
+        ui.drawLine(x0, y1, x0, y1 - arm, 1.5f, cr, cg, cb, ca);
+        // Bottom-right
+        ui.drawLine(x1, y1, x1 - arm, y1, 1.5f, cr, cg, cb, ca);
+        ui.drawLine(x1, y1, x1, y1 - arm, 1.5f, cr, cg, cb, ca);
     }
 
     private static void appendCompactScale(StringBuilder dst, float val) {

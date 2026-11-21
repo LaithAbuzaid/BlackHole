@@ -29,6 +29,8 @@ uniform int uShowJets;
 uniform int uFreeFall;
 uniform int uShowGrid;
 uniform int uOrderVis;
+uniform int uEhtPolarization;
+uniform int uEhtRadio;
 uniform vec2 uJitter;
 uniform int uFrameIndex;
 
@@ -64,6 +66,20 @@ vec3 sanitizeHdr(vec3 c) {
 vec3 sampleBlackbody(float tempKelvin) {
     float norm = clamp((tempKelvin - 900.0) * (1.0 / 37100.0), 0.0, 1.0);
     return texture(uBlackbodyLut, vec2(sqrt(norm), 0.5)).rgb;
+}
+
+// Authentic Event Horizon Telescope (EHT 230 GHz VLBI) AFmhot brightness-temperature palette
+vec3 sampleEhtRadioPalette(float tbNorm) {
+    float t = clamp(tbNorm, 0.0, 1.0);
+    vec3 c0 = vec3(0.015, 0.002, 0.000);
+    vec3 c1 = vec3(0.420, 0.045, 0.004);
+    vec3 c2 = vec3(0.980, 0.300, 0.018);
+    vec3 c3 = vec3(1.180, 0.780, 0.140);
+    vec3 c4 = vec3(1.450, 1.320, 0.960);
+    if (t < 0.28) return mix(c0, c1, t / 0.28);
+    if (t < 0.58) return mix(c1, c2, (t - 0.28) / 0.30);
+    if (t < 0.84) return mix(c2, c3, (t - 0.58) / 0.26);
+    return mix(c3, c4, (t - 0.84) / 0.16);
 }
 
 // Interleaved Gradient Noise (Jimenez 2014) for artifact-free volumetric step dithering
@@ -598,6 +614,33 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                                 // preserves bright-approaching vs dim-receding asymmetry without flat white clipping.
                                 float g3 = gFactor * gFactor * gFactor;
                                 intensityBoost = g3 / (1.0 + 0.055 * g3);
+
+                                if (uEhtRadio == 1) {
+                                    // Optically thin 1.3 mm (230 GHz) VLBI synchrotron brightness-temperature map
+                                    float tb = clamp(pow(density * intensityBoost * 0.58, 0.55), 0.0, 1.0);
+                                    emitCol = sampleEhtRadioPalette(tb) * (0.65 + 1.55 * tb);
+                                    intensityBoost = 1.0 + 0.38 * tb;
+                                }
+
+                                if (uEhtPolarization == 1) {
+                                    // Kerr-dragged spiral EVPA magnetic field streamlines (EHT M87* polarized LIC drapery)
+                                    float pitchWind = 1.65 + 2.15 * a;
+                                    float logR = log(max(1.0, hitR / max(1.0, iscoR)));
+                                    float spiralCoord = phi - pitchWind * logR - uTime * 0.24;
+                                    float warp = 0.28 * sin(2.0 * phi - 3.0 * logR + uTime * 0.18)
+                                               + 0.14 * cos(5.0 * phi + 2.0 * logR);
+                                    float f1 = pow(0.5 + 0.5 * cos(22.0 * spiralCoord + warp), 5.0);
+                                    float f2 = pow(0.5 + 0.5 * cos(44.0 * spiralCoord - warp * 1.3), 7.0);
+                                    float dash = 0.62 + 0.38 * smoothstep(-0.35, 0.65, sin(18.0 * logR + phi * 3.0 - uTime * 0.55));
+                                    float env = smoothstep(0.0, 0.05, uNorm) * smoothstep(0.96, 0.18, uNorm);
+                                    float streamSignal = clamp((f1 * 0.72 + f2 * 0.42) * dash, 0.0, 1.0) * env;
+                                    // Subtle LIC contrast drapery + warm-gold (radio) or electric-cyan (optical) EVPA filament glow
+                                    emitCol *= mix(0.76, 1.24, streamSignal);
+                                    vec3 polCol = (uEhtRadio == 1)
+                                            ? vec3(1.18, 0.84, 0.42)
+                                            : vec3(0.32, 0.78, 1.25);
+                                    emitCol += polCol * (streamSignal * (0.28 + 0.26 * clamp(gFactor, 0.4, 2.0)));
+                                }
                             }
 
                             float emitSuppression = 1.0 - 0.74 * dustLaneFactor;

@@ -8,16 +8,23 @@ import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 import io.github.laithabuzaid.blackhole.ui.HudOverlay;
 import io.github.laithabuzaid.blackhole.ui.UiRenderer;
 import io.github.laithabuzaid.blackhole.util.PngWriter;
+import io.github.laithabuzaid.blackhole.util.SettingsStore;
 import org.lwjgl.glfw.GLFWErrorCallback;
+import org.lwjgl.glfw.GLFWImage;
+import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryUtil;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.zip.InflaterInputStream;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -40,6 +47,14 @@ public final class SimulationEngine {
 
     private int windowW = 1440;
     private int windowH = 860;
+    private int windowedX = 80;
+    private int windowedY = 60;
+    private int windowedW = 1440;
+    private int windowedH = 860;
+    private final int[] winPosXBuf = new int[1];
+    private final int[] winPosYBuf = new int[1];
+    private final int[] winSizeWBuf = new int[1];
+    private final int[] winSizeHBuf = new int[1];
     private boolean framebufferResized = false;
 
     private final SimulationState state = new SimulationState();
@@ -94,12 +109,14 @@ public final class SimulationEngine {
             int initW = captureShowcaseMode ? 640 : windowW;
             int initH = captureShowcaseMode ? 360 : windowH;
             window = glfwCreateWindow(initW, initH,
-                    "Relativistic Kerr-Schild Black Hole & Wormhole Engine — OpenGL 4.3", NULL, NULL);
+                    "BlackHole v1.1 — Relativistic Kerr-Schild, Binary Merger, Wormhole & TDE Engine", NULL, NULL);
             if (window == NULL) {
                 throw new RuntimeException("Failed to create GLFW OpenGL 4.3 Core window");
             }
 
             if (!captureShowcaseMode) {
+                SettingsStore.load(state);
+                applyWindowIcon(window);
                 setupCallbacks(window);
             }
 
@@ -134,6 +151,9 @@ public final class SimulationEngine {
                 runRenderLoop(renderer, uiRenderer, gpuTimers);
             }
         } finally {
+            if (!captureShowcaseMode) {
+                SettingsStore.save(state);
+            }
             audio.close();
             telemetry.stop();
             if (window != NULL) {
@@ -287,7 +307,7 @@ public final class SimulationEngine {
         int w = SHOWCASE_WIDTH;
         int h = SHOWCASE_HEIGHT;
         System.out.println("[Showcase] OpenGL " + glVersion + " | GPU: " + glRenderer
-                + " | Rendering 6 curated " + w + "x" + h + " showcase PNGs into docs/media/...");
+                + " | Rendering 7 curated " + w + "x" + h + " showcase PNGs into docs/media/...");
 
         telemetry.startBackgroundSampler();
         int captureFbo = glGenFramebuffers();
@@ -523,8 +543,29 @@ public final class SimulationEngine {
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
                     Path.of("docs/media/binary_merger.png"));
 
+            // 7. eht_polarization.png — Event Horizon Telescope 230 GHz VLBI + Kerr-dragged Polarized B-Field Swirl
+            state.resetDefaults();
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.wormholeMode = false;
+            state.binaryMode = false;
+            state.spinParam = 0.94f;
+            state.ehtRadioPalette = true;
+            state.ehtPolarization = true;
+            state.diskDensity = 1.18f;
+            state.jetPower = 0.25f;
+            state.bloomStrength = 0.38f;
+            state.anamorphicEnabled = true;
+            state.anamorphicStrength = 0.26f;
+            state.exposure = 1.20f;
+            state.fovDeg = 25.5f;
+            state.simTime = 3.6;
+            renderer.clearTdeStars();
+            camera.setShowcasePose(31.5, 0.35, 0.60, -0.05, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
+                    Path.of("docs/media/eht_polarization.png"));
+
             ShaderProgram.checkGlError("Showcase.finish");
-            System.out.println("[Showcase] All 6 1920x1080 showcase PNGs saved successfully.");
+            System.out.println("[Showcase] All 7 1920x1080 showcase PNGs saved successfully.");
         } catch (IOException e) {
             throw new RuntimeException("Failed writing showcase PNGs", e);
         } finally {
@@ -766,6 +807,43 @@ public final class SimulationEngine {
                 state.orderVisualizer = !state.orderVisualizer;
                 state.showToast(state.orderVisualizer ? "LUMINET IMAGE-ORDER MODE: ON" : "LUMINET IMAGE-ORDER MODE: OFF");
             }
+            case HudOverlay.ACT_EHT_POLARIZATION -> {
+                state.ehtPolarization = !state.ehtPolarization;
+                state.showToast(state.ehtPolarization ? "EHT B-FIELD POLARIZATION: ON" : "EHT B-FIELD POLARIZATION: OFF");
+            }
+            case HudOverlay.ACT_EHT_RADIO -> {
+                state.ehtRadioPalette = !state.ehtRadioPalette;
+                state.showToast(state.ehtRadioPalette ? "EHT 230 GHz VLBI PALETTE: ON" : "OPTICAL BLACKBODY PALETTE: ON");
+            }
+            case HudOverlay.ACT_RETICLE -> {
+                state.showReticle = !state.showReticle;
+                state.showToast(state.showReticle ? "ASTROPHYSICAL SCALE RETICLE: ON" : "ASTROPHYSICAL SCALE RETICLE: OFF");
+            }
+            case HudOverlay.ACT_FULLSCREEN -> toggleFullscreen();
+            case HudOverlay.ACT_LIGO_GW150914 -> {
+                state.binaryMode = true;
+                state.wormholeMode = false;
+                state.binaryMassRatio = 0.81f;
+                binaryPhysics.reset(state.binaryMassRatio);
+                state.paused = false;
+                state.showToast("LIGO GW150914: 36 + 29 M_sun (q = 0.81)");
+            }
+            case HudOverlay.ACT_LIGO_GW190412 -> {
+                state.binaryMode = true;
+                state.wormholeMode = false;
+                state.binaryMassRatio = 0.28f;
+                binaryPhysics.reset(state.binaryMassRatio);
+                state.paused = false;
+                state.showToast("LIGO GW190412: 30 + 8.4 M_sun (q = 0.28)");
+            }
+            case HudOverlay.ACT_LIGO_EQUAL -> {
+                state.binaryMode = true;
+                state.wormholeMode = false;
+                state.binaryMassRatio = 1.00f;
+                binaryPhysics.reset(state.binaryMassRatio);
+                state.paused = false;
+                state.showToast("BINARY MERGER: EQUAL MASS (q = 1.00)");
+            }
             case HudOverlay.ACT_AUTO_ORBIT -> {
                 camera.disengageAttractTour(state);
                 state.autoOrbit = !state.autoOrbit;
@@ -995,6 +1073,20 @@ public final class SimulationEngine {
                     }
                 }
                 case GLFW_KEY_I -> triggerAction(HudOverlay.ACT_ORDER_VIS);
+                case GLFW_KEY_N -> {
+                    if ((mods & GLFW_MOD_SHIFT) != 0) {
+                        triggerAction(HudOverlay.ACT_EHT_RADIO);
+                    } else {
+                        triggerAction(HudOverlay.ACT_EHT_POLARIZATION);
+                    }
+                }
+                case GLFW_KEY_Q -> triggerAction(HudOverlay.ACT_RETICLE);
+                case GLFW_KEY_F11 -> triggerAction(HudOverlay.ACT_FULLSCREEN);
+                case GLFW_KEY_ENTER -> {
+                    if ((mods & GLFW_MOD_ALT) != 0) {
+                        triggerAction(HudOverlay.ACT_FULLSCREEN);
+                    }
+                }
                 case GLFW_KEY_O -> triggerAction(HudOverlay.ACT_AUTO_ORBIT);
                 case GLFW_KEY_V -> triggerAction(HudOverlay.ACT_VSYNC);
                 case GLFW_KEY_SPACE -> triggerAction(HudOverlay.ACT_PAUSE);
@@ -1047,5 +1139,72 @@ public final class SimulationEngine {
             toastSb.append(" (REALTIME)");
         }
         state.showToast(toastSb);
+    }
+
+    private void toggleFullscreen() {
+        if (window == NULL || captureShowcaseMode) {
+            return;
+        }
+        long monitor = glfwGetPrimaryMonitor();
+        if (monitor == NULL) {
+            return;
+        }
+        if (!state.fullscreen) {
+            glfwGetWindowPos(window, winPosXBuf, winPosYBuf);
+            glfwGetWindowSize(window, winSizeWBuf, winSizeHBuf);
+            windowedX = winPosXBuf[0];
+            windowedY = winPosYBuf[0];
+            windowedW = Math.max(640, winSizeWBuf[0]);
+            windowedH = Math.max(360, winSizeHBuf[0]);
+            GLFWVidMode mode = glfwGetVideoMode(monitor);
+            if (mode != null) {
+                glfwSetWindowMonitor(window, monitor, 0, 0, mode.width(), mode.height(), mode.refreshRate());
+                state.fullscreen = true;
+                state.showToast("DISPLAY: FULLSCREEN");
+            }
+        } else {
+            glfwSetWindowMonitor(window, NULL, windowedX, windowedY, windowedW, windowedH, GLFW_DONT_CARE);
+            state.fullscreen = false;
+            state.showToast("DISPLAY: WINDOWED");
+        }
+    }
+
+    /** Loads the pre-compressed 64x64 RGBA taskbar icon with zero java.desktop dependency. */
+    private static void applyWindowIcon(long winHandle) {
+        try (InputStream raw = SimulationEngine.class.getResourceAsStream("/icons/blackhole_64.bin")) {
+            if (raw == null) {
+                return;
+            }
+            try (DataInputStream dis = new DataInputStream(new BufferedInputStream(raw))) {
+                int magic = dis.readInt();
+                if (magic != 0x42484943) { // 'BHIC'
+                    return;
+                }
+                int w = dis.readInt();
+                int h = dis.readInt();
+                int expected = w * h * 4;
+                byte[] rgba = new byte[expected];
+                try (InflaterInputStream iis = new InflaterInputStream(dis)) {
+                    int off = 0;
+                    while (off < expected) {
+                        int n = iis.read(rgba, off, expected - off);
+                        if (n < 0) return;
+                        off += n;
+                    }
+                }
+                ByteBuffer buf = MemoryUtil.memAlloc(expected);
+                GLFWImage.Buffer images = GLFWImage.malloc(1);
+                try {
+                    buf.put(rgba).flip();
+                    images.position(0).width(w).height(h).pixels(buf);
+                    glfwSetWindowIcon(winHandle, images);
+                } finally {
+                    images.free();
+                    MemoryUtil.memFree(buf);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Wayland compositors ignore glfwSetWindowIcon; safely no-op
+        }
     }
 }

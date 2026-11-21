@@ -52,14 +52,21 @@
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/media/horizon_plunge.png" alt="Interior Kerr horizon plunge looking back at the blueshifted exterior sky and disk ring" width="100%">
+      <img src="docs/media/eht_polarization.png" alt="Event Horizon Telescope 230 GHz VLBI radio palette with Kerr-dragged polarized magnetic field streamlines" width="100%">
       <br>
-      <sub><b>Horizon Plunge (`[P]`)</b> — Doran / Kerr–Schild free-fall interior view (<i>r</i> &lt; <i>r<sub>+</sub></i>) looking back at the blueshifted exterior sky &amp; disk ring.</sub>
+      <sub><b>EHT 230 GHz Polarized Magnetic Fields (`[N]` / `[Shift+N]`)</b> — Kerr-dragged synchrotron polarization swirl rendered in authentic 1.3 mm VLBI brightness temperature.</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/media/hud_telemetry.png" alt="Modular glassmorphic Observatory HUD with tabbed TDE Lab console and timelapse transport dock" width="100%">
       <br>
       <sub><b>Observatory HUD &amp; Timelapse Dock (`[H]`)</b> — 3-state HUD cycle, 4-tab console (<code>SCENE | PHYSICS | TDE LAB | OPTICS</code>), bottom timelapse dock, and live GPU timers.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="docs/media/horizon_plunge.png" alt="Interior Kerr horizon plunge looking back at the blueshifted exterior sky and disk ring" width="50%">
+      <br>
+      <sub><b>Horizon Plunge (`[P]`)</b> — Doran / Kerr–Schild free-fall interior view (<i>r</i> &lt; <i>r<sub>+</sub></i>) looking back at the blueshifted exterior sky &amp; disk ring.</sub>
     </td>
   </tr>
 </table>
@@ -146,14 +153,14 @@ src/
 
 ---
 
-## Download & Run (v1.0 — No Java Required)
+## Download & Run (No Java Required)
 
-Pre-built native releases with a minimal bundled runtime are published on the [**GitHub Releases**](https://github.com/LaithAbuzaid/BlackHole/releases/latest) page:
+Pre-built native releases (~22–24 MB with a minimal bundled `jlink` runtime) are published on the [**GitHub Releases**](https://github.com/LaithAbuzaid/BlackHole/releases/latest) page:
 
 | Platform | Download | How to Run |
 |---|---|---|
-| **Windows (x64)** | `BlackHole-1.0.0-Windows-x64-Setup.exe` *(or `Portable.zip`)* | Run the installer (adds Start Menu & Desktop shortcuts), or unzip and launch `BlackHole.exe` |
-| **Linux (x86_64)** | `BlackHole-1.0.0-Linux-x86_64.AppImage` *(or `.deb`)* | `chmod +x BlackHole-1.0.0-Linux-x86_64.AppImage && ./BlackHole-1.0.0-Linux-x86_64.AppImage` |
+| **Windows (x64)** | `BlackHole-1.1.0-Windows-x64-Setup.exe` *(or `Portable.zip`)* | Run the installer (adds Start Menu & Desktop shortcuts), or unzip and launch `BlackHole.exe` |
+| **Linux (x86_64)** | `BlackHole-1.1.0-Linux-x86_64.AppImage` *(or `.deb`)* | `chmod +x BlackHole-1.1.0-Linux-x86_64.AppImage && ./BlackHole-1.1.0-Linux-x86_64.AppImage` |
 
 > **GPU Requirement:** OpenGL 4.3 Core (Windows 10/11 x64 or Linux x86_64). *(macOS is capped at OpenGL 4.1 by Apple and does not support OpenGL 4.3 Compute Shaders.)*
 
@@ -167,18 +174,18 @@ OS-specific LWJGL/OpenAL native classifiers (`natives-linux`, `natives-windows`)
 ### Linux
 ```bash
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0.0.jar
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.1.0.jar
 ```
 
 ### Windows (PowerShell / CMD)
 ```powershell
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target\blackhole-1.0.0.jar
+java --enable-native-access=ALL-UNNAMED -jar target\blackhole-1.1.0.jar
 ```
 
-### Regenerate All 6 Curated 1080p Showcase PNGs
+### Regenerate All 7 Curated 1080p Showcase PNGs
 ```bash
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0.0.jar --capture-showcase
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.1.0.jar --capture-showcase
 ```
 > Renders all 6 `1920×1080` showcase stills into `docs/media/` using an offscreen FBO and exits cleanly with status `0`.
 
@@ -197,7 +204,10 @@ java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0.0.jar --captur
 | `P` | Launch / Abort / Replay **Horizon Plunge Dive** (`r+` → Interior) |
 | `W` | Switch Spacetime: **Kerr–Schild Black Hole** ↔ **Morris–Thorne Wormhole** |
 | `E` / `Shift+E` / `Shift+C` | Launch Star (TDE Lab) · `Shift+E`: Cycle Stellar Archetype · `Shift+C`: Clear Debris |
-| `F12` / `S` | Capture clean HUD-free PNG screenshot to `captures/` |
+| `N` / `Shift+N` | Toggle **EHT Polarized Magnetic Fields** · `Shift+N`: Toggle **EHT 230 GHz VLBI Radio Palette** |
+| `Q` | Toggle **Astrophysical Scale Ruler** ($r_g$) & Shadow / Binary Tracking Reticle |
+| `F11` / `Alt+Enter` | Toggle Borderless Fullscreen Display |
+| `F12` / `S` | Capture clean HUD-free PNG screenshot (`~/Pictures/BlackHole/` or `captures/`) |
 | `A` | Toggle Procedural OpenAL Soundscape (including live **LIGO Chirp** in Binary mode) |
 | `1` `2` `3` `4` | Presets — Black Hole: Edge / Polar / Photon Ring / Dive · Binary: Oblique / Top-Down / Close / Replay · Wormhole: Univ A / Throat / Univ B / Fly-Through |
 | `Up` / `Down` | Fly forward / backward through the wormhole throat |

@@ -3,13 +3,16 @@ package io.github.laithabuzaid.blackhole;
 import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import io.github.laithabuzaid.blackhole.core.StellarArchetype;
+import io.github.laithabuzaid.blackhole.util.SettingsStore;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.zip.InflaterInputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -301,5 +304,53 @@ final class RelativisticPhysicsTest {
         }
         assertEquals(slow.currentSeparation, fast.currentSeparation, 1e-3f,
                 "Fixed-substepped Binary Merger separation must match between 1x and 10x timelapse");
+    }
+
+    @Test
+    void settingsStoreRoundTripsAndWindowIconBinaryIsValid(@TempDir Path tempDir) throws IOException {
+        Path cfg = tempDir.resolve("settings.properties");
+        SimulationState saved = new SimulationState();
+        saved.vsync = false;
+        saved.audioEnabled = false;
+        saved.audioVolume = 0.42f;
+        saved.bloomStrength = 0.55f;
+        saved.exposure = 1.45f;
+        saved.showReticle = true;
+        saved.setHudMode(SimulationState.HUD_COMPACT);
+        SettingsStore.save(cfg, saved);
+
+        SimulationState loaded = new SimulationState();
+        SettingsStore.load(cfg, loaded);
+        assertFalse(loaded.vsync);
+        assertFalse(loaded.audioEnabled);
+        assertEquals(0.42f, loaded.audioVolume, 1e-5f);
+        assertEquals(0.55f, loaded.bloomStrength, 1e-5f);
+        assertEquals(1.45f, loaded.exposure, 1e-5f);
+        assertTrue(loaded.showReticle);
+        assertEquals(SimulationState.HUD_COMPACT, loaded.hudMode);
+
+        // Verify EHT & reticle flags clear on resetDefaults()
+        loaded.ehtPolarization = true;
+        loaded.ehtRadioPalette = true;
+        loaded.resetDefaults();
+        assertFalse(loaded.ehtPolarization);
+        assertFalse(loaded.ehtRadioPalette);
+        assertFalse(loaded.showReticle);
+
+        // Verify bundled 64x64 compressed GLFW window icon integrity (zero java.desktop)
+        try (InputStream raw = RelativisticPhysicsTest.class.getResourceAsStream("/icons/blackhole_64.bin")) {
+            assertNotNull(raw, "Missing bundled window icon resource /icons/blackhole_64.bin");
+            try (DataInputStream dis = new DataInputStream(new BufferedInputStream(raw))) {
+                assertEquals(0x42484943, dis.readInt(), "Invalid BHIC window icon magic");
+                int w = dis.readInt();
+                int h = dis.readInt();
+                assertEquals(64, w);
+                assertEquals(64, h);
+                try (InflaterInputStream iis = new InflaterInputStream(dis)) {
+                    byte[] rgba = iis.readAllBytes();
+                    assertEquals(64 * 64 * 4, rgba.length, "Decompressed RGBA icon size mismatch");
+                }
+            }
+        }
     }
 }
