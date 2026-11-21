@@ -243,8 +243,11 @@ public final class SimulationEngine {
     private void captureLiveSnapshotAsync(int width, int height) {
         byte[] rgb = readFramebufferRgb(0, width, height);
         String filename = "blackhole_" + SNAPSHOT_FMT.format(LocalDateTime.now()) + ".png";
-        Path outPath = Path.of("captures", filename);
-        String displayRel = "captures/" + filename;
+        Path captureDir = resolveCaptureDirectory();
+        Path outPath = captureDir.resolve(filename);
+        String displayRel = captureDir.isAbsolute()
+                ? ("~/Pictures/BlackHole/" + filename)
+                : ("captures/" + filename);
 
         Thread writer = new Thread(() -> {
             try {
@@ -258,6 +261,22 @@ public final class SimulationEngine {
         }, "png-snapshot-writer");
         writer.setDaemon(true);
         writer.start();
+    }
+
+    /**
+     * Resolves a guaranteed-writable screenshot directory: uses {@code ~/Pictures/BlackHole}
+     * when launched from a packaged installer/AppImage or read-only working directory, and
+     * local {@code captures/} during repository development.
+     */
+    private static Path resolveCaptureDirectory() {
+        boolean packaged = System.getProperty("jpackage.app-path") != null
+                || System.getenv("APPIMAGE") != null;
+        Path cwd = Path.of("").toAbsolutePath();
+        if (packaged || !Files.isWritable(cwd)) {
+            String home = System.getProperty("user.home", ".");
+            return Path.of(home, "Pictures", "BlackHole");
+        }
+        return Path.of("captures");
     }
 
     /**

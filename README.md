@@ -7,8 +7,9 @@
 [![Java 21+](https://img.shields.io/badge/Java-21%2B-ED8B00?style=flat-square&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![OpenGL 4.3](https://img.shields.io/badge/OpenGL-4.3%20Core-5586A4?style=flat-square&logo=opengl&logoColor=white)](https://www.khronos.org/opengl/)
 [![LWJGL 3.3.4](https://img.shields.io/badge/LWJGL-3.3.4-2C3E50?style=flat-square)](https://www.lwjgl.org/)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/LaithAbuzaid/BlackHole/build.yml?branch=main&style=flat-square&label=CI%20Build)](https://github.com/LaithAbuzaid/BlackHole/actions/workflows/build.yml)
-[![License](https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square)](#)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/LaithAbuzaid/BlackHole/build.yml?branch=main&style=flat-square&label=CI%20Build)](https://github.com/LaithAbuzaid/BlackHole/actions)
+[![Release](https://img.shields.io/github/v/release/LaithAbuzaid/BlackHole?style=flat-square&color=F5A623)](https://github.com/LaithAbuzaid/BlackHole/releases/latest)
+[![License](https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square)](LICENSE)
 
 *Exact Cartesian Kerr-Schild RK4 geodesics · Binary Black Hole Merger & LIGO GW Chirp · Interstellar Morris-Thorne wormhole · Volumetric Lensed Compute TDE · Relativistic HDR TAA · JetBrains Mono MTSDF HUD*
 
@@ -145,26 +146,39 @@ src/
 
 ---
 
-## Build & Run
+## Download & Run (v1.0 — No Java Required)
+
+Pre-built native releases with a minimal bundled runtime are published on the [**GitHub Releases**](https://github.com/LaithAbuzaid/BlackHole/releases/latest) page:
+
+| Platform | Download | How to Run |
+|---|---|---|
+| **Windows (x64)** | `BlackHole-1.0.0-Windows-x64-Setup.exe` *(or `Portable.zip`)* | Run the installer (adds Start Menu & Desktop shortcuts), or unzip and launch `BlackHole.exe` |
+| **Linux (x86_64)** | `BlackHole-1.0.0-Linux-x86_64.AppImage` *(or `.deb`)* | `chmod +x BlackHole-1.0.0-Linux-x86_64.AppImage && ./BlackHole-1.0.0-Linux-x86_64.AppImage` |
+
+> **GPU Requirement:** OpenGL 4.3 Core (Windows 10/11 x64 or Linux x86_64). *(macOS is capped at OpenGL 4.1 by Apple and does not support OpenGL 4.3 Compute Shaders.)*
+
+---
+
+## Build from Source
 
 **Prerequisites:** JDK 21+, Maven 3.8+, and an OpenGL 4.3-capable GPU driver.  
-OS-specific LWJGL/OpenAL native classifiers (`natives-linux`, `natives-windows`, `natives-macos`) activate automatically via Maven profiles.
+OS-specific LWJGL/OpenAL native classifiers (`natives-linux`, `natives-windows`) activate automatically via Maven profiles.
 
-### Linux & macOS
+### Linux
 ```bash
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0.0.jar
 ```
 
 ### Windows (PowerShell / CMD)
 ```powershell
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target\blackhole-1.0-SNAPSHOT.jar
+java --enable-native-access=ALL-UNNAMED -jar target\blackhole-1.0.0.jar
 ```
 
 ### Regenerate All 6 Curated 1080p Showcase PNGs
 ```bash
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0-SNAPSHOT.jar --capture-showcase
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-1.0.0.jar --capture-showcase
 ```
 > Renders all 6 `1920×1080` showcase stills into `docs/media/` using an offscreen FBO and exits cleanly with status `0`.
 
