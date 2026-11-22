@@ -10,175 +10,304 @@ layout(std430, binding = 0) buffer ParticleBuffer {
     Particle particles[];
 };
 
+// 8-element telemetry & conservation counter SSBO (reduced in workgroup shared memory -> 256x less atomic contention)
 layout(std430, binding = 1) buffer CounterBuffer {
     uint activeCount;
     uint shearCount;
     uint boundCount;
     uint unboundCount;
     uint swallowedCount;
+    int  energySumFixed;  // sum(mass * epsilon * 256)
+    int  angMomYSumFixed; // sum(mass * L_y * 256)
+    uint peakTempK;       // atomicMax(temperature in Kelvin)
+};
+
+struct HydroCell {
+    int massFixed;
+    int momXFixed;
+    int momYFixed;
+    int momZFixed;
+};
+
+layout(std430, binding = 2) readonly buffer HydroGridBuffer {
+    HydroCell cells[];
 };
 
 uniform uint uParticleCount;
 uniform float uDt;
+uniform int uSubsteps;            // In-shader substep loop count (particles stay in registers -> 1 dispatch/frame!)
 uniform float uSpinA;
 uniform float uHorizonR;
-uniform int uCountSnapshot;       // 1 on final substep of the frame; swallowedCount accumulates on all substeps
+uniform int uHydroEnabled;        // 1 = 64^3 Eulerian-Lagrangian pressure & shock viscosity; 0 = pure gravity conservation
 uniform vec2 uSlotShockBeta[2];   // .x = archetype shockGain, .y = penetration factor beta
 
-// Relativistic Paczynski-Wiita gravitational acceleration + Kerr Lense-Thirring frame-dragging torque
-vec3 computeAccel(vec3 pos, vec3 vel, float spinA, float rPlus) {
+const int GRID_DIM = 64;
+const float GRID_HALF_EXTENT = 24.0;
+const float CELL_SIZE = (2.0 * GRID_HALF_EXTENT) / float(GRID_DIM);
+const float INV_CELL_SIZE = float(GRID_DIM) / (2.0 * GRID_HALF_EXTENT);
+const float INV_FIXED_SCALE = 1.0 / 1024.0;
+
+// Workgroup shared-memory reduction buffers (256 threads -> 1 global atomic set per workgroup)
+shared uint sActive;
+shared uint sShear;
+shared uint sBound;
+shared uint sUnbound;
+shared uint sSwallowed;
+shared int  sEnergyFixed;
+shared int  sAngMomYFixed;
+shared uint sPeakTemp;
+
+// Standard Paczynski-Wiita gravitational acceleration: V(r) = -1 / (r - 2M) (exact Schwarzschild ISCO = 6M)
+vec3 computePwGravity(vec3 pos) {
     float r2 = dot(pos, pos);
     float r = sqrt(max(1e-5, r2));
+    float rPw = max(0.35, r - 2.0);
+    return (-1.0 / (rPw * rPw * r)) * pos;
+}
 
-    // Paczynski-Wiita pseudo-Newtonian potential smoothly calibrated to Kerr outer horizon r_+
-    float rPw = max(0.32, r - 0.88 * rPlus);
-    vec3 aGrav = (-1.0 / (rPw * rPw * r)) * pos;
+// Exact Lense-Thirring gravitomagnetic angular frequency Omega_LT for spin J = (0, -a, 0)
+// (matches kerr_blackhole.frag spin handedness; force a_LT = v x Omega_LT does ZERO work!)
+vec3 computeLenseThirringOmega(vec3 pos, float spinA) {
+    if (spinA <= 0.001) {
+        return vec3(0.0);
+    }
+    float r2 = max(1.0, dot(pos, pos));
+    float invR = inversesqrt(r2);
+    float invR3 = invR / r2;
+    vec3 rHat = pos * invR;
+    // B_g = (2 / r^3) * [3 * (J . rHat) * rHat - J], with J = (0, -spinA, 0)
+    float jDotR = -spinA * rHat.y;
+    return (2.0 * invR3) * (3.0 * jDotR * rHat + vec3(0.0, spinA, 0.0));
+}
 
-    // Gravitomagnetic Kerr frame-dragging torque around +Y spin axis (prograde along (-z, 0, +x))
-    vec3 aKerr = vec3(0.0);
-    if (spinA > 0.001) {
-        float invR3 = 1.0 / max(1.0, r2 * r);
-        vec3 spinVec = vec3(0.0, spinA, 0.0);
-        vec3 jCrossV = cross(spinVec, vel);
-        vec3 rCrossV = cross(pos, vel);
-        aKerr = (2.0 * invR3) * (jCrossV - (3.0 * dot(spinVec, pos) / max(1.0, r2)) * rCrossV);
+// Exact kinetic-energy-preserving Boris rotation for dv/dt = v x Omega_LT
+// Strictly preserves |v| for any step size dt without energy drift or artificial azimuthal thrust!
+vec3 borisRotate(vec3 v, vec3 omega, float dt) {
+    vec3 t = 0.5 * dt * omega;
+    float t2 = dot(t, t);
+    vec3 s = t * (2.0 / (1.0 + t2));
+    vec3 vPrime = v + cross(v, t);
+    return v + cross(vPrime, s);
+}
 
-        float rho2 = dot(pos.xz, pos.xz);
-        if (rho2 > 1e-4) {
-            vec3 phiPro = vec3(-pos.z, 0.0, pos.x) * inversesqrt(rho2);
-            aKerr += phiPro * (0.45 * spinA * invR3 / max(1.0, r));
-        }
+float cellDensity(ivec3 c) {
+    if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, ivec3(GRID_DIM)))) {
+        return 0.0;
+    }
+    uint flatIdx = uint((c.z * GRID_DIM + c.y) * GRID_DIM + c.x);
+    return float(max(0, cells[flatIdx].massFixed)) * INV_FIXED_SCALE;
+}
+
+// Evaluates 64^3 grid polytropic pressure gradient (-grad P / rho) and momentum-conserving
+// stream-intersection shock relaxation toward local cell bulk velocity vBar
+void evaluateGridHydro(vec3 pos, vec3 vel, out vec3 aPressure, out vec3 vBulk, out float localDensity) {
+    aPressure = vec3(0.0);
+    vBulk = vel;
+    localDensity = 0.0;
+
+    vec3 gPos = (pos + vec3(GRID_HALF_EXTENT)) * INV_CELL_SIZE;
+    ivec3 c = ivec3(floor(gPos));
+    if (any(lessThan(c, ivec3(1))) || any(greaterThanEqual(c, ivec3(GRID_DIM - 1)))) {
+        return;
     }
 
-    return aGrav + aKerr;
+    uint flatIdx = uint((c.z * GRID_DIM + c.y) * GRID_DIM + c.x);
+    HydroCell hc = cells[flatIdx];
+    float m = float(max(0, hc.massFixed)) * INV_FIXED_SCALE;
+    localDensity = m;
+    if (m <= 1.5) {
+        return;
+    }
+
+    vBulk = vec3(hc.momXFixed, hc.momYFixed, hc.momZFixed) * (INV_FIXED_SCALE / m);
+
+    // Polytropic EOS P = K * rho^(5/3) for tidally shocked debris streams.
+    // Outside the tidal zone (r > 13M), stellar pressure is balanced by self-gravity so net pressure
+    // expansion activates smoothly as the star crosses the Roche tidal radius.
+    float rDist = length(pos);
+    float tidalRelease = smoothstep(13.5, 7.0, rDist);
+    if (tidalRelease <= 0.001) {
+        return;
+    }
+
+    float rhoXp = cellDensity(c + ivec3(1, 0, 0));
+    float rhoXm = cellDensity(c - ivec3(1, 0, 0));
+    float rhoYp = cellDensity(c + ivec3(0, 1, 0));
+    float rhoYm = cellDensity(c - ivec3(0, 1, 0));
+    float rhoZp = cellDensity(c + ivec3(0, 0, 1));
+    float rhoZm = cellDensity(c - ivec3(0, 0, 1));
+
+    const float K_EOS = 0.0000045;
+    float pXp = K_EOS * pow(rhoXp, 1.6667);
+    float pXm = K_EOS * pow(rhoXm, 1.6667);
+    float pYp = K_EOS * pow(rhoYp, 1.6667);
+    float pYm = K_EOS * pow(rhoYm, 1.6667);
+    float pZp = K_EOS * pow(rhoZp, 1.6667);
+    float pZm = K_EOS * pow(rhoZm, 1.6667);
+
+    vec3 gradP = vec3(pXp - pXm, pYp - pYm, pZp - pZm) / (2.0 * CELL_SIZE);
+    aPressure = (-gradP / max(12.0, m)) * tidalRelease;
+    // Clamp numerical pressure spike on extreme core compaction
+    float aLen = length(aPressure);
+    if (aLen > 0.025) {
+        aPressure *= 0.025 / aLen;
+    }
 }
 
 void main() {
+    if (gl_LocalInvocationID.x == 0u) {
+        sActive = 0u;
+        sShear = 0u;
+        sBound = 0u;
+        sUnbound = 0u;
+        sSwallowed = 0u;
+        sEnergyFixed = 0;
+        sAngMomYFixed = 0;
+        sPeakTemp = 0u;
+    }
+    barrier();
+
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= uParticleCount) {
-        return;
+    bool valid = (idx < uParticleCount);
+    Particle p = Particle(vec4(0.0), vec4(0.0));
+    if (valid) {
+        p = particles[idx];
+        valid = (p.posMass.w > 0.0);
     }
 
-    Particle p = particles[idx];
-    if (p.posMass.w <= 0.0) {
-        return;
-    }
+    if (valid) {
+        uint slot = (idx >> 16u) & 1u;
+        float shockGain = uSlotShockBeta[slot].x;
+        float massVal = p.posMass.w;
 
-    uint slot = (idx >> 16u) & 1u;
-    float shockGain = uSlotShockBeta[slot].x;
-    float slotBeta = uSlotShockBeta[slot].y;
-    float massVal = p.posMass.w;
+        vec3 pos = p.posMass.xyz;
+        vec3 vel = p.velTemp.xyz;
+        float temp = p.velTemp.w;
 
-    vec3 pos = p.posMass.xyz;
-    vec3 vel = p.velTemp.xyz;
-    float temp = p.velTemp.w;
+        // Single-dispatch in-register substep loop (2 Verlet-Boris inner steps per frame substep)
+        int totalInner = max(1, uSubsteps) * 2;
+        float dtSub = uDt * 0.5;
+        bool swallowed = false;
+        bool escapedFar = false;
 
-    // 2 substeps of Velocity-Verlet integration per dispatch for crisp periapsis conservation
-    float dtSub = uDt * 0.5;
-    bool swallowed = false;
-    bool escapedFar = false;
-
-    for (int sub = 0; sub < 2; sub++) {
-        vec3 a0 = computeAccel(pos, vel, uSpinA, uHorizonR);
-        vec3 vHalf = vel + a0 * (0.5 * dtSub);
-        pos += vHalf * dtSub;
-
-        float r = length(pos);
-        if (r <= uHorizonR * 1.03) {
-            swallowed = true;
-            break;
-        }
-        if (r > 118.0) {
-            escapedFar = true;
-            break;
+        // Sample 64^3 hydro grid once per dispatch if hydrodynamics mode is enabled
+        vec3 hydroPressAcc = vec3(0.0);
+        vec3 cellBulkVel = vel;
+        float cellRho = 0.0;
+        if (uHydroEnabled == 1) {
+            evaluateGridHydro(pos, vel, hydroPressAcc, cellBulkVel, cellRho);
         }
 
-        vec3 a1 = computeAccel(pos, vHalf, uSpinA, uHorizonR);
-        vel = vHalf + a1 * (0.5 * dtSub);
+        for (int sub = 0; sub < totalInner; sub++) {
+            // 1. Half gravitational (+ hydro pressure if enabled) kick at x_n
+            vec3 a0 = computePwGravity(pos) + hydroPressAcc;
+            vel += a0 * (0.5 * dtSub);
 
-        // Relativistic speed ceiling c = 1
-        float v2 = dot(vel, vel);
-        if (v2 > 0.90) {
-            vel *= inversesqrt(v2) * 0.948;
-            v2 = 0.90;
-        }
+            // 2. Half drift to midpoint x_{n+1/2}
+            pos += vel * (0.5 * dtSub);
 
-        // Exact Paczynski-Wiita specific orbital energy: epsilon = 0.5*v^2 - 1/(r - 0.88*r_+)
-        float rPw = max(0.32, r - 0.88 * uHorizonR);
-        float energy = 0.5 * v2 - (1.0 / rPw);
-
-        // Stream self-intersection & shock circularization for bound returning debris (epsilon < 0)
-        // Partial-disruption dense cores (low beta, high massVal) resist circularization so a surviving core escapes.
-        float shockFlash = 0.0;
-        if (energy < -0.002 && r < 8.6) {
-            float coreSurvival = smoothstep(1.12, 0.72, slotBeta) * smoothstep(0.74, 0.92, massVal);
-            float circScale = (1.0 - 0.85 * coreSurvival);
-
-            vec3 rHat = pos / max(1e-4, r);
-            float vRad = dot(vel, rHat);
-            vec3 vTanVec = vel - vRad * rHat;
-            float vTanLen = length(vTanVec);
-            float eccProxy = abs(vRad) / max(0.08, sqrt(v2));
-
-            // Mild relativistic apsidal precession & stream-crossing shock zone around r ~ 2.2..8.2M
-            float shockZone = smoothstep(8.6, 3.0, r) * smoothstep(0.12, 0.62, eccProxy) * circScale;
-            if (shockZone > 0.01) {
-                // Radiate eccentric radial kinetic energy into heat while settling toward a luminous torus
-                float dampRate = clamp(0.18 * shockZone * dtSub, 0.0, 0.22);
-                vel -= rHat * (vRad * dampRate);
-
-                // Gentle circularization nudge toward local Paczynski-Wiita circular speed
-                float vCirc = min(0.72, sqrt(r / max(0.35, rPw * rPw)));
-                if (vTanLen > 1e-4) {
-                    vec3 tHat = vTanVec / vTanLen;
-                    float targetTan = mix(vTanLen, vCirc, clamp(0.065 * shockZone * dtSub, 0.0, 0.12));
-                    vel += tHat * (targetTan - vTanLen);
-                }
-
-                // Subtle vertical settling toward equatorial orbital plane during circularization shock
-                vel.y *= (1.0 - clamp(0.06 * shockZone * dtSub, 0.0, 0.08));
-                shockFlash = shockZone * (0.65 + 1.40 * v2) * shockGain;
+            // 3. Exact kinetic-energy-preserving Boris Lense-Thirring rotation at midpoint
+            if (uSpinA > 0.001) {
+                vec3 omegaLt = computeLenseThirringOmega(pos, uSpinA);
+                vel = borisRotate(vel, omegaLt, dtSub);
             }
+
+            // 4. Second half drift to x_{n+1}
+            pos += vel * (0.5 * dtSub);
+
+            float r = length(pos);
+            if (r <= uHorizonR * 1.03) {
+                swallowed = true;
+                break;
+            }
+            if (r > 118.0) {
+                escapedFar = true;
+                break;
+            }
+
+            // 5. Second half gravitational (+ hydro pressure) kick at x_{n+1}
+            vec3 a1 = computePwGravity(pos) + hydroPressAcc;
+            vel += a1 * (0.5 * dtSub);
+
+            // Relativistic speed ceiling c = 1
+            float v2 = dot(vel, vel);
+            if (v2 > 0.9025) {
+                vel *= inversesqrt(v2) * 0.95;
+                v2 = 0.9025;
+            }
+
+            // Separated hydrodynamics shock viscosity & thermal dissipation (ONLY when uHydroEnabled == 1)
+            float shockDissipated = 0.0;
+            if (uHydroEnabled == 1 && cellRho > 3.0) {
+                // Momentum-conserving stream-intersection viscosity: relaxes relative velocity toward local cell bulk velocity
+                vec3 vRel = vel - cellBulkVel;
+                float vRel2 = dot(vRel, vRel);
+                if (vRel2 > 1e-4) {
+                    float viscRate = clamp(0.14 * min(1.0, cellRho / 45.0) * dtSub, 0.0, 0.16);
+                    vec3 vNew = vel - vRel * viscRate;
+                    float keBefore = 0.5 * v2;
+                    float keAfter = 0.5 * dot(vNew, vNew);
+                    shockDissipated = max(0.0, keBefore - keAfter);
+                    vel = vNew;
+                    v2 = dot(vel, vel);
+                }
+            }
+
+            // Tidal compression + shock heating vs. physical radiative cooling
+            float tidalGrad = 2.0 / max(2.0, r * r * r);
+            float nozzleComp = 1.0 + 1.25 * exp(-pos.y * pos.y * 3.0) * smoothstep(9.0, 2.5, r);
+            float heat = (tidalGrad * (0.35 + v2) * nozzleComp * 48000.0 * shockGain * dtSub)
+                       + (shockDissipated * 220000.0 * shockGain);
+            // Gentle radiative cooling so hot O-type photospheres & shocked tidal ribbons retain
+            // their physical thermal ionization across the orbital plunge timescale
+            float tRatio = temp / 8000.0;
+            float radCool = (temp - 3000.0) * (0.012 + 0.0035 * tRatio * tRatio) * dtSub;
+            temp = clamp(temp + heat - max(0.0, radCool), 3000.0, 44000.0);
         }
 
-        // Tidal shear + periapsis nozzle-compression + stream self-intersection shock heating
-        float tidalGrad = 2.0 / max(2.0, r * r * r);
-        float nozzleShock = 1.0 + 1.40 * exp(-pos.y * pos.y * 3.0) * smoothstep(7.8, 2.5, r);
-        float shearHeat = (tidalGrad * (0.35 + v2) * nozzleShock * 50000.0 * shockGain
-                         + shockFlash * 26000.0) * dtSub;
-        float coolFloor = (energy >= 0.0) ? 2800.0 : 3600.0;
-        float coolRate = (energy >= 0.0) ? 0.17 : 0.13;
-        float radCool = max(0.0, temp - coolFloor) * coolRate * dtSub;
-        temp = clamp(temp + shearHeat - radCool, 2400.0, 44000.0);
-    }
-
-    if (swallowed || escapedFar) {
-        p.posMass.w = 0.0;
-        particles[idx] = p;
-        if (swallowed) {
-            atomicAdd(swallowedCount, 1u);
-        }
-        return;
-    }
-
-    p.posMass.xyz = pos;
-    p.velTemp.xyz = vel;
-    p.velTemp.w = temp;
-    particles[idx] = p;
-
-    if (uCountSnapshot == 1) {
-        atomicAdd(activeCount, 1u);
-        float rNow = length(pos);
-        float v2Now = dot(vel, vel);
-        float rPwNow = max(0.32, rNow - 0.88 * uHorizonR);
-        float epsNow = 0.5 * v2Now - (1.0 / rPwNow);
-        if (epsNow < 0.0) {
-            atomicAdd(boundCount, 1u);
+        if (swallowed || escapedFar) {
+            p.posMass.w = 0.0;
+            particles[idx] = p;
+            if (swallowed) {
+                atomicAdd(sSwallowed, 1u);
+            }
         } else {
-            atomicAdd(unboundCount, 1u);
+            p.posMass.xyz = pos;
+            p.velTemp.xyz = vel;
+            p.velTemp.w = temp;
+            particles[idx] = p;
+
+            atomicAdd(sActive, 1u);
+            float rNow = length(pos);
+            float v2Now = dot(vel, vel);
+            float rPwNow = max(0.35, rNow - 2.0);
+            float epsNow = 0.5 * v2Now - (1.0 / rPwNow);
+            if (epsNow < 0.0) {
+                atomicAdd(sBound, 1u);
+            } else {
+                atomicAdd(sUnbound, 1u);
+            }
+            if (rNow < 8.5 && temp > 10500.0) {
+                atomicAdd(sShear, 1u);
+            }
+            // Conservation telemetry: specific energy & axial angular momentum L_y = x*vz - z*vx
+            float angMomY = pos.x * vel.z - pos.z * vel.x;
+            atomicAdd(sEnergyFixed, int(clamp(massVal * epsNow * 256.0, -32768.0, 32768.0)));
+            atomicAdd(sAngMomYFixed, int(clamp(massVal * angMomY * 256.0, -32768.0, 32768.0)));
+            atomicMax(sPeakTemp, uint(temp));
         }
-        if (rNow < 8.5 && temp > 10500.0) {
-            atomicAdd(shearCount, 1u);
-        }
+    }
+
+    barrier();
+
+    if (gl_LocalInvocationID.x == 0u) {
+        if (sActive > 0u) atomicAdd(activeCount, sActive);
+        if (sShear > 0u) atomicAdd(shearCount, sShear);
+        if (sBound > 0u) atomicAdd(boundCount, sBound);
+        if (sUnbound > 0u) atomicAdd(unboundCount, sUnbound);
+        if (sSwallowed > 0u) atomicAdd(swallowedCount, sSwallowed);
+        if (sEnergyFixed != 0) atomicAdd(energySumFixed, sEnergyFixed);
+        if (sAngMomYFixed != 0) atomicAdd(angMomYSumFixed, sAngMomYFixed);
+        if (sPeakTemp > 0u) atomicMax(peakTempK, sPeakTemp);
     }
 }

@@ -180,13 +180,15 @@ public final class UiRenderer implements AutoCloseable {
         float nx = (-dy / len) * (thickness * 0.5f);
         float ny = (dx / len) * (thickness * 0.5f);
 
-        putVert(x0 + nx, y0 + ny, 0f, 0f, r, g, b, a, 0f, 0f, 1000f, 1000f, 0f, 0f);
-        putVert(x0 - nx, y0 - ny, 0f, 0f, r, g, b, a, 0f, 0f, 1000f, 1000f, 0f, 0f);
-        putVert(x1 - nx, y1 - ny, 0f, 0f, r, g, b, a, 0f, 0f, 1000f, 1000f, 0f, 0f);
+        float mx = (x0 + x1) * 0.5f;
+        float my = (y0 + y1) * 0.5f;
+        putVert(x0 + nx, y0 + ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
+        putVert(x0 - nx, y0 - ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
+        putVert(x1 - nx, y1 - ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
 
-        putVert(x0 + nx, y0 + ny, 0f, 0f, r, g, b, a, 0f, 0f, 1000f, 1000f, 0f, 0f);
-        putVert(x1 - nx, y1 - ny, 0f, 0f, r, g, b, a, 0f, 0f, 1000f, 1000f, 0f, 0f);
-        putVert(x1 + nx, y1 + ny, 0f, 0f, r, g, b, a, 0f, 0f, 1000f, 1000f, 0f, 0f);
+        putVert(x0 + nx, y0 + ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
+        putVert(x1 - nx, y1 - ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
+        putVert(x1 + nx, y1 + ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
         quadCount++;
     }
 
@@ -272,6 +274,8 @@ public final class UiRenderer implements AutoCloseable {
         quadCount++;
     }
 
+    private boolean closed = false;
+
     private void putVert(float px, float py, float u, float v,
                          float r, float g, float b, float a,
                          float cx, float cy, float hw, float hh,
@@ -285,6 +289,10 @@ public final class UiRenderer implements AutoCloseable {
 
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         MemoryUtil.memFree(vertexBuffer);
         glDeleteTextures(fontTex);
         glDeleteBuffers(vbo);
@@ -331,21 +339,24 @@ public final class UiRenderer implements AutoCloseable {
             }
 
             ByteBuffer pixels = MemoryUtil.memAlloc(expectedBytes);
-            pixels.put(rgba).flip();
+            try {
+                pixels.put(rgba).flip();
 
-            int tex = glGenTextures();
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW, atlasH, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glBindTexture(GL_TEXTURE_2D, 0);
+                int tex = glGenTextures();
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW, atlasH, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glBindTexture(GL_TEXTURE_2D, 0);
 
-            MemoryUtil.memFree(pixels);
-            return new MtsdfAtlas(tex, atlasW, atlasH, cols, cellW, cellH,
-                    pxRange, capTopNorm, capHeightNorm, advNorm);
+                return new MtsdfAtlas(tex, atlasW, atlasH, cols, cellW, cellH,
+                        pxRange, capTopNorm, capHeightNorm, advNorm);
+            } finally {
+                MemoryUtil.memFree(pixels);
+            }
         } catch (IOException e) {
             throw new RuntimeException("Failed to load MTSDF font atlas: " + MTSDF_RESOURCE, e);
         }

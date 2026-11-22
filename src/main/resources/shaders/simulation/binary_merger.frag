@@ -47,6 +47,7 @@ uniform int uLensing;
 uniform int uShowDisk;
 uniform int uShowGrid;
 uniform int uGwOverlay;
+uniform int uDiagMode;
 uniform vec2 uJitter;
 uniform int uFrameIndex;
 
@@ -71,9 +72,25 @@ vec3 sanitizeHdr(vec3 c) {
     return clamp(mix(c, vec3(0.0), bad), vec3(0.0), vec3(48.0));
 }
 
+vec3 turboColormap(float t) {
+    float x = clamp(t, 0.0, 1.0);
+    vec3 c0 = vec3(0.11, 0.08, 0.34);
+    vec3 c1 = vec3(0.09, 0.56, 0.78);
+    vec3 c2 = vec3(0.55, 0.88, 0.24);
+    vec3 c3 = vec3(0.98, 0.55, 0.09);
+    vec3 c4 = vec3(0.84, 0.12, 0.14);
+    if (x < 0.25) return mix(c0, c1, x * 4.0);
+    if (x < 0.50) return mix(c1, c2, (x - 0.25) * 4.0);
+    if (x < 0.75) return mix(c2, c3, (x - 0.50) * 4.0);
+    return mix(c3, c4, (x - 0.75) * 4.0);
+}
+
+// Single-cycle hardware lookup into CIE 1931 Planckian RGBA16F LUT (half-texel inset + Wien rolloff)
 vec3 sampleBlackbody(float tempKelvin) {
     float norm = clamp((tempKelvin - 900.0) * (1.0 / 37100.0), 0.0, 1.0);
-    return texture(uBlackbodyLut, vec2(sqrt(norm), 0.5)).rgb;
+    float u = (0.5 + sqrt(norm) * 511.0) * (1.0 / 512.0);
+    vec4 bb = texture(uBlackbodyLut, vec2(u, 0.5));
+    return bb.rgb * bb.a;
 }
 
 float interleavedGradientNoise(vec2 px) {
@@ -91,11 +108,10 @@ float kerrRadius(vec3 x, float a2) {
     return sqrt(max(1e-4, 0.5 * (b + sqrt(disc))));
 }
 
-// Superposed Kerr-Schild + 1PN gravitomagnetic orbital frame-dragging Hamiltonian:
-//   H_ham = 0.5 * (-pt^2 + |p|^2 - 2 sum_i H_i (-pt + n_i.p)^2 - 2 sum_i H_i pt (v_i.p))
-// Exact canonical derivatives guarantee d(H_ham)/d(lambda) == 0 identically, exact
-// horizon capture at r_i = 2 M_i (independent of velocity v_i, zero static-snapshot
-// ergosphere inflation), and authentic orbital velocity frame-dragging.
+// Superposed Kerr-Schild + exact 1PN gravitomagnetic orbital frame-dragging Hamiltonian:
+//   H_ham = 0.5 * (-pt^2 + |p|^2 - 2 sum_i H_i (-pt + n_i.p)^2 - 4 sum_i H_i pt (v_i.p))
+// Note: analytical superposition approximation (not a 3+1 Numerical Relativity spacetime).
+// Exact canonical derivatives guarantee d(H_ham)/d(lambda) == 0 identically.
 void boostedBodyContrib(vec3 x, vec3 p, float pt,
                         vec3 bodyPos, vec3 bodyVel, float mass, float weight,
                         inout vec3 dxAcc, inout vec3 dpAcc, out float rBody, out float hVal) {
@@ -109,62 +125,85 @@ void boostedBodyContrib(vec3 x, vec3 p, float pt,
     float np = dot(nHat, p);
     float q = -pt + np;
 
-    // Canonical dx/dlambda = +dH_ham/dp
-    dxAcc -= (2.0 * hVal * q) * nHat + (hVal * pt) * bodyVel;
+    // Canonical dx/dlambda = +dH_ham/dp (exact -4 H_i pt (v_i.p) -> -2 H_i pt v_i)
+    dxAcc -= (2.0 * hVal * q) * nHat + (2.0 * hVal * pt) * bodyVel;
 
     // Canonical dp/dlambda = -dH_ham/dx
     vec3 gradH = (-hVal * invR) * nHat;
     vec3 gradNP = (p - np * nHat) * invR;
     float vp = dot(bodyVel, p);
 
-    dpAcc += (q * q + pt * vp) * gradH + (2.0 * hVal * q) * gradNP;
+    dpAcc += (q * q + 2.0 * pt * vp) * gradH + (2.0 * hVal * q) * gradNP;
 }
 
 // Exact spinning Kerr-Schild remnant contribution (active during coalescence & QNM ringdown)
+// Includes full product-rule gradient grad(hBase * qnmMod) so d(H_ham)/d(lambda) == 0 identically!
 void remnantKerrContrib(vec3 x, vec3 p, float pt, float mass, float a, float a2, float weight,
                         inout vec3 dxAcc, inout vec3 dpAcc, out float rRem, out float hRem) {
     rRem = kerrRadius(x, a2);
+    float invR = 1.0 / rRem;
     float r2 = rRem * rRem;
     float D = max(1e-5, r2 * r2 + a2 * x.y * x.y);
     float invD = 1.0 / D;
-
-    // Subtle (l=2, m=2) QNM horizon ringdown quadrupole oscillation
-    float qnmMod = 1.0;
-    if (uRingdownEnv > 0.002) {
-        float rho2 = dot(x.xz, x.xz);
-        float sin2Th = rho2 / max(1e-4, rho2 + x.y * x.y);
-        float cos2Phi = (rho2 > 1e-5) ? ((x.x * x.x - x.z * x.z) / rho2) : 1.0;
-        float sin2Phi = (rho2 > 1e-5) ? ((2.0 * x.x * x.z) / rho2) : 0.0;
-        float cosPhase = cos(uGwPhase) * cos2Phi + sin(uGwPhase) * sin2Phi;
-        qnmMod = 1.0 + 0.065 * uRingdownEnv * sin2Th * cosPhase * exp(-max(0.0, rRem - 1.5) * 0.45);
-    }
-
-    hRem = (mass * weight * qnmMod * r2 * rRem) * invD;
     float S = max(1e-4, r2 + a2);
     float invS = 1.0 / S;
 
+    float hBase = (mass * weight * r2 * rRem) * invD;
+    vec3 gradR = (rRem * invD) * vec3(r2 * x.x, S * x.y, r2 * x.z);
+    vec3 gradHBase = (mass * weight) * (r2 * (3.0 * a2 * x.y * x.y - r2 * r2) * gradR
+                - vec3(0.0, 2.0 * a2 * r2 * rRem * x.y, 0.0)) * (invD * invD);
+
+    // (l=2, m=2) QNM horizon ringdown quadrupole perturbation + exact spatial gradient
+    float qnmMod = 1.0;
+    vec3 gradQnmMod = vec3(0.0);
+    if (uRingdownEnv > 0.002) {
+        float rho2 = dot(x.xz, x.xz);
+        float R2 = max(1e-4, rho2 + x.y * x.y);
+        float invR2 = 1.0 / R2;
+        float sin2Th = rho2 * invR2;
+        float invRho2 = 1.0 / max(1e-5, rho2);
+        float cos2Phi = (rho2 > 1e-5) ? ((x.x * x.x - x.z * x.z) * invRho2) : 1.0;
+        float sin2Phi = (rho2 > 1e-5) ? ((2.0 * x.x * x.z) * invRho2) : 0.0;
+        float cGw = cos(uGwPhase);
+        float sGw = sin(uGwPhase);
+        float cosPhase = cGw * cos2Phi + sGw * sin2Phi;
+        float sinPhase = sGw * cos2Phi - cGw * sin2Phi;
+        float radialDecay = exp(-max(0.0, rRem - 1.5) * 0.45);
+        float amp = 0.065 * uRingdownEnv * radialDecay;
+        float deltaQ = amp * sin2Th * cosPhase;
+        qnmMod = 1.0 + deltaQ;
+
+        // Exact spatial gradient of deltaQ = amp(r) * sin^2(theta) * cos(2*phi - uGwPhase)
+        vec3 gradSin2Th = (2.0 * invR2) * vec3(x.x * (1.0 - sin2Th), -x.y * sin2Th, x.z * (1.0 - sin2Th));
+        vec3 gradPhi = (rho2 > 1e-5) ? (vec3(-x.z, 0.0, x.x) * invRho2) : vec3(0.0);
+        vec3 gradCosPhase = (-2.0 * sinPhase) * gradPhi;
+        float dDecayDr = (rRem > 1.5) ? (-0.45 * radialDecay) : 0.0;
+        gradQnmMod = (amp * cosPhase) * gradSin2Th
+                   + (amp * sin2Th) * gradCosPhase
+                   + (0.065 * uRingdownEnv * sin2Th * cosPhase * dDecayDr) * gradR;
+    }
+
+    hRem = hBase * qnmMod;
+    vec3 gradH = gradHBase * qnmMod + hBase * gradQnmMod;
+
     vec3 lVec = vec3(
         (rRem * x.x + a * x.z) * invS,
-        x.y / rRem,
+        x.y * invR,
         (rRem * x.z - a * x.x) * invS
     );
 
     float q = -pt + dot(lVec, p);
     dxAcc -= (2.0 * hRem * q) * lVec;
 
-    vec3 gradR = (rRem * invD) * vec3(r2 * x.x, S * x.y, r2 * x.z);
-    vec3 gradH = (mass * weight * qnmMod) * (r2 * (3.0 * a2 * x.y * x.y - r2 * r2) * gradR
-                - vec3(0.0, 2.0 * a2 * r2 * rRem * x.y, 0.0)) * (invD * invD);
-
     float xpZp = x.x * p.x + x.z * p.z;
     float zpxXpz = x.z * p.x - x.x * p.z;
     vec3 directLP = vec3(
         (rRem * p.x - a * p.z) * invS,
-        p.y / rRem,
+        p.y * invR,
         (rRem * p.z + a * p.x) * invS
     );
     float dlpDr = ((a2 - r2) * xpZp - 2.0 * a * rRem * zpxXpz) * (invS * invS)
-                - (x.y * p.y) / r2;
+                - (x.y * p.y) * (invR * invR);
     vec3 gradLP = directLP + dlpDr * gradR;
 
     dpAcc += (q * q) * gradH + (2.0 * hRem * q) * gradLP;
@@ -195,35 +234,67 @@ void binaryHamiltonDeriv(vec3 x, vec3 p, float pt,
     }
 }
 
+// Full VGPR-optimized 4th-order RK4 (eliminates abrupt RK4->RK2 switch at r = 4.6M)
 void binaryGeodesicStep(inout vec3 x, inout vec3 p, float h, float pt,
-                        float aRem, float aRem2, float rNear,
+                        float aRem, float aRem2,
                         inout vec3 dxNow, inout vec3 dpNow,
                         out float r1, out float r2, out float rRem, out float hSum) {
-    vec3 k1x = dxNow;
-    vec3 k1p = dpNow;
-    vec3 k2x, k2p;
+    vec3 accX = dxNow;
+    vec3 accP = dpNow;
+    vec3 kx, kp;
     float t1, t2, tR, tH;
-    binaryHamiltonDeriv(x + (0.5 * h) * k1x, p + (0.5 * h) * k1p, pt,
-                        aRem, aRem2, k2x, k2p, t1, t2, tR, tH);
 
-    if (rNear > 4.6) {
-        // Weak-field RK2 midpoint
-        x += h * k2x;
-        p += h * k2p;
-        binaryHamiltonDeriv(x, p, pt, aRem, aRem2, dxNow, dpNow, r1, r2, rRem, hSum);
-    } else {
-        // Strong-field FSAL RK4 preserves crisp mutual secondary eyebrow lensing arcs
-        vec3 k3x, k3p, k4x, k4p;
-        binaryHamiltonDeriv(x + (0.5 * h) * k2x, p + (0.5 * h) * k2p, pt,
-                            aRem, aRem2, k3x, k3p, t1, t2, tR, tH);
-        binaryHamiltonDeriv(x + h * k3x, p + h * k3p, pt,
-                            aRem, aRem2, k4x, k4p, t1, t2, tR, tH);
+    binaryHamiltonDeriv(x + (0.5 * h) * dxNow, p + (0.5 * h) * dpNow, pt,
+                        aRem, aRem2, kx, kp, t1, t2, tR, tH);
+    accX += 2.0 * kx;
+    accP += 2.0 * kp;
 
-        float h6 = h * (1.0 / 6.0);
-        x += h6 * (k1x + 2.0 * k2x + 2.0 * k3x + k4x);
-        p += h6 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
-        binaryHamiltonDeriv(x, p, pt, aRem, aRem2, dxNow, dpNow, r1, r2, rRem, hSum);
+    binaryHamiltonDeriv(x + (0.5 * h) * kx, p + (0.5 * h) * kp, pt,
+                        aRem, aRem2, kx, kp, t1, t2, tR, tH);
+    accX += 2.0 * kx;
+    accP += 2.0 * kp;
+
+    binaryHamiltonDeriv(x + h * kx, p + h * kp, pt,
+                        aRem, aRem2, kx, kp, t1, t2, tR, tH);
+    accX += kx;
+    accP += kp;
+
+    float h6 = h * (1.0 / 6.0);
+    x += h6 * accX;
+    p += h6 * accP;
+    binaryHamiltonDeriv(x, p, pt, aRem, aRem2, dxNow, dpNow, r1, r2, rRem, hSum);
+}
+
+// Evaluates exact binary null Hamiltonian H_ham = 0.5 * g^{mu nu} p_mu p_nu for camera null-constraint solving
+float binaryHamiltonianVal(vec3 x, vec3 p, float pt, float aRem, float aRem2) {
+    float val = -pt * pt + dot(p, p);
+    float wBin = 1.0 - uMergeBlend;
+    if (wBin > 0.001) {
+        vec3 d1 = x - uPos1;
+        float r1 = sqrt(max(1e-5, dot(d1, d1)));
+        vec3 n1 = d1 / r1;
+        float h1 = (uMass1 * wBin) / r1;
+        float q1 = -pt + dot(n1, p);
+        val -= 2.0 * h1 * (q1 * q1 + 2.0 * pt * dot(uVel1, p));
+
+        vec3 d2 = x - uPos2;
+        float r2 = sqrt(max(1e-5, dot(d2, d2)));
+        vec3 n2 = d2 / r2;
+        float h2 = (uMass2 * wBin) / r2;
+        float q2 = -pt + dot(n2, p);
+        val -= 2.0 * h2 * (q2 * q2 + 2.0 * pt * dot(uVel2, p));
     }
+    if (uMergeBlend > 0.001) {
+        float rRem = kerrRadius(x, aRem2);
+        float r2 = rRem * rRem;
+        float D = max(1e-5, r2 * r2 + aRem2 * x.y * x.y);
+        float hR = (uRemnantMass * uMergeBlend * r2 * rRem) / D;
+        float invS = 1.0 / max(1e-4, r2 + aRem2);
+        vec3 lR = vec3((rRem * x.x + aRem * x.z) * invS, x.y / rRem, (rRem * x.z - aRem * x.x) * invS);
+        float qR = -pt + dot(lR, p);
+        val -= 2.0 * hR * qR * qR;
+    }
+    return 0.5 * val;
 }
 
 vec3 intersectEquatorialHermite(vec3 x0, vec3 dx0, vec3 x1, vec3 dx1, float h, out float tHit) {
@@ -551,7 +622,7 @@ void main() {
     float rCam = length(uCamPos);
     float rEscape = max(42.0, rCam + 6.0);
 
-    // Local static-shell camera tetrad at rCam (far exterior M_tot = 1)
+    // Exact static camera initialization solving H_binary(uCamPos, pt=1, p) == 0 via 3 Newton steps
     float hCam = 1.0 / max(2.2, rCam);
     vec3 lCam = safeNormalize(uCamPos, vec3(0.0, 0.0, 1.0));
     vec3 p;
@@ -563,6 +634,17 @@ void main() {
         vec3 dPerp = vLocal - dl * lCam;
         p = dPerp / alpha + ((dl - 2.0 * hCam) / (alpha * alpha)) * lCam;
         obsFreq = 1.0 / alpha;
+        // Refine momentum scale along p so H_binary(x_cam, pt=1, s*p) = 0 to float32 precision
+        for (int ni = 0; ni < 3; ni++) {
+            float fH = binaryHamiltonianVal(uCamPos, p, pt, aRem, aRem2);
+            vec3 dHdp, tmpDp;
+            float tr1, tr2, trR, thS;
+            binaryHamiltonDeriv(uCamPos, p, pt, aRem, aRem2, dHdp, tmpDp, tr1, tr2, trR, thS);
+            float denom = dot(dHdp, p);
+            if (abs(denom) > 1e-5) {
+                p *= clamp(1.0 - fH / denom, 0.75, 1.25);
+            }
+        }
     } else {
         p = vLocal;
     }
@@ -576,21 +658,13 @@ void main() {
     bool hasHit = false;
     vec3 dominantPos = vec3(0.0);
     vec3 dominantVel = vec3(0.0);
-    float hitDist = 1e5;
+    float hitDist = 16384.0; // FP16-safe finite sky sentinel
+    float maxHamErr = 0.0;
+    int stepsUsed = 0;
 
-    // Fast analytic weak-field shortcut for far corner rays outside disk & binary lensing shell
+    // Smooth geodesic traversal for all rays (eliminates weak-field shortcut seam & leapfrog jump)
     vec3 x = uCamPos;
-    float bProj = dot(-x, vLocal);
-    float bSq = max(0.0, dot(x, x) - bProj * bProj);
-    if (uLensing == 1 && uGwOverlay == 0 && rCam > R_SHELL + 1.0 && (bProj <= 0.0 || bSq > (R_SHELL + 1.0) * (R_SHELL + 1.0))) {
-        float b = sqrt(max(1.0, bSq));
-        vec3 bVec = x + vLocal * max(0.0, bProj);
-        float defl = (bProj > 0.0)
-                ? (4.0 / b + 11.78097 / (b * b))
-                : (2.0 * max(0.0, 1.0 - dot(lCam, vLocal)) / max(1.0, rCam));
-        exitDir = safeNormalize(vLocal - safeNormalize(bVec, vec3(0.0, 1.0, 0.0)) * defl, vLocal);
-        escaped = true;
-    } else {
+    {
         float frameShift = float(uFrameIndex & 63) * 5.588238;
         float ign = interleavedGradientNoise(gl_FragCoord.xy + vec2(frameShift));
 
@@ -603,16 +677,6 @@ void main() {
 
         if (uLensing == 1) {
             binaryHamiltonDeriv(x, p, pt, aRem, aRem2, dxNow, dpNow, r1, r2, rRem, hSum);
-
-            // Single analytic leapfrog jump across empty exterior space to R_SHELL
-            if (rCam > R_SHELL + 1.5 && bProj > 0.0 && bSq < R_SHELL * R_SHELL) {
-                float tSkip = max(0.0, bProj - sqrt(max(0.0, R_SHELL * R_SHELL - bSq))) * 0.90;
-                if (tSkip > 1.0) {
-                    float hSkip = tSkip / max(1.0, length(dxNow));
-                    binaryGeodesicStep(x, p, hSkip, pt, aRem, aRem2, min(r1, r2),
-                                       dxNow, dpNow, r1, r2, rRem, hSum);
-                }
-            }
         }
 
         int diskCrossings = 0;
@@ -727,8 +791,12 @@ void main() {
             if (uLensing == 1) {
                 float pNorm = sqrt(pNormSq);
                 hStep = dsCoord / max(1.0, max(speed, pNorm * 0.45));
-                binaryGeodesicStep(x, p, hStep, pt, aRem, aRem2, rNear,
+                binaryGeodesicStep(x, p, hStep, pt, aRem, aRem2,
                                    dxNow, dpNow, r1, r2, rRem, hSum);
+                stepsUsed = step + 1;
+                if (uDiagMode == 1) {
+                    maxHamErr = max(maxHamErr, abs(binaryHamiltonianVal(x, p, pt, aRem, aRem2)));
+                }
             } else {
                 hStep = dsCoord;
                 x += dxNow * hStep;
@@ -781,13 +849,17 @@ void main() {
                             float g3 = gFactor * gFactor * gFactor;
                             float intensityBoost = (g3 / (1.0 + 0.06 * g3)) * shockBoost;
                             float emitSuppression = 1.0 - 0.70 * dust;
-                            float emission = density * intensityBoost * emitSuppression * stepWeight * 0.78;
-                            float opacity = clamp(density * stepWeight * (0.56 + 1.15 * dust), 0.0, 0.96);
+                            // Energy-conserving Beer-Lambert homogeneous slab radiative transfer
+                            float sigmaT = max(1e-4, density * (0.64 + 1.20 * dust));
+                            float tau = sigmaT * stepWeight;
+                            float stepTrans = exp(-tau);
+                            float alphaStep = 1.0 - stepTrans;
+                            float srcGain = (0.94 * intensityBoost * emitSuppression) / (0.64 + 1.20 * dust);
 
-                            accumColor += transmittance * emission * emitCol;
-                            transmittance *= (1.0 - opacity);
+                            accumColor += transmittance * (srcGain * alphaStep) * emitCol;
+                            transmittance *= stepTrans;
 
-                            if (!hasHit && opacity > 0.045) {
+                            if (!hasHit && alphaStep > 0.05) {
                                 hasHit = true;
                                 dominantPos = hitP;
                                 dominantVel = vPlasma;
@@ -814,9 +886,17 @@ void main() {
     vec3 ddx = rawDdx * min(1.0, maxGrad / max(1e-6, length(rawDdx)));
     vec3 ddy = rawDdy * min(1.0, maxGrad / max(1e-6, length(rawDdy)));
 
-    vec3 finalCol = accumColor;
-    if (escaped && transmittance > 0.005) {
-        finalCol += transmittance * sampleSkyWithGrid(skyDir, ddx, ddy);
+    vec3 finalCol;
+    if (uDiagMode == 1) {
+        float logErr = log(max(1e-7, maxHamErr)) / log(10.0);
+        finalCol = turboColormap((logErr + 7.0) / 5.0);
+    } else if (uDiagMode == 2) {
+        finalCol = turboColormap(float(stepsUsed) / float(MAX_STEPS));
+    } else {
+        finalCol = accumColor;
+        if (escaped && transmittance > 0.005) {
+            finalCol += transmittance * sampleSkyWithGrid(skyDir, ddx, ddy);
+        }
     }
 
     // Compute exact differential screen-space TAA motion vector (FragVelocity = curProjUv - prevProjUv)

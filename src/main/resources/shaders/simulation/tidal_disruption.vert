@@ -30,7 +30,9 @@ out float vTempNorm;
 
 vec3 sampleBlackbody(float tempKelvin) {
     float norm = clamp((tempKelvin - 900.0) * (1.0 / 37100.0), 0.0, 1.0);
-    return texture(uBlackbodyLut, vec2(sqrt(norm), 0.5)).rgb;
+    float u = (0.5 + sqrt(norm) * 511.0) * (1.0 / 512.0);
+    vec4 bb = texture(uBlackbodyLut, vec2(u, 0.5));
+    return bb.rgb * bb.a;
 }
 
 void discardQuad() {
@@ -116,27 +118,26 @@ void main() {
         yCam / (zCam * uTanHalfFov) - (uJitter.y * 2.0 / uResolution.y)
     );
 
-    // Physical relativistic Doppler beaming + gravitational redshift
+    // Physical relativistic Doppler beaming + Schwarzschild/Kerr gravitational redshift sqrt(1 - 2M/r)
     float r = max(uHorizonR * 1.02, length(pos));
     float beta = min(0.82, length(vel));
     float gFactor = 1.0;
     if (uDoppler == 1) {
-        float cosAng = (beta > 1e-4) ? dot(vel / beta, -rayDir) : 0.0;
+        float cosAng = (beta > 1e-4) ? dot(vel / beta, -apparentDir) : 0.0;
         float gamma = inversesqrt(max(0.12, 1.0 - beta * beta));
-        float gravShift = sqrt(max(0.18, 1.0 - uHorizonR / r));
+        float gravShift = sqrt(max(0.12, 1.0 - min(0.88, 2.0 / max(2.05, r))));
         gFactor = clamp(gravShift / (gamma * (1.0 - beta * cosAng)), 0.20, 2.60);
     }
 
     uint slot = (uint(gl_InstanceID) >> 16u) & 1u;
     vec4 slotStyle = uSlotStyle[slot];
 
-    float baseTemp = mix(1450.0, p.velTemp.w * 0.72, 0.82);
-    float obsTemp = baseTemp * gFactor;
+    float obsTemp = p.velTemp.w * gFactor;
     float g3 = gFactor * gFactor * gFactor;
     float boost = g3 / (1.0 + 0.38 * g3);
 
     float tempNorm = clamp((p.velTemp.w - 3000.0) / 18000.0, 0.0, 1.5);
-    vColor = sampleBlackbody(obsTemp) * slotStyle.rgb * boost * (0.24 + 0.88 * tempNorm);
+    vColor = sampleBlackbody(obsTemp) * slotStyle.rgb * boost * (0.50 + 1.28 * tempNorm);
     vTempNorm = tempNorm;
     vWorldPos = pos;
 
@@ -149,15 +150,15 @@ void main() {
     vec2 perp2D = vec2(-dir2D.y, dir2D.x);
 
     // Cohesive sphere before Roche crossing; stretches into smooth silky plasma ribbons inside r < 14M
-    float tidalStrain = clamp(220.0 / (r * r * r), 0.0, 1.0);
-    float screenSpeedFactor = clamp(svLen / max(0.8, zCam * 0.14), 0.30, 1.0);
-    float stretch = (1.0 + (1.45 + 2.15 * beta) * smoothstep(0.08, 0.72, tidalStrain) * screenSpeedFactor) * lensStretch;
-    stretch = clamp(stretch, 1.0, 3.6);
+    float tidalStrain = clamp(240.0 / (r * r * r), 0.0, 1.0);
+    float screenSpeedFactor = clamp(svLen / max(0.8, zCam * 0.12), 0.38, 1.0);
+    float stretch = (1.0 + (2.10 + 2.85 * beta) * smoothstep(0.05, 0.65, tidalStrain) * screenSpeedFactor) * lensStretch;
+    stretch = clamp(stretch, 1.0, 5.2);
 
     // Generous volumetric overlap eliminates sandy point-sprite grain and weaves a fluid stream
     float pxScale = (uResolution.y * 0.5) / max(0.25, zCam * uTanHalfFov);
-    float halfW = clamp(pxScale * (0.112 + 0.058 * tempNorm) * slotStyle.a, 3.2, 14.5);
-    float halfL = clamp(halfW * stretch, halfW, 30.0);
+    float halfW = clamp(pxScale * (0.155 + 0.075 * tempNorm) * slotStyle.a, 4.6, 20.5);
+    float halfL = clamp(halfW * stretch, halfW, 50.0);
 
     // Expand instanced triangle-strip quad aligned to screen-space plasma flow
     vec2 corner = vec2(float((gl_VertexID & 1) * 2 - 1),
@@ -169,6 +170,6 @@ void main() {
     vLocalUv = corner;
 
     // Conserve integrated volumetric radiance as ribbons overlap and elongate
-    float areaNorm = 1.0 / (0.82 + 0.48 * stretch);
-    vAlpha = clamp((0.024 + 0.036 * tempNorm) * areaNorm, 0.010, 0.072) * shadowFade;
+    float areaNorm = 1.0 / (0.68 + 0.24 * stretch);
+    vAlpha = clamp((0.042 + 0.062 * tempNorm) * areaNorm, 0.020, 0.125) * shadowFade;
 }

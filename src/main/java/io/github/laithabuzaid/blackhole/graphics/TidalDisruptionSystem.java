@@ -3,9 +3,9 @@ package io.github.laithabuzaid.blackhole.graphics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import io.github.laithabuzaid.blackhole.core.StellarArchetype;
+import io.github.laithabuzaid.blackhole.math.TdeInitialConditions;
 import org.lwjgl.system.MemoryUtil;
 
-import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 
@@ -16,10 +16,20 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  * OpenGL 4.3 Compute Shader Tidal Disruption Event (TDE Lab) solver and HDR volumetric
  * plasma ribbon renderer.
  *
- * <p>Supports 4 distinct {@link StellarArchetype} classes, interactive penetration factor
- * {@code beta = r_t / r_p}, orbital inclination {@code [-65°, +65°]}, physics-safe fixed
- * sub-stepping up to {@code 25×} timelapse, Paczyński–Wiita bound/unbound energy dynamics
- * with shock circularization, and zero-stall ping-pong GPU atomic counter readback.</p>
+ * <p><b>v2.0 Physics &amp; GPU Architecture:</b>
+ * <ul>
+ *   <li>Standard Paczynski-Wiita potential ({@code V = -1/(r - 2M)}) paired with exact
+ *       kinetic-energy-preserving Boris rotation for Kerr Lense-Thirring precession
+ *       (zero artificial azimuthal thrust).</li>
+ *   <li>Cleanly separated, toggleable {@code 64^3} GPU Eulerian-Lagrangian hydrodynamic grid
+ *       ({@code tidal_hydro_splat.comp} -&gt; {@code tidal_disruption.comp}) providing polytropic
+ *       pressure gradients ({@code -grad P / rho}) and momentum-conserving stream-intersection
+ *       shock viscosity vs. Pure Gravity Conservation Mode.</li>
+ *   <li>Single-dispatch in-shader substep loop (eliminating 14x-760x redundant SSBO traffic),
+ *       256-thread workgroup {@code shared} atomic reductions, explicit
+ *       {@code GL_BUFFER_UPDATE_BARRIER_BIT} before async readback, and GPU-side
+ *       {@code glClearBufferData} zeroing.</li>
+ * </ul>
  */
 public final class TidalDisruptionSystem implements AutoCloseable {
 
@@ -29,12 +39,15 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private static final int FLOATS_PER_PARTICLE = 8; // posMass(4) + velTemp(4)
     private static final int WORKGROUP_SIZE = 256;
     private static final float TDE_TIME_SCALE = 6.5f;
-    private static final int COUNTER_UINTS = 5; // active, shear, bound, unbound, swallowed
+    private static final int COUNTER_UINTS = 8; // active, shear, bound, unbound, swallowed, energyFixed, angMomYFixed, peakTempK
+    private static final int HYDRO_GRID_CELLS = 64 * 64 * 64; // 262,144 cells * 16 bytes = 4 MiB
 
+    private final ShaderProgram hydroSplatProgram;
     private final ShaderProgram computeProgram;
     private final ShaderProgram renderProgram;
 
     private final int particleSsbo;
+    private final int hydroGridSsbo;
     private final int[] counterSsbos = new int[2];
     private final long[] counterFences = new long[2];
     private int counterWriteIdx = 0;
@@ -46,18 +59,20 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private final FloatBuffer slotShockBetaBuf;
     private final FloatBuffer slotStyleBuf;
 
-    // Per-slot archetype metadata (2 concurrent stars can be different stellar classes)
+    // Per-slot archetype metadata
     private final StellarArchetype[] slotArchetype = {
             StellarArchetype.SOLAR_MAIN_SEQ, StellarArchetype.SOLAR_MAIN_SEQ
     };
     private final float[] slotBeta = {1.55f, 1.55f};
 
     // Cached compute uniform locations
+    private final int uSplatParticleCount;
     private final int uCompParticleCount;
     private final int uCompDt;
+    private final int uCompSubsteps;
     private final int uCompSpinA;
     private final int uCompHorizonR;
-    private final int uCompCountSnapshot;
+    private final int uCompHydroEnabled;
     private final int uCompSlotShockBeta;
 
     // Cached render uniform locations
@@ -78,6 +93,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
 
     private int nextSlot = 0;
     private int spawnCounter = 0;
+    private int activeSlotCount = 0;
     private boolean hasAnyParticles = false;
     private int activeParticles = 0;
     private int boundParticles = 0;
@@ -85,160 +101,139 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private int totalSwallowedParticles = 0;
     private float shearEnergy = 0.0f;
     private float horizonAccretionSurge = 0.0f;
-
-    // Deterministic fast PRNG state (zero heap allocation)
-    private long rngState = 0x5DEECE66DL;
+    private float totalSpecificEnergy = 0.0f;
+    private float totalAngularMomentumY = 0.0f;
+    private int peakTemperatureK = 0;
+    private int lastSubstepsPerFrame = 0;
+    private double particleStepsPerSec = 0.0;
+    private long rngState = TdeInitialConditions.DEFAULT_SEED;
+    private boolean closed = false;
 
     public TidalDisruptionSystem() {
-        this.computeProgram = ShaderProgram.fromComputeResource("/shaders/simulation/tidal_disruption.comp");
-        this.renderProgram = ShaderProgram.fromResources("/shaders/simulation/tidal_disruption.vert", "/shaders/simulation/tidal_disruption.frag");
+        ShaderProgram splat = null;
+        ShaderProgram comp = null;
+        ShaderProgram rend = null;
+        int vao = 0;
+        int pSsbo = 0;
+        int hSsbo = 0;
+        FloatBuffer spawnBuf = null;
+        IntBuffer cntBuf = null;
+        FloatBuffer sbBuf = null;
+        FloatBuffer stBuf = null;
+        boolean ok = false;
+        try {
+            splat = ShaderProgram.fromComputeResource("/shaders/simulation/tidal_hydro_splat.comp");
+            comp = ShaderProgram.fromComputeResource("/shaders/simulation/tidal_disruption.comp");
+            rend = ShaderProgram.fromResources("/shaders/simulation/tidal_disruption.vert",
+                    "/shaders/simulation/tidal_disruption.frag");
 
-        this.emptyVao = glGenVertexArrays();
+            vao = glGenVertexArrays();
 
-        this.particleSsbo = glGenBuffers();
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleSsbo);
-        long particleBytes = (long) TOTAL_PARTICLES * FLOATS_PER_PARTICLE * Float.BYTES;
-        glBufferData(GL_SHADER_STORAGE_BUFFER, particleBytes, GL_DYNAMIC_DRAW);
-        ByteBuffer zeroInit = MemoryUtil.memCalloc((int) particleBytes);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, zeroInit);
-        MemoryUtil.memFree(zeroInit);
+            pSsbo = glGenBuffers();
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, pSsbo);
+            long particleBytes = (long) TOTAL_PARTICLES * FLOATS_PER_PARTICLE * Float.BYTES;
+            glBufferData(GL_SHADER_STORAGE_BUFFER, particleBytes, GL_DYNAMIC_DRAW);
+            glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
 
-        // Ping-pong GPU atomic counter SSBOs for stall-free asynchronous telemetry readback
-        for (int i = 0; i < 2; i++) {
-            counterSsbos[i] = glGenBuffers();
-            counterFences[i] = NULL;
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSsbos[i]);
-            glBufferData(GL_SHADER_STORAGE_BUFFER, (long) COUNTER_UINTS * Integer.BYTES, GL_DYNAMIC_READ);
+            hSsbo = glGenBuffers();
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, hSsbo);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, (long) HYDRO_GRID_CELLS * 4L * Integer.BYTES, GL_DYNAMIC_DRAW);
+            glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+
+            for (int i = 0; i < 2; i++) {
+                counterSsbos[i] = glGenBuffers();
+                counterFences[i] = NULL;
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSsbos[i]);
+                glBufferData(GL_SHADER_STORAGE_BUFFER, (long) COUNTER_UINTS * Integer.BYTES, GL_DYNAMIC_READ);
+                glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+            }
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+            spawnBuf = MemoryUtil.memAllocFloat(PARTICLES_PER_STAR * FLOATS_PER_PARTICLE);
+            cntBuf = MemoryUtil.memAllocInt(COUNTER_UINTS);
+            sbBuf = MemoryUtil.memAllocFloat(MAX_STAR_SLOTS * 2);
+            stBuf = MemoryUtil.memAllocFloat(MAX_STAR_SLOTS * 4);
+
+            this.hydroSplatProgram = splat;
+            this.computeProgram = comp;
+            this.renderProgram = rend;
+            this.emptyVao = vao;
+            this.particleSsbo = pSsbo;
+            this.hydroGridSsbo = hSsbo;
+            this.spawnStaging = spawnBuf;
+            this.readCounters = cntBuf;
+            this.slotShockBetaBuf = sbBuf;
+            this.slotStyleBuf = stBuf;
+            syncSlotUniformBuffers();
+
+            this.uSplatParticleCount = hydroSplatProgram.uniformLocation("uParticleCount");
+            this.uCompParticleCount = computeProgram.uniformLocation("uParticleCount");
+            this.uCompDt = computeProgram.uniformLocation("uDt");
+            this.uCompSubsteps = computeProgram.uniformLocation("uSubsteps");
+            this.uCompSpinA = computeProgram.uniformLocation("uSpinA");
+            this.uCompHorizonR = computeProgram.uniformLocation("uHorizonR");
+            this.uCompHydroEnabled = computeProgram.uniformLocation("uHydroEnabled");
+            this.uCompSlotShockBeta = computeProgram.uniformLocation("uSlotShockBeta");
+
+            this.uRendResolution = renderProgram.uniformLocation("uResolution");
+            this.uRendCamPos = renderProgram.uniformLocation("uCamPos");
+            this.uRendCamForward = renderProgram.uniformLocation("uCamForward");
+            this.uRendCamRight = renderProgram.uniformLocation("uCamRight");
+            this.uRendCamUp = renderProgram.uniformLocation("uCamUp");
+            this.uRendBlackbodyLut = renderProgram.uniformLocation("uBlackbodyLut");
+            this.uRendNoiseVol = renderProgram.uniformLocation("uNoiseVol");
+            this.uRendTime = renderProgram.uniformLocation("uTime");
+            this.uRendTanHalfFov = renderProgram.uniformLocation("uTanHalfFov");
+            this.uRendSpinA = renderProgram.uniformLocation("uSpinA");
+            this.uRendHorizonR = renderProgram.uniformLocation("uHorizonR");
+            this.uRendDoppler = renderProgram.uniformLocation("uDoppler");
+            this.uRendJitter = renderProgram.uniformLocation("uJitter");
+            this.uRendSlotStyle = renderProgram.uniformLocation("uSlotStyle");
+
+            ShaderProgram.checkGlError("TidalDisruptionSystem.init");
+            ok = true;
+        } finally {
+            if (!ok) {
+                if (spawnBuf != null) MemoryUtil.memFree(spawnBuf);
+                if (cntBuf != null) MemoryUtil.memFree(cntBuf);
+                if (sbBuf != null) MemoryUtil.memFree(sbBuf);
+                if (stBuf != null) MemoryUtil.memFree(stBuf);
+                if (pSsbo != 0) glDeleteBuffers(pSsbo);
+                if (hSsbo != 0) glDeleteBuffers(hSsbo);
+                for (int i = 0; i < 2; i++) {
+                    if (counterSsbos[i] != 0) glDeleteBuffers(counterSsbos[i]);
+                }
+                if (vao != 0) glDeleteVertexArrays(vao);
+                if (splat != null) splat.close();
+                if (comp != null) comp.close();
+                if (rend != null) rend.close();
+            }
         }
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        this.spawnStaging = MemoryUtil.memAllocFloat(PARTICLES_PER_STAR * FLOATS_PER_PARTICLE);
-        this.readCounters = MemoryUtil.memAllocInt(COUNTER_UINTS);
-        this.slotShockBetaBuf = MemoryUtil.memAllocFloat(MAX_STAR_SLOTS * 2);
-        this.slotStyleBuf = MemoryUtil.memAllocFloat(MAX_STAR_SLOTS * 4);
-        syncSlotUniformBuffers();
-
-        this.uCompParticleCount = computeProgram.uniformLocation("uParticleCount");
-        this.uCompDt = computeProgram.uniformLocation("uDt");
-        this.uCompSpinA = computeProgram.uniformLocation("uSpinA");
-        this.uCompHorizonR = computeProgram.uniformLocation("uHorizonR");
-        this.uCompCountSnapshot = computeProgram.uniformLocation("uCountSnapshot");
-        this.uCompSlotShockBeta = computeProgram.uniformLocation("uSlotShockBeta");
-
-        this.uRendResolution = renderProgram.uniformLocation("uResolution");
-        this.uRendCamPos = renderProgram.uniformLocation("uCamPos");
-        this.uRendCamForward = renderProgram.uniformLocation("uCamForward");
-        this.uRendCamRight = renderProgram.uniformLocation("uCamRight");
-        this.uRendCamUp = renderProgram.uniformLocation("uCamUp");
-        this.uRendBlackbodyLut = renderProgram.uniformLocation("uBlackbodyLut");
-        this.uRendNoiseVol = renderProgram.uniformLocation("uNoiseVol");
-        this.uRendTime = renderProgram.uniformLocation("uTime");
-        this.uRendTanHalfFov = renderProgram.uniformLocation("uTanHalfFov");
-        this.uRendSpinA = renderProgram.uniformLocation("uSpinA");
-        this.uRendHorizonR = renderProgram.uniformLocation("uHorizonR");
-        this.uRendDoppler = renderProgram.uniformLocation("uDoppler");
-        this.uRendJitter = renderProgram.uniformLocation("uJitter");
-        this.uRendSlotStyle = renderProgram.uniformLocation("uSlotStyle");
-
-        ShaderProgram.checkGlError("TidalDisruptionSystem.init");
     }
 
     /**
-     * Spawns a cohesive 65,536-particle star matching the selected {@link StellarArchetype},
-     * penetration factor {@code beta = r_t / r_p}, and orbital inclination into the 2-slot
-     * SSBO ring buffer with zero Java heap allocations.
+     * Spawns a deterministic, centrally concentrated 65,536-particle star matching the selected
+     * {@link StellarArchetype}, penetration factor {@code beta}, and orbital inclination with zero
+     * Java heap allocations.
      */
     public void spawnStar(SimulationState state) {
         int slot = nextSlot;
         nextSlot = (nextSlot + 1) % MAX_STAR_SLOTS;
         int variant = spawnCounter++;
+        activeSlotCount = Math.min(MAX_STAR_SLOTS, activeSlotCount + 1);
 
         StellarArchetype arch = state.currentTdeArchetype();
         float beta = StellarArchetype.clampBeta(state.tdeBeta);
-        double incRad = Math.toRadians(StellarArchetype.clampInclinationDeg(state.tdeInclinationDeg));
+        float incDeg = StellarArchetype.clampInclinationDeg(state.tdeInclinationDeg);
 
         slotArchetype[slot] = arch;
         slotBeta[slot] = beta;
         syncSlotUniformBuffers();
 
-        double rPlus = state.outerHorizonRadius();
-        double rEff = 0.88 * rPlus;
-        double rP = arch.computePeriapsis(beta, rPlus);
-        double startR = Math.max(13.8, Math.min(22.5, arch.tidalRadius * 2.15 + (variant % 2) * 0.8));
-
-        // Vary entry azimuth cleanly across consecutive launches
-        double azimuth = 0.52 + (variant % 5) * 1.18;
-        double cosAz = Math.cos(azimuth);
-        double sinAz = Math.sin(azimuth);
-
-        // Launch center on the orbital entry radius with orthonormal radial & inclined prograde tangent
-        double rx = cosAz, ry = 0.0, rz = sinAz;
-        double cx = startR * rx;
-        double cy = 0.0;
-        double cz = startR * rz;
-
-        double cosInc = Math.cos(incRad);
-        double sinInc = Math.sin(incRad);
-        // Prograde equatorial tangent (-sinAz, 0, cosAz) tilted by user orbital inclination
-        double tx = -sinAz * cosInc;
-        double ty = sinInc;
-        double tz = cosAz * cosInc;
-
-        // Exact near-parabolic Paczynski-Wiita grazing velocity targeting periapsis r_p = r_t / beta
-        double phiP = -1.0 / Math.max(0.35, rP - rEff);
-        double phi0 = -1.0 / Math.max(0.35, startR - rEff);
-        // Slightly bound center-of-mass energy so inner half binds & circularizes while outer half escapes
-        double eps0 = (beta > 2.2f) ? -0.008 : -0.003;
-        double vPSq = Math.max(0.02, 2.0 * (eps0 - phiP));
-        double angMomL = rP * Math.sqrt(vPSq);
-        double v0Sq = Math.max(0.02, 2.0 * (eps0 - phi0));
-        double vTan = Math.min(Math.sqrt(v0Sq) * 0.94, angMomL / startR);
-        double vRadIn = -Math.sqrt(Math.max(0.002, v0Sq - vTan * vTan));
-
-        double vBaseX = tx * vTan + rx * vRadIn;
-        double vBaseY = ty * vTan + ry * vRadIn;
-        double vBaseZ = tz * vTan + rz * vRadIn;
-
-        double starRadius = arch.starRadius;
-        double densExp = arch.densityExponent;
-        double baseTemp = arch.photosphereTempK;
-        double tempSpan = arch.coreTempK - arch.photosphereTempK;
-        // Tighter internal dispersion for low-beta partial disruptions so a luminous core survives periapsis
-        double dispBase = (beta < 1.15f) ? 0.0055 : 0.0095;
-
-        spawnStaging.clear();
-        for (int i = 0; i < PARTICLES_PER_STAR; i++) {
-            double u = nextRandom01();
-            double radialFrac = Math.pow(u, densExp);
-            double rad = starRadius * radialFrac;
-
-            double cosTheta = 2.0 * nextRandom01() - 1.0;
-            double sinTheta = Math.sqrt(Math.max(0.0, 1.0 - cosTheta * cosTheta));
-            double phi = 2.0 * Math.PI * nextRandom01();
-
-            double ox = rad * sinTheta * Math.cos(phi);
-            double oy = rad * cosTheta;
-            double oz = rad * sinTheta * Math.sin(phi);
-
-            double disp = dispBase * (0.45 + 0.85 * radialFrac);
-            double vx = vBaseX + (-oz * 0.011) + (nextRandom01() - 0.5) * disp;
-            double vy = vBaseY + (nextRandom01() - 0.5) * disp;
-            double vz = vBaseZ + (ox * 0.011) + (nextRandom01() - 0.5) * disp;
-
-            float tempK = (float) (baseTemp + tempSpan * Math.pow(1.0 - radialFrac, 1.55));
-            float mass = (float) (1.0 - 0.48 * radialFrac);
-
-            spawnStaging.put((float) (cx + ox));
-            spawnStaging.put((float) (cy + oy));
-            spawnStaging.put((float) (cz + oz));
-            spawnStaging.put(mass);
-
-            spawnStaging.put((float) vx);
-            spawnStaging.put((float) vy);
-            spawnStaging.put((float) vz);
-            spawnStaging.put(tempK);
-        }
-        spawnStaging.flip();
+        long seedToUse = (variant == 0) ? state.tdeSeed : rngState;
+        rngState = TdeInitialConditions.generateStar(
+                arch, beta, incDeg, state.effectiveSpin(), variant,
+                PARTICLES_PER_STAR, seedToUse, spawnStaging);
 
         long byteOffset = (long) slot * PARTICLES_PER_STAR * FLOATS_PER_PARTICLE * Float.BYTES;
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleSsbo);
@@ -249,53 +244,59 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         activeParticles = Math.min(TOTAL_PARTICLES, activeParticles + PARTICLES_PER_STAR);
     }
 
+    /** Clears all particle SSBO slots on GPU and resets deterministic launch counters & RNG seed. */
     public void clearAll() {
-        spawnStaging.clear();
-        for (int i = 0; i < PARTICLES_PER_STAR * FLOATS_PER_PARTICLE; i++) {
-            spawnStaging.put(0.0f);
-        }
-        spawnStaging.flip();
+        clearAll(TdeInitialConditions.DEFAULT_SEED);
+    }
+
+    public void clearAll(long resetSeed) {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleSsbo);
-        for (int s = 0; s < MAX_STAR_SLOTS; s++) {
-            long byteOffset = (long) s * PARTICLES_PER_STAR * FLOATS_PER_PARTICLE * Float.BYTES;
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, byteOffset, spawnStaging);
-        }
+        glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, hydroGridSsbo);
+        glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         deletePendingFences();
         hasAnyParticles = false;
+        activeSlotCount = 0;
         activeParticles = 0;
         boundParticles = 0;
         unboundParticles = 0;
         totalSwallowedParticles = 0;
         shearEnergy = 0.0f;
         horizonAccretionSurge = 0.0f;
+        totalSpecificEnergy = 0.0f;
+        totalAngularMomentumY = 0.0f;
+        peakTemperatureK = 0;
+        lastSubstepsPerFrame = 0;
+        particleStepsPerSec = 0.0;
         nextSlot = 0;
+        spawnCounter = 0;
+        rngState = (resetSeed == 0L) ? TdeInitialConditions.DEFAULT_SEED : resetSeed;
     }
 
-    /**
-     * Dispatches physics-safe fixed-substep compute passes (driven by {@code simDt}) and renders
-     * active HDR volumetric velocity-stretched plasma ribbons directly into the bound {@code hdrFbo}.
-     */
-    public void updateAndRender(int width, int height, double wallDt, double simDt,
-                                int blackbodyLutTex, int noise3dTex, float jitterX, float jitterY,
-                                SimulationState state, CameraController camera) {
+    /** Executes TDE compute pass (64^3 hydro splat + single-dispatch substepped Verlet-Boris solver). */
+    public void dispatchCompute(double wallDt, double simDt, SimulationState state) {
         if (!hasAnyParticles || state.wormholeMode || state.binaryMode) {
             shearEnergy *= 0.92f;
             horizonAccretionSurge *= 0.90f;
             state.tdeHorizonSurge = horizonAccretionSurge;
+            lastSubstepsPerFrame = 0;
+            particleStepsPerSec = 0.0;
             return;
         }
 
-        // Poll any completed previous-frame ping-pong counter fence without ever stalling the GPU
         pollAsyncCounters(Math.max(0.004, wallDt));
 
-        // 1. Physics-safe fixed-substep compute pass (never passes a huge raw simDt at 10x–25x timelapse)
+        int dispatchCount = Math.max(PARTICLES_PER_STAR, activeSlotCount * PARTICLES_PER_STAR);
+        int workgroups = dispatchCount / WORKGROUP_SIZE;
+
         if (!state.paused && simDt > 0.0) {
             int substeps = StellarArchetype.computeSubstepCount(simDt);
             double subDt = StellarArchetype.computeSubstepDt(simDt);
+            lastSubstepsPerFrame = substeps;
+            particleStepsPerSec = (activeParticles * (double) (substeps * 2)) / Math.max(1e-4, wallDt);
 
-            // Pick a counter slot that has no unread fence (avoid overwriting unread telemetry)
             int writeIdx = counterWriteIdx;
             if (counterFences[writeIdx] != NULL) {
                 int alt = 1 - writeIdx;
@@ -310,34 +311,56 @@ public final class TidalDisruptionSystem implements AutoCloseable {
 
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, writeSsbo);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hydroGridSsbo);
 
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, writeSsbo);
             glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
 
+            // Optional Pass 1: 64^3 GPU Eulerian-Lagrangian density & momentum splat
+            if (state.tdeHydroEnabled) {
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, hydroGridSsbo);
+                glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+                glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+
+                hydroSplatProgram.use();
+                glUniform1ui(uSplatParticleCount, dispatchCount);
+                glDispatchCompute(workgroups, 1, 1);
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            }
+
+            // Pass 2: Single-dispatch in-shader substepped Verlet-Boris + optional grid hydro pressure/viscosity
             computeProgram.use();
-            glUniform1ui(uCompParticleCount, TOTAL_PARTICLES);
+            glUniform1ui(uCompParticleCount, dispatchCount);
             glUniform1f(uCompDt, (float) (subDt * TDE_TIME_SCALE));
+            glUniform1i(uCompSubsteps, substeps);
             glUniform1f(uCompSpinA, state.effectiveSpin());
             glUniform1f(uCompHorizonR, (float) state.outerHorizonRadius());
+            glUniform1i(uCompHydroEnabled, state.tdeHydroEnabled ? 1 : 0);
             glUniform2fv(uCompSlotShockBeta, slotShockBetaBuf);
 
-            for (int s = 0; s < substeps; s++) {
-                glUniform1i(uCompCountSnapshot, (s == substeps - 1) ? 1 : 0);
-                glDispatchCompute(TOTAL_PARTICLES / WORKGROUP_SIZE, 1, 1);
-                if (s < substeps - 1) {
-                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-                }
-            }
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+            glDispatchCompute(workgroups, 1, 1);
+            // Explicit GL_BUFFER_UPDATE_BARRIER_BIT guarantees coherent host glGetBufferSubData readback
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
             counterFences[writeIdx] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             counterWriteIdx = 1 - writeIdx;
         } else {
             horizonAccretionSurge *= 0.96f;
+            lastSubstepsPerFrame = 0;
+            particleStepsPerSec = 0.0;
         }
         state.tdeHorizonSurge = horizonAccretionSurge;
+    }
 
-        // 2. Volumetric Instanced Velocity-Stretched HDR Plasma Ribbon Pass directly into hdrFbo
+    /** Renders active HDR volumetric plasma ribbons into the currently bound {@code hdrFbo}. */
+    public void renderParticles(int width, int height, int blackbodyLutTex, int noise3dTex,
+                                float jitterX, float jitterY,
+                                SimulationState state, CameraController camera) {
+        if (!hasAnyParticles || state.wormholeMode || state.binaryMode) {
+            return;
+        }
+        int drawCount = Math.max(PARTICLES_PER_STAR, activeSlotCount * PARTICLES_PER_STAR);
+
         glEnable(GL_BLEND);
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
 
@@ -366,10 +389,18 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glUniform4fv(uRendSlotStyle, slotStyleBuf);
 
         glBindVertexArray(emptyVao);
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, TOTAL_PARTICLES);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, drawCount);
         glBindVertexArray(0);
 
         glDisable(GL_BLEND);
+    }
+
+    /** Convenience combined compute + render call preserving backward compatibility. */
+    public void updateAndRender(int width, int height, double wallDt, double simDt,
+                                int blackbodyLutTex, int noise3dTex, float jitterX, float jitterY,
+                                SimulationState state, CameraController camera) {
+        dispatchCompute(wallDt, simDt, state);
+        renderParticles(width, height, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
     }
 
     /** Zero-stall non-blocking poll of ping-pong atomic counter SSBOs via GLsync fence. */
@@ -381,7 +412,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             if (fence == NULL) {
                 continue;
             }
-            int status = glClientWaitSync(fence, 0, 0L);
+            int status = glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0L);
             if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED) {
                 glDeleteSync(fence);
                 counterFences[idx] = NULL;
@@ -396,8 +427,18 @@ public final class TidalDisruptionSystem implements AutoCloseable {
                 boundParticles = readCounters.get(2);
                 unboundParticles = readCounters.get(3);
                 int swallowedDelta = readCounters.get(4);
+                int energyFixed = readCounters.get(5);
+                int angMomFixed = readCounters.get(6);
+                peakTemperatureK = readCounters.get(7);
 
                 totalSwallowedParticles += swallowedDelta;
+                if (activeParticles > 0) {
+                    totalSpecificEnergy = (energyFixed / 256.0f) / activeParticles;
+                    totalAngularMomentumY = (angMomFixed / 256.0f) / activeParticles;
+                } else {
+                    totalSpecificEnergy = 0.0f;
+                    totalAngularMomentumY = 0.0f;
+                }
 
                 float targetShear = Math.min(1.0f, hotShear / 6200.0f);
                 shearEnergy = shearEnergy * 0.78f + targetShear * 0.22f;
@@ -409,6 +450,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
 
                 if (activeParticles == 0) {
                     hasAnyParticles = false;
+                    activeSlotCount = 0;
                     boundParticles = 0;
                     unboundParticles = 0;
                     shearEnergy = 0.0f;
@@ -418,33 +460,22 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         }
     }
 
-    public int activeParticleCount() {
-        return activeParticles;
-    }
-
-    public int boundParticleCount() {
-        return boundParticles;
-    }
-
-    public int unboundParticleCount() {
-        return unboundParticles;
-    }
-
-    public int totalSwallowedCount() {
-        return totalSwallowedParticles;
-    }
-
-    public float shearEnergy() {
-        return shearEnergy;
-    }
-
-    public float horizonAccretionSurge() {
-        return horizonAccretionSurge;
-    }
+    public int activeParticleCount() { return activeParticles; }
+    public int boundParticleCount() { return boundParticles; }
+    public int unboundParticleCount() { return unboundParticles; }
+    public int totalSwallowedCount() { return totalSwallowedParticles; }
+    public float shearEnergy() { return shearEnergy; }
+    public float horizonAccretionSurge() { return horizonAccretionSurge; }
+    public float meanSpecificEnergy() { return totalSpecificEnergy; }
+    public float meanAngularMomentumY() { return totalAngularMomentumY; }
+    public int peakTemperatureK() { return peakTemperatureK; }
+    public int lastSubstepsPerFrame() { return lastSubstepsPerFrame; }
+    public double particleStepsPerSec() { return particleStepsPerSec; }
 
     /**
-     * Advances the TDE compute solver by {@code steps} fixed ticks without rendering.
-     * Used by offline showcase capture to position a star cleanly at mid-disruption periapsis.
+     * Advances the TDE compute solver by {@code steps} fixed ticks without rendering
+     * (used by offline showcase capture). Executes in chunked multi-substep batches so
+     * GPU VRAM bandwidth drops by >20x compared to 1-step dispatches.
      */
     public void stepComputeOnly(int steps, double dt, SimulationState state) {
         if (!hasAnyParticles || state.wormholeMode || state.binaryMode || steps <= 0) {
@@ -452,37 +483,66 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         }
         deletePendingFences();
         int ssbo = counterSsbos[0];
+        int dispatchCount = Math.max(PARTICLES_PER_STAR, activeSlotCount * PARTICLES_PER_STAR);
+        int workgroups = dispatchCount / WORKGROUP_SIZE;
+
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-        glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hydroGridSsbo);
 
-        computeProgram.use();
-        glUniform1ui(uCompParticleCount, TOTAL_PARTICLES);
-        glUniform1f(uCompDt, (float) (dt * TDE_TIME_SCALE));
-        glUniform1f(uCompSpinA, state.effectiveSpin());
-        glUniform1f(uCompHorizonR, (float) state.outerHorizonRadius());
-        glUniform2fv(uCompSlotShockBeta, slotShockBetaBuf);
+        int remaining = steps;
+        int chunkSize = state.tdeHydroEnabled ? 4 : 32;
+        while (remaining > 0) {
+            int batch = Math.min(chunkSize, remaining);
+            remaining -= batch;
 
-        for (int i = 0; i < steps; i++) {
-            glUniform1i(uCompCountSnapshot, (i == steps - 1) ? 1 : 0);
-            glDispatchCompute(TOTAL_PARTICLES / WORKGROUP_SIZE, 1, 1);
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+            glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+
+            if (state.tdeHydroEnabled) {
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, hydroGridSsbo);
+                glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+                glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+
+                hydroSplatProgram.use();
+                glUniform1ui(uSplatParticleCount, dispatchCount);
+                glDispatchCompute(workgroups, 1, 1);
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            }
+
+            computeProgram.use();
+            glUniform1ui(uCompParticleCount, dispatchCount);
+            glUniform1f(uCompDt, (float) (dt * TDE_TIME_SCALE));
+            glUniform1i(uCompSubsteps, batch);
+            glUniform1f(uCompSpinA, state.effectiveSpin());
+            glUniform1f(uCompHorizonR, (float) state.outerHorizonRadius());
+            glUniform1i(uCompHydroEnabled, state.tdeHydroEnabled ? 1 : 0);
+            glUniform2fv(uCompSlotShockBeta, slotShockBetaBuf);
+            glDispatchCompute(workgroups, 1, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+
+            // Accumulate swallowed particles from each batch so telemetry stays strictly exact across chunks
+            readCounters.clear();
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+            glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, readCounters);
+            totalSwallowedParticles += readCounters.get(4);
         }
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
 
-        readCounters.clear();
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, readCounters);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         activeParticles = readCounters.get(0);
         int hotShear = readCounters.get(1);
         boundParticles = readCounters.get(2);
         unboundParticles = readCounters.get(3);
-        totalSwallowedParticles += readCounters.get(4);
+        int energyFixed = readCounters.get(5);
+        int angMomFixed = readCounters.get(6);
+        peakTemperatureK = readCounters.get(7);
+        if (activeParticles > 0) {
+            totalSpecificEnergy = (energyFixed / 256.0f) / activeParticles;
+            totalAngularMomentumY = (angMomFixed / 256.0f) / activeParticles;
+        }
         shearEnergy = Math.min(1.0f, hotShear / 6200.0f);
-        horizonAccretionSurge = Math.min(1.0f, readCounters.get(4) / 14000.0f);
+        horizonAccretionSurge = Math.min(1.0f, totalSwallowedParticles / 18000.0f);
         state.tdeHorizonSurge = horizonAccretionSurge;
     }
 
@@ -507,22 +567,23 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         }
     }
 
-    private double nextRandom01() {
-        rngState = rngState * 6364136223846793005L + 1442695040888963407L;
-        return ((rngState >>> 11) * 0x1.0p-53);
-    }
-
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         deletePendingFences();
         MemoryUtil.memFree(spawnStaging);
         MemoryUtil.memFree(readCounters);
         MemoryUtil.memFree(slotShockBetaBuf);
         MemoryUtil.memFree(slotStyleBuf);
         glDeleteBuffers(particleSsbo);
+        glDeleteBuffers(hydroGridSsbo);
         glDeleteBuffers(counterSsbos[0]);
         glDeleteBuffers(counterSsbos[1]);
         glDeleteVertexArrays(emptyVao);
+        hydroSplatProgram.close();
         computeProgram.close();
         renderProgram.close();
     }

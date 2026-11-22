@@ -1,5 +1,8 @@
 package io.github.laithabuzaid.blackhole.core;
 
+import io.github.laithabuzaid.blackhole.math.KerrMetric;
+import io.github.laithabuzaid.blackhole.math.TdeInitialConditions;
+
 /**
  * Mutable simulation parameters, spacetime mode flags, Doran free-fall plunge
  * state & telemetry, wormhole metric controls, audio controls, and physical
@@ -150,6 +153,20 @@ public final class SimulationState {
     public float tdeBeta = 1.55f;              // Penetration factor beta = r_t / r_p [0.60 .. 4.00]
     public float tdeInclinationDeg = 22.0f;    // Launch orbital inclination [-65 .. +65 deg]
     public float tdeHorizonSurge = 0.0f;       // Live horizon accretion surge [0..1]
+    public boolean tdeHydroEnabled = true;     // true = 64^3 GPU grid hydro pressure + shock viscosity; false = pure gravity
+    public long tdeSeed = TdeInitialConditions.DEFAULT_SEED;
+
+    // Numerical Integrator & Scientific Diagnostics (v2.0)
+    public static final int INTEGRATOR_RK4 = 0;
+    public static final int INTEGRATOR_DOPRI54 = 1;
+    public static final int DIAG_OFF = 0;
+    public static final int DIAG_HAMILTONIAN_ERR = 1;
+    public static final int DIAG_STEP_DENSITY = 2;
+    public static final int DIAG_ANALYTICAL_OVERLAY = 3;
+
+    public int integratorMode = INTEGRATOR_RK4;      // 0 = VGPR-opt RK4, 1 = Adaptive Dormand-Prince 5(4)
+    public float integratorRtol = 2.5e-4f;           // GPU DOPRI5(4) relative tolerance [1e-5 .. 5e-3]
+    public int scientificDiagMode = DIAG_OFF;        // [F3] cycle: Off -> |H| Error -> Step Density -> Analytical Curves
 
     // Procedural Relativistic Audio
     public float audioVolume = 0.60f;     // Master volume [0.00 .. 1.00]
@@ -224,22 +241,30 @@ public final class SimulationState {
 
     /** Exact outer Kerr event horizon r_+ = M + sqrt(M^2 - a^2) in geometric units (M = 1). */
     public double outerHorizonRadius() {
-        double a = effectiveSpin();
-        return 1.0 + Math.sqrt(Math.max(0.0, 1.0 - a * a));
+        return KerrMetric.outerHorizonRadius(effectiveSpin());
     }
 
     /** Exact inner Kerr Cauchy horizon r_- = M - sqrt(M^2 - a^2) in geometric units (M = 1). */
     public double innerHorizonRadius() {
-        double a = effectiveSpin();
-        return 1.0 - Math.sqrt(Math.max(0.0, 1.0 - a * a));
+        return KerrMetric.innerHorizonRadius(effectiveSpin());
     }
 
     /** Exact Bardeen-Press-Teukolsky prograde ISCO radius in geometric units (M = 1). */
     public double progradeIscoRadius() {
-        double a = Math.max(0.0, Math.min(0.999, effectiveSpin()));
-        double z1 = 1.0 + Math.cbrt(1.0 - a * a) * (Math.cbrt(1.0 + a) + Math.cbrt(1.0 - a));
-        double z2 = Math.sqrt(3.0 * a * a + z1 * z1);
-        return 3.0 + z2 - Math.sqrt(Math.max(0.0, (3.0 - z1) * (3.0 + z1 + 2.0 * z2)));
+        return KerrMetric.progradeIscoRadius(effectiveSpin());
+    }
+
+    public void cycleScientificDiagMode() {
+        scientificDiagMode = (scientificDiagMode + 1) % 4;
+    }
+
+    public String scientificDiagLabel() {
+        return switch (scientificDiagMode) {
+            case DIAG_HAMILTONIAN_ERR -> "HAMILTONIAN |H| ERROR";
+            case DIAG_STEP_DENSITY -> "INTEGRATOR STEPS";
+            case DIAG_ANALYTICAL_OVERLAY -> "ANALYTICAL CURVES";
+            default -> "OFF";
+        };
     }
 
     public String plungeZoneName() {
@@ -364,5 +389,10 @@ public final class SimulationState {
         tdeBeta = 1.55f;
         tdeInclinationDeg = 22.0f;
         tdeHorizonSurge = 0.0f;
+        tdeHydroEnabled = true;
+        tdeSeed = TdeInitialConditions.DEFAULT_SEED;
+        integratorMode = INTEGRATOR_RK4;
+        integratorRtol = 2.5e-4f;
+        scientificDiagMode = DIAG_OFF;
     }
 }

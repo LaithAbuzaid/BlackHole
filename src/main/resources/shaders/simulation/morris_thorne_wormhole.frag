@@ -14,10 +14,12 @@ uniform float uWormholeA;
 uniform float uWormholeM;
 uniform float uTanHalfFov;
 uniform int uShowGrid;
+uniform int uDiagMode;
 uniform vec2 uJitter;
 
 const float PI = 3.14159265359;
 const int MAX_STEPS = 320;
+const float SKY_HIT_DIST = 16384.0; // FP16-safe finite sentinel (max binary16 = 65504)
 
 vec3 safeNormalize(vec3 v, vec3 fallback) {
     float len2 = dot(v, v);
@@ -36,7 +38,21 @@ vec3 sanitizeHdr(vec3 c) {
     return clamp(c, vec3(0.0), vec3(48.0));
 }
 
-// Exact Dneg / Interstellar Morris-Thorne shape function r(l) and dr/dl
+vec3 turboColormap(float t) {
+    float x = clamp(t, 0.0, 1.0);
+    vec3 c0 = vec3(0.11, 0.08, 0.34);
+    vec3 c1 = vec3(0.09, 0.56, 0.78);
+    vec3 c2 = vec3(0.55, 0.88, 0.24);
+    vec3 c3 = vec3(0.98, 0.55, 0.09);
+    vec3 c4 = vec3(0.84, 0.12, 0.14);
+    if (x < 0.25) return mix(c0, c1, x * 4.0);
+    if (x < 0.50) return mix(c1, c2, (x - 0.25) * 4.0);
+    if (x < 0.75) return mix(c2, c3, (x - 0.50) * 4.0);
+    return mix(c3, c4, (x - 0.75) * 4.0);
+}
+
+// Exact Dneg / Interstellar Morris-Thorne shape function r(l) and dr/dl (James et al. 2015)
+// Metric: ds^2 = -dt^2 + dl^2 + r(l)^2 (dtheta^2 + sin^2(theta) dphi^2)
 void wormholeMetric(float l, float mw, out float r, out float drdl) {
     float absL = abs(l);
     float x = max(0.0, (2.0 * (absL - uWormholeA)) / (PI * mw));
@@ -59,6 +75,8 @@ struct WormholeRay {
     vec3 exitDir;
     float endL;
     float totalPhi;
+    float maxNullErr;
+    int stepsUsed;
 };
 
 WormholeRay traceWormholeRay(vec2 pixelCoord, vec3 eR, float r0, float mw, float lEscape) {
@@ -77,15 +95,24 @@ WormholeRay traceWormholeRay(vec2 pixelCoord, vec3 eR, float r0, float mw, float
     float l = uWormholeL;
     float vl = cosTheta;
     float H = r0 * sinTheta;
+    float H2 = H * H;
     float phi = 0.0;
+    float maxNullErr = 0.0;
+    int stepsUsed = 0;
+
+    // Curvature-aware minimum length scale min(rho, M_w) prevents overshoot across sharp |l| = a lips
+    float minScale = min(uWormholeRho, mw);
 
     for (int step = 0; step < MAX_STEPS; step++) {
         if (abs(l) > lEscape && (l * vl > 0.0)) {
             break;
         }
+        stepsUsed = step + 1;
 
+        // Refine smoothly near throat lip |l| = a where r''(l) jumps by 4 / (pi^2 * M_w)
+        float distLip = abs(abs(l) - uWormholeA);
         float distThroat = max(0.0, abs(l) - uWormholeA);
-        float h = clamp(0.058 * distThroat + 0.022 * uWormholeRho, 0.014, 2.20);
+        float h = clamp(0.048 * distThroat + 0.020 * minScale + 0.018 * min(distLip, mw), 0.009, 2.0);
 
         float k1l, k1v, k1p;
         wormholeDeriv(l, vl, H, mw, k1l, k1v, k1p);
@@ -103,13 +130,26 @@ WormholeRay traceWormholeRay(vec2 pixelCoord, vec3 eR, float r0, float mw, float
         l += h6 * (k1l + 2.0 * k2l + 2.0 * k3l + k4l);
         vl += h6 * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
         phi += h6 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
+
+        // Monitor null constraint |v_l^2 + H^2/r^2 - 1| and softly re-project away from turning points
+        float rCur, drCur;
+        wormholeMetric(l, mw, rCur, drCur);
+        float targetVl2 = 1.0 - H2 / (rCur * rCur);
+        float nullErr = abs(vl * vl - targetVl2);
+        maxNullErr = max(maxNullErr, nullErr);
+        if (targetVl2 > 1e-4 && abs(vl) > 0.02 && nullErr > 1e-5) {
+            vl = sign(vl) * sqrt(targetVl2);
+        }
     }
 
-    float sgnL = (l >= 0.0) ? 1.0 : -1.0;
+    // Camera-independent spherical exit vector on S^2 (eliminates the camera-dependent
+    // Householder reflection bug in Universe B: p_hat(phi) = cos(phi)*eR + sin(phi)*ePhi)
     WormholeRay res;
-    res.exitDir = safeNormalize(sgnL * cos(phi) * eR + sin(phi) * ePhi, dRay);
+    res.exitDir = safeNormalize(cos(phi) * eR + sin(phi) * ePhi, dRay);
     res.endL = l;
     res.totalPhi = phi;
+    res.maxNullErr = maxNullErr;
+    res.stepsUsed = stepsUsed;
     return res;
 }
 
@@ -136,10 +176,6 @@ vec3 sampleUniverse(WormholeRay ray, vec3 ddx, vec3 ddy) {
         col += gridTint * line * 0.45;
         col += vec3(1.00, 0.56, 0.18) * max(equator, prime) * 0.85;
     }
-
-    // Delicate gravitational caustic shimmer right on the photon-sphere rim (no thick artificial bezel)
-    float rimCaustic = smoothstep(3.8, 7.6, ray.totalPhi) * 0.045;
-    col += vec3(0.68, 0.88, 1.15) * rimCaustic;
     return sanitizeHdr(col);
 }
 
@@ -150,7 +186,6 @@ void main() {
     wormholeMetric(uWormholeL, mw, r0, dr0);
     float lEscape = max(42.0, abs(uWormholeL) + 22.0);
 
-    // Pure 1 ray/px Halton-jittered geodesic (16-phase temporal super-sampling handled by TAA resolve)
     WormholeRay primary = traceWormholeRay(gl_FragCoord.xy + uJitter, eR, r0, mw, lEscape);
 
     float sideMask = (primary.endL >= 0.0) ? 1.0 : 0.0;
@@ -159,16 +194,23 @@ void main() {
     vec3 rawDdx = dFdx(primary.exitDir);
     vec3 rawDdy = dFdy(primary.exitDir);
 
-    // Prevent cross-universe finite differences from pulling coarse mipmaps along the throat rim
     float maxGrad = (portalRimEdge || primary.totalPhi > 3.0) ? 0.004 : 0.12;
     vec3 ddx = rawDdx * min(1.0, maxGrad / max(1e-6, length(rawDdx)));
     vec3 ddy = rawDdy * min(1.0, maxGrad / max(1e-6, length(rawDdy)));
 
-    vec3 c0 = sampleUniverse(primary, ddx, ddy);
+    vec3 c0;
+    if (uDiagMode == 1) {
+        // Log10 null-constraint residual |v_l^2 + H^2/r^2 - 1| over [1e-7 .. 1e-2]
+        float logErr = log(max(1e-7, primary.maxNullErr)) / log(10.0);
+        c0 = turboColormap((logErr + 7.0) / 5.0);
+    } else if (uDiagMode == 2) {
+        c0 = turboColormap(float(primary.stepsUsed) / float(MAX_STEPS));
+    } else {
+        c0 = sampleUniverse(primary, ddx, ddy);
+    }
 
-    // Throat-crossing & strongly-lensed rim rays reproject at throat distance; exterior sky at infinity
     bool crossedThroat = (primary.endL * uWormholeL < 0.0) || (primary.totalPhi > 1.35);
-    float hitDist = crossedThroat ? max(0.5, abs(uWormholeL)) : 1e5;
+    float hitDist = crossedThroat ? max(0.5, abs(uWormholeL)) : SKY_HIT_DIST;
 
     FragColor = vec4(sanitizeHdr(c0), hitDist);
 }

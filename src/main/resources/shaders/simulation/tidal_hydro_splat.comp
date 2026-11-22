@@ -1,0 +1,64 @@
+#version 430 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 posMass; // xyz = position (M=1), w = mass (>0 active)
+    vec4 velTemp; // xyz = velocity, w = temperature (K)
+};
+
+layout(std430, binding = 0) readonly buffer ParticleBuffer {
+    Particle particles[];
+};
+
+// 64^3 Eulerian-Lagrangian hydrodynamic grid covering [-24M, +24M]^3 (cell width dx = 0.75M)
+// Fixed-point atomic accumulation (scale = 1024) of cell mass and linear momentum
+struct HydroCell {
+    int massFixed;
+    int momXFixed;
+    int momYFixed;
+    int momZFixed;
+};
+
+layout(std430, binding = 2) buffer HydroGridBuffer {
+    HydroCell cells[];
+};
+
+uniform uint uParticleCount;
+
+const int GRID_DIM = 64;
+const float GRID_HALF_EXTENT = 24.0;
+const float INV_CELL_SIZE = float(GRID_DIM) / (2.0 * GRID_HALF_EXTENT);
+const float FIXED_SCALE = 1024.0;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uParticleCount) {
+        return;
+    }
+
+    Particle p = particles[idx];
+    float mass = p.posMass.w;
+    if (mass <= 0.0) {
+        return;
+    }
+
+    vec3 pos = p.posMass.xyz;
+    vec3 gPos = (pos + vec3(GRID_HALF_EXTENT)) * INV_CELL_SIZE;
+    ivec3 cell = ivec3(floor(gPos));
+    if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, ivec3(GRID_DIM)))) {
+        return;
+    }
+
+    uint flatIdx = uint((cell.z * GRID_DIM + cell.y) * GRID_DIM + cell.x);
+    vec3 vel = p.velTemp.xyz;
+
+    int mFix = max(1, int(round(mass * FIXED_SCALE)));
+    int pxFix = int(round(mass * vel.x * FIXED_SCALE));
+    int pyFix = int(round(mass * vel.y * FIXED_SCALE));
+    int pzFix = int(round(mass * vel.z * FIXED_SCALE));
+
+    atomicAdd(cells[flatIdx].massFixed, mFix);
+    atomicAdd(cells[flatIdx].momXFixed, pxFix);
+    atomicAdd(cells[flatIdx].momYFixed, pyFix);
+    atomicAdd(cells[flatIdx].momZFixed, pzFix);
+}

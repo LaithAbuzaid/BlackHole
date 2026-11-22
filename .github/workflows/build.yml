@@ -262,9 +262,10 @@ jobs:
             > **System Requirements:** Dedicated or integrated GPU with **OpenGL 4.3 Core** support (Windows 10/11 x64 or Linux x86_64). *(Note: macOS is capped by Apple at OpenGL 4.1 and does not support OpenGL 4.3 Compute Shaders.)*
 
             ### What's New in ${{ github.ref_name }}
-            - **EHT 230 GHz Polarized Magnetic Field & VLBI Radio Mode (`[N]` / `[Shift+N]`):** Real-time Kerr-dragged synchrotron polarization streamlines + authentic Event Horizon Telescope 1.3 mm brightness-temperature colormap.
-            - **Projected Astrophysical Reticle & Scale Ruler (`[Q]`):** Live screen-space calibrated gravitational scale bar ($r_g = GM/c^2$), shadow critical curve ($b_c = 5.20M$) & ISCO markers, plus real-time `M1`/`M2` tracking brackets in Binary Merger mode.
-            - **Real LIGO Event Presets (Binary Mode):** One-click `GW150914` ($q = 0.81$), `GW190412` ($q = 0.28$), and `EQUAL 1:1` ($q = 1.00$) binary black hole merger presets.
-            - **Desktop App Polish:** Instant borderless fullscreen toggle (`[F11]` / `Alt+Enter`), native taskbar window icon (zero `java.desktop`), and persistent user settings (`settings.properties`).
+            - **Dual Kerr–Schild Geodesic Integrators (`[F4]`):** Switch live between register-lean **VGPR-RK4** and adaptive 5th-order Dormand–Prince **DOPRI5(4)** conserving $\mathcal{H} = \frac{1}{2}g^{\mu\nu}p_\mu p_\nu = 0$.
+            - **Scientific Diagnostics Suite (`[F3]`):** Live per-pixel Hamiltonian error heatmaps ($\log_{10}|\mathcal{H}|$), adaptive step-density maps, and an analytic finite-distance **Bardeen critical shadow** overlay with concentric $r_+$, $r_{\text{ph}+}$, and $r_{\text{ergo}}$ contours plus live DOPRI5(4) equatorial geodesic rays.
+            - **64³ GPU Grid-Hydrodynamics & Boris Lense–Thirring TDE Lab (`[F5]`):** Standard Paczyński–Wiita gravity ($V = -\frac{1}{r - 2M}$), exact kinetic-energy-preserving Boris gravitomagnetic precession, toggleable 64³ Eulerian–Lagrangian polytropic pressure & shock viscosity, single-dispatch in-shader substeps (`25×` timelapse-safe), and 256-thread shared-memory telemetry reductions.
+            - **Exact Doran Interior Plunge & Camera-Invariant Wormhole:** Exact $L_z = 0$ horizon-penetrating Doran free-fall tetrad inside $r_+$ and camera-invariant Universe A/B Morris–Thorne sheet continuation.
+            - **Repeatable 6-Pass GPU Benchmark Suite (`--benchmark`) & 39 Headless JUnit 5 Validation Tests:** Measures Raytrace, TDE Compute, TDE Render, TAA, Post/Bloom, and UI passes at 1080p with zero per-frame Java heap allocations and zero GL errors.
           files: |
             release-assets/*

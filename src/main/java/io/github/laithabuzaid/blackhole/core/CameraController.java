@@ -1,5 +1,7 @@
 package io.github.laithabuzaid.blackhole.core;
 
+import io.github.laithabuzaid.blackhole.math.KerrMetric;
+
 /**
  * Smooth inertial camera supporting:
  * <ul>
@@ -321,10 +323,11 @@ public final class CameraController {
         targetFreeLookPitch = 0.0;
         freeLookPitch = 0.0;
 
-        // Seed immediate velocity/tidal readout on frame 0
+        // Seed immediate velocity/tidal readout on frame 0 using exact Doran oblate factor
         double a = state.effectiveSpin();
         double r = camDist;
-        state.plungeVelocityC = (float) Math.sqrt((2.0 * r) / (r * r + a * a));
+        double cosTheta0 = Math.sin(camPitch);
+        state.plungeVelocityC = (float) KerrMetric.doranRadialInfallSpeed(r, cosTheta0, a);
         state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, r * r * r));
         classifyPlungeZone(r, a, state);
     }
@@ -342,15 +345,16 @@ public final class CameraController {
     }
 
     /**
-     * Exact Doran / Kerr-Schild proper-time free-fall integrator from rest at infinity (L_z = 0).
-     * Fixed-substepped so trajectory, horizon crossing ({@code v/c = 1.000} at {@code r_+}),
-     * and Cauchy/singularity climax remain deterministic from {@code 0.05x} to {@code 25.0x} timelapse.
+     * Exact Doran / Kerr-Schild proper-time free-fall integrator from rest at infinity (E = 1, L_z = 0, Q = 0).
+     * Uses exact oblate {@code Sigma = r^2 + a^2 cos^2(theta)} via {@link KerrMetric} and smooth pacing
+     * so trajectory, horizon crossing, and interior climax remain deterministic from {@code 0.05x} to {@code 25.0x}.
      */
     private void updatePlunge(double simDt, SimulationState state) {
         double a = state.effectiveSpin();
         double rPlus = state.outerHorizonRadius();
         double rMinus = state.innerHorizonRadius();
         boolean isKerr = (a > 0.05);
+        double cosTheta = Math.sin(camPitch);
 
         if (state.paused || state.plungeEnded || simDt <= 0.0) {
             return;
@@ -363,35 +367,30 @@ public final class CameraController {
 
         for (int s = 0; s < substeps && !state.plungeEnded; s++) {
             double r = camDist;
-            double paceFactor;
-            if (r > 12.0) {
-                paceFactor = 16.0;
-            } else if (r > rPlus) {
-                paceFactor = 7.5;
-            } else {
-                paceFactor = isKerr ? 0.14 : 0.48;
-            }
+            // C^1-smooth pacing transition (replaces discontinuous piecewise jumps at r=12 and r=r_+)
+            double tFar = smoothstep(rPlus + 1.5, 14.0, r);
+            double tExt = smoothstep(rPlus * 0.96, rPlus * 1.15, r);
+            double innerPace = isKerr ? 0.16 : 0.48;
+            double paceFactor = innerPace + (7.5 - innerPace) * tExt + (16.0 - 7.5) * tFar;
             double dTau = subDt * state.plungeSpeed * paceFactor;
 
-            // Midpoint integration of exact Doran infall speed beta_in = sqrt(2 M r / (r^2 + a^2))
-            double beta0 = Math.sqrt(Math.max(0.0, (2.0 * r) / Math.max(1e-4, r * r + a * a)));
-            double rMid = Math.max(0.08, r - 0.5 * beta0 * dTau);
-            double betaMid = Math.sqrt(Math.max(0.0, (2.0 * rMid) / Math.max(1e-4, rMid * rMid + a * a)));
-            double rNext = r - betaMid * dTau;
+            // Midpoint integration of exact Doran radial infall rate |dr/dtau| = ((r^2+a^2)/Sigma) * sqrt(2r/(r^2+a^2))
+            double dr0 = KerrMetric.doranRadialInfallSpeed(r, cosTheta, a);
+            double rMid = Math.max(0.08, r - 0.5 * dr0 * dTau);
+            double drMid = KerrMetric.doranRadialInfallSpeed(rMid, cosTheta, a);
+            double rNext = r - drMid * dTau;
 
-            // Prograde ZAMO frame-dragging spiral azimuth during Kerr plunge
+            // Exact prograde ZAMO frame-dragging angular velocity omega_ZAMO (no arbitrary multiplier)
             if (a > 0.001) {
-                double sMid = rMid * rMid + a * a;
-                double omegaZamo = (2.0 * a * rMid) / Math.max(0.25, sMid * sMid);
-                camYaw += omegaZamo * dTau * 1.45;
+                double omegaZamo = KerrMetric.zamoOmega(rMid, cosTheta, a);
+                camYaw += omegaZamo * dTau;
                 targetYaw = camYaw;
             }
 
-            // Proper time vs. distant Boyer-Lindquist coordinate time (diverging at r_+)
+            // Proper time vs. exact distant Boyer-Lindquist coordinate time (diverging at r_+)
             state.plungeProperTime += dTau;
             if (rMid > rPlus * 1.003 && !state.plungeHorizonCrossed) {
-                double delta = Math.max(1e-4, rMid * rMid - 2.0 * rMid + a * a);
-                state.plungeCoordTime += dTau * ((rMid * rMid + a * a) / delta);
+                state.plungeCoordTime += dTau * KerrMetric.doranDtBlDtau(rMid, cosTheta, a);
             } else {
                 state.plungeHorizonCrossed = true;
             }
@@ -434,16 +433,22 @@ public final class CameraController {
 
             camDist = rNext;
             targetDist = rNext;
-            state.plungeVelocityC = (float) Math.sqrt(Math.max(0.0, (2.0 * rNext) / Math.max(1e-4, rNext * rNext + a * a)));
+            state.plungeVelocityC = (float) KerrMetric.doranRadialInfallSpeed(rNext, cosTheta, a);
             state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, rNext * rNext * rNext));
             classifyPlungeZone(rNext, a, state);
         }
     }
 
+    private static double smoothstep(double edge0, double edge1, double x) {
+        double t = Math.max(0.0, Math.min(1.0, (x - edge0) / Math.max(1e-8, edge1 - edge0)));
+        return t * t * (3.0 - 2.0 * t);
+    }
+
     private static void classifyPlungeZone(double r, double a, SimulationState state) {
         double rPlus = state.outerHorizonRadius();
         double rMinus = state.innerHorizonRadius();
-        double rPhoton = 1.5 + 1.5 * Math.sqrt(Math.max(0.0, 1.0 - 0.65 * a)); // Approx photon shell boundary
+        // Exact polar spherical photon orbit radius via KerrMetric
+        double rPhoton = KerrMetric.polarPhotonOrbitRadius(a);
         if (a > 0.05 && r <= rMinus + 0.14) {
             state.plungeZone = SimulationState.ZONE_CAUCHY_HORIZON;
         } else if (a <= 0.05 && r <= 0.36) {

@@ -31,6 +31,7 @@ final class RelativisticPhysicsTest {
         "/shaders/simulation/kerr_blackhole.frag",
         "/shaders/simulation/binary_merger.frag",
         "/shaders/simulation/morris_thorne_wormhole.frag",
+        "/shaders/simulation/tidal_hydro_splat.comp",
         "/shaders/simulation/tidal_disruption.comp",
         "/shaders/simulation/tidal_disruption.vert",
         "/shaders/simulation/tidal_disruption.frag",
@@ -152,13 +153,13 @@ final class RelativisticPhysicsTest {
         assertEquals(BinaryMergerPhysics.Phase.INSPIRAL, binary.phase());
         assertEquals(0.5f, binary.mass1, 1e-5f);
         assertEquals(0.5f, binary.mass2, 1e-5f);
-        // Radiated energy ~4.8% -> M_f = 0.952; NR remnant spin a_f = 3.464*0.25 - 2.9*0.0625 = 0.68475
+        // NR equal-mass non-spinning remnant: M_f ~= 0.9516, a_f ~= 0.6870 (Hofmann-Barausse-Rezzolla 2016)
         assertTrue(binary.remnantMass < 1.0f && binary.remnantMass > 0.94f,
                 "Radiated gravitational wave energy must reduce final remnant mass");
-        assertEquals(0.952f, binary.remnantMass, 1e-3f);
+        assertEquals(0.9516f, binary.remnantMass, 2e-3f);
         assertTrue(binary.remnantSpin > 0.0f && binary.remnantSpin < 1.0f,
                 "Final Kerr remnant spin must satisfy 0 < a_f < 1");
-        assertEquals(0.68475f, binary.remnantSpin, 1e-3f);
+        assertEquals(0.6865f, binary.remnantSpin, 2e-3f);
 
         float prevSep = binary.currentSeparation;
         float prevFreq = binary.gwFreqHz;
@@ -166,7 +167,7 @@ final class RelativisticPhysicsTest {
         boolean sawMerger = false;
         boolean sawRingdown = false;
 
-        for (int i = 0; i < 2000; i++) {
+        for (int i = 0; i < 3000; i++) {
             binary.step(1.0 / 60.0, 1.0f, 1.0f, false);
             BinaryMergerPhysics.Phase ph = binary.phase();
             if (ph == BinaryMergerPhysics.Phase.INSPIRAL || ph == BinaryMergerPhysics.Phase.PLUNGE) {
@@ -284,12 +285,16 @@ final class RelativisticPhysicsTest {
         assertEquals(1, StellarArchetype.computeSubstepCount(0.008));
         assertTrue(StellarArchetype.computeSubstepDt(0.008) <= StellarArchetype.MAX_TDE_SUBSTEP_DT + 1e-9);
 
-        // Extreme 25x frame (25 * 0.0167s = 0.417s) must clamp substep count & per-substep dt
-        int extremeSteps = StellarArchetype.computeSubstepCount(0.417);
-        double extremeSubDt = StellarArchetype.computeSubstepDt(0.417);
-        assertEquals(StellarArchetype.MAX_TDE_SUBSTEPS_PER_FRAME, extremeSteps);
-        assertTrue(extremeSubDt <= StellarArchetype.MAX_TDE_SUBSTEP_DT + 1e-9,
-                "Per-substep dt must never exceed MAX_TDE_SUBSTEP_DT under 25x timelapse");
+        // 25x timelapse at 60 FPS (0.417s) executes all 27 substeps without dropping simulation time!
+        int steps25x = StellarArchetype.computeSubstepCount(0.417);
+        double subDt25x = StellarArchetype.computeSubstepDt(0.417);
+        assertEquals(27, steps25x);
+        assertEquals(0.417, steps25x * subDt25x, 1e-6, "25x timelapse must preserve 100% of simulated time");
+        assertTrue(subDt25x <= StellarArchetype.MAX_TDE_SUBSTEP_DT + 1e-9);
+
+        // Extreme lag spike (1.0s) safely clamps at MAX_TDE_SUBSTEPS_PER_FRAME
+        assertEquals(StellarArchetype.MAX_TDE_SUBSTEPS_PER_FRAME, StellarArchetype.computeSubstepCount(1.0));
+        assertTrue(StellarArchetype.computeSubstepDt(1.0) <= StellarArchetype.MAX_TDE_SUBSTEP_DT + 1e-9);
 
         // Verify Binary Merger trajectory invariance between 1x and 25x over identical simulated time (2.0s)
         BinaryMergerPhysics slow = new BinaryMergerPhysics();

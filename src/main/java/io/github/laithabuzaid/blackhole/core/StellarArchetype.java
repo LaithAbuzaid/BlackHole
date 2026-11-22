@@ -43,7 +43,7 @@ public enum StellarArchetype {
             "WHITE DWARF",
             16000f, 30000f,
             0.48f, 3.85f,
-            0.28f, 1.68f, 0.76f,
+            0.56f, 1.68f, 0.76f,
             0.88f, 0.98f, 1.22f,
             0.78f, 0.94f, 1.00f
     );
@@ -55,8 +55,11 @@ public enum StellarArchetype {
 
     /** Fixed compute substep cap (in wall-equivalent seconds before TDE time scaling) for timelapse safety. */
     public static final double MAX_TDE_SUBSTEP_DT = 0.016;
-    /** Hard per-frame compute dispatch cap to preserve > 100 FPS even at 25x timelapse. */
-    public static final int MAX_TDE_SUBSTEPS_PER_FRAME = 14;
+    /**
+     * In-shader substep loop cap (particles stay in GPU registers across all substeps in 1 dispatch,
+     * preserving exact 25x timelapse synchronization at 60 FPS with zero dropped simulation time).
+     */
+    public static final int MAX_TDE_SUBSTEPS_PER_FRAME = 32;
 
     private static final StellarArchetype[] VALUES = values();
 

@@ -2,9 +2,9 @@
 in vec2 vUv;
 out vec4 FragColor;
 
-uniform sampler2D uCurrentTex;   // .rgb = linear HDR (ray + TDE), .a = hitDist (world distance or 1e5 sky)
-uniform sampler2D uHistoryTex;   // previous resolved linear HDR
-uniform sampler2D uVelocityTex;  // .rg = screen-space UV motion (vUv - prevUv) when uUseVelocityTex == 1
+uniform sampler2D uCurrentTex;   // .rgb = linear HDR (ray + TDE), .a = hitDist (world distance or 16384 sky)
+uniform sampler2D uHistoryTex;   // .rgb = previous resolved linear HDR, .a = previous hitDist (for disocclusion)
+uniform sampler2D uVelocityTex;  // .rg = screen-space UV motion (vUv - prevUv) when uUseVelocityTex == 1 (RG32F NEAREST)
 uniform int uUseVelocityTex;
 uniform vec2 uResolution;
 uniform vec3 uCamPos;
@@ -53,8 +53,9 @@ vec3 yCoCgToRgb(vec3 ycc) {
     return max(vec3(0.0), vec3(tmp + ycc.y, ycc.x + ycc.z, tmp - ycc.y));
 }
 
-// 5-tap Filmic SMAA / Unreal Catmull-Rom bicubic history fetch (eliminates bilinear blur during orbit)
-vec3 sampleHistoryCatmullRom(sampler2D tex, vec2 uv, vec2 texSize) {
+// 5-tap Catmull-Rom bicubic history fetch evaluated directly in Karis perceptual space
+// (eliminates linear-HDR negative-lobe dark ringing halos around photon rings & bright stars)
+vec3 sampleHistoryCatmullRomPerceptual(sampler2D tex, vec2 uv, vec2 texSize, out float prevHitDist) {
     vec2 samplePos = uv * texSize;
     vec2 texPos1 = floor(samplePos - 0.5) + 0.5;
     vec2 f = samplePos - texPos1;
@@ -72,20 +73,28 @@ vec3 sampleHistoryCatmullRom(sampler2D tex, vec2 uv, vec2 texSize) {
     vec2 texPos3  = (texPos1 + 2.0) * invSize;
     vec2 texPos12 = (texPos1 + offset12) * invSize;
 
+    vec4 s0 = texture(tex, vec2(texPos12.x, texPos0.y));
+    vec4 s1 = texture(tex, vec2(texPos0.x,  texPos12.y));
+    vec4 s2 = texture(tex, vec2(texPos12.x, texPos12.y));
+    vec4 s3 = texture(tex, vec2(texPos3.x,  texPos12.y));
+    vec4 s4 = texture(tex, vec2(texPos12.x, texPos3.y));
+
+    prevHitDist = s2.a;
+
     vec3 result = vec3(0.0);
-    result += sanitize(texture(tex, vec2(texPos12.x, texPos0.y)).rgb)  * (w12.x * w0.y);
-    result += sanitize(texture(tex, vec2(texPos0.x,  texPos12.y)).rgb) * (w0.x  * w12.y);
-    result += sanitize(texture(tex, vec2(texPos12.x, texPos12.y)).rgb) * (w12.x * w12.y);
-    result += sanitize(texture(tex, vec2(texPos3.x,  texPos12.y)).rgb) * (w3.x  * w12.y);
-    result += sanitize(texture(tex, vec2(texPos12.x, texPos3.y)).rgb)  * (w12.x * w3.y);
+    result += toPerceptual(sanitize(s0.rgb)) * (w12.x * w0.y);
+    result += toPerceptual(sanitize(s1.rgb)) * (w0.x  * w12.y);
+    result += toPerceptual(sanitize(s2.rgb)) * (w12.x * w12.y);
+    result += toPerceptual(sanitize(s3.rgb)) * (w3.x  * w12.y);
+    result += toPerceptual(sanitize(s4.rgb)) * (w12.x * w3.y);
 
     float weightSum = (w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y)
                     + (w3.x * w12.y) + (w12.x * w3.y);
-    return max(vec3(0.0), result / max(1e-5, weightSum));
+    return clamp(result / max(1e-5, weightSum), vec3(0.0), vec3(0.999));
 }
 
-// Clip history toward current 3x3 mean along segment into variance AABB (Salvi 2016)
-vec3 clipAabb(vec3 aabbMin, vec3 aabbMax, vec3 center, vec3 history) {
+// Clip history toward box center along segment into variance AABB (Salvi 2016)
+vec3 clipAabb(vec3 aabbMin, vec3 aabbMax, vec3 history) {
     vec3 pClip = 0.5 * (aabbMax + aabbMin);
     vec3 eClip = 0.5 * (aabbMax - aabbMin) + 1e-4;
     vec3 vClip = history - pClip;
@@ -101,23 +110,36 @@ vec3 clipAabb(vec3 aabbMin, vec3 aabbMax, vec3 center, vec3 history) {
 void main() {
     vec4 centerSample = texture(uCurrentTex, vUv);
     vec3 currentHdr = sanitize(centerSample.rgb);
+    float curHitDist = clamp(centerSample.a, 0.0, 16384.0);
 
     if (uResetHistory == 1) {
-        FragColor = vec4(currentHdr, 1.0);
+        FragColor = vec4(currentHdr, curHitDist);
         return;
     }
 
+    vec2 texel = 1.0 / uResolution;
     vec2 prevUv;
     if (uUseVelocityTex == 1) {
-        // Explicit MRT object + camera motion vectors (eliminates ghosting on rapidly orbiting binary shadows)
-        vec2 velUv = texture(uVelocityTex, vUv).rg;
+        // 3x3 nearest-foreground velocity dilation prevents orbiting binary shadow silhouette smear
+        vec2 bestOffset = vec2(0.0);
+        float minHitD = curHitDist;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                vec2 off = vec2(dx, dy) * texel;
+                float d = texture(uCurrentTex, vUv + off).a;
+                if (d < minHitD) {
+                    minHitD = d;
+                    bestOffset = off;
+                }
+            }
+        }
+        vec2 velUv = texture(uVelocityTex, vUv + bestOffset).rg;
         if (isnan(velUv.x) || isinf(velUv.x) || isnan(velUv.y) || isinf(velUv.y)) {
             velUv = vec2(0.0);
         }
         prevUv = vUv - velUv;
     } else {
-        // Exact analytic 3D world-space + infinity camera reprojection using hitDist in alpha channel
-        float hitDist = centerSample.a;
+        // Exact analytic 3D world-space + infinity camera reprojection using FP16-safe hitDist
         vec2 ndc = vUv * 2.0 - 1.0;
         float aspect = uResolution.x / uResolution.y;
 
@@ -125,13 +147,13 @@ void main() {
                               + ndc.x * aspect * uTanHalfFov * uCamRight
                               + ndc.y * uTanHalfFov * uCamUp);
 
-        vec3 prevRel = (hitDist > 5000.0)
+        vec3 prevRel = (curHitDist > 8000.0)
                 ? rayDir
-                : ((uCamPos + rayDir * max(0.25, hitDist)) - uPrevCamPos);
+                : ((uCamPos + rayDir * max(0.25, curHitDist)) - uPrevCamPos);
 
         float prevZ = dot(prevRel, uPrevCamForward);
         if (prevZ <= 1e-4) {
-            FragColor = vec4(currentHdr, 1.0);
+            FragColor = vec4(currentHdr, curHitDist);
             return;
         }
 
@@ -141,12 +163,11 @@ void main() {
     }
 
     if (prevUv.x < 0.0 || prevUv.x > 1.0 || prevUv.y < 0.0 || prevUv.y > 1.0) {
-        FragColor = vec4(currentHdr, 1.0);
+        FragColor = vec4(currentHdr, curHitDist);
         return;
     }
 
     // 3x3 neighborhood statistical moments in Karis-weighted YCoCg space
-    vec2 texel = 1.0 / uResolution;
     vec3 m1 = vec3(0.0);
     vec3 m2 = vec3(0.0);
     vec3 currYcc = vec3(0.0);
@@ -169,19 +190,26 @@ void main() {
     float pixelMotion = length((vUv - prevUv) * uResolution);
     float motionT = clamp(pixelMotion * 0.22, 0.0, 1.0);
 
-    // Slightly wider box when static for silky 16x sub-pixel convergence; tighter when moving for zero ghosting
+    // Ensure current sample currYcc is ALWAYS inside the variance box (prevents ~80% energy loss
+    // on sharp 1-pixel stars and thin relativistic photon rings!)
     float gamma = mix(1.30, 0.95, motionT);
-    vec3 boxMin = mean - gamma * sigma;
-    vec3 boxMax = mean + gamma * sigma;
+    vec3 boxMin = min(mean - gamma * sigma, currYcc);
+    vec3 boxMax = max(mean + gamma * sigma, currYcc);
 
-    vec3 historyHdr = sampleHistoryCatmullRom(uHistoryTex, prevUv, uResolution);
-    vec3 histYcc = rgbToYCoCg(toPerceptual(historyHdr));
-    vec3 clippedHistYcc = clipAabb(boxMin, boxMax, currYcc, histYcc);
+    float prevHitDist;
+    vec3 historyPerc = sampleHistoryCatmullRomPerceptual(uHistoryTex, prevUv, uResolution, prevHitDist);
+    vec3 histYcc = rgbToYCoCg(historyPerc);
+    vec3 clippedHistYcc = clipAabb(boxMin, boxMax, histYcc);
 
-    // Blend factor: exact progressive convergence when static/showcase, responsive when orbiting or in timelapse
-    float alpha = max(uMinAlpha, mix(uMinAlpha, 0.22, motionT));
+    // Hit-distance disocclusion detection: rapidly reject stale history behind moving shadows/orbits
+    float depthDiff = abs(curHitDist - prevHitDist);
+    float depthThresh = max(2.5, 0.30 * min(curHitDist, prevHitDist));
+    float disocc = (pixelMotion > 0.35) ? smoothstep(depthThresh, depthThresh * 2.5, depthDiff) : 0.0;
+
+    float alphaMotion = mix(uMinAlpha, max(0.26, uMinAlpha + 0.14), motionT);
+    float alpha = clamp(max(alphaMotion, disocc * 0.72), uMinAlpha, 0.95);
     vec3 resolvedYcc = mix(clippedHistYcc, currYcc, alpha);
     vec3 resolvedHdr = sanitize(fromPerceptual(yCoCgToRgb(resolvedYcc)));
 
-    FragColor = vec4(resolvedHdr, 1.0);
+    FragColor = vec4(resolvedHdr, curHitDist);
 }

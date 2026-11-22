@@ -1,49 +1,43 @@
 package io.github.laithabuzaid.blackhole.core;
 
 import io.github.laithabuzaid.blackhole.audio.RelativisticAudioEngine;
+import io.github.laithabuzaid.blackhole.graphics.BenchmarkAndShowcaseRunner;
 import io.github.laithabuzaid.blackhole.graphics.BlackHoleRenderer;
 import io.github.laithabuzaid.blackhole.graphics.GpuTimerQueries;
 import io.github.laithabuzaid.blackhole.graphics.ShaderProgram;
 import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 import io.github.laithabuzaid.blackhole.ui.HudOverlay;
 import io.github.laithabuzaid.blackhole.ui.UiRenderer;
-import io.github.laithabuzaid.blackhole.util.PngWriter;
+import io.github.laithabuzaid.blackhole.util.FramebufferCapture;
+import io.github.laithabuzaid.blackhole.util.GwReferenceData;
 import io.github.laithabuzaid.blackhole.util.SettingsStore;
+import io.github.laithabuzaid.blackhole.util.WindowIconLoader;
 import org.lwjgl.glfw.GLFWErrorCallback;
-import org.lwjgl.glfw.GLFWImage;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
-import org.lwjgl.system.MemoryUtil;
 
-import java.io.BufferedInputStream;
-import java.io.DataInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.zip.InflaterInputStream;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.opengl.GL30.*;
+import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * Main GLFW / OpenGL 4.3 Core simulation lifecycle, Cinema-First attract tour
- * handoff, Doran plunge controls, zero-dependency PNG capture ({@code [F12]} &
- * {@code --capture-showcase}), procedural OpenAL audio synchronization, and
+ * Main GLFW / OpenGL 4.3 Core simulation lifecycle, input/action coordination,
+ * Cinema-First attract tour handoff, procedural OpenAL audio synchronization, and
  * zero-allocation real-time render loop.
+ *
+ * <p>Delegates offline benchmarking/showcase capture to {@link BenchmarkAndShowcaseRunner},
+ * PNG snapshot I/O to {@link FramebufferCapture}, and native taskbar icon loading to
+ * {@link WindowIconLoader}.</p>
  */
 public final class SimulationEngine {
 
-    private static final int SHOWCASE_WIDTH = 1920;
-    private static final int SHOWCASE_HEIGHT = 1080;
-    private static final DateTimeFormatter SNAPSHOT_FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
-
     private final boolean captureShowcaseMode;
+    private final boolean benchmarkMode;
+    private final Path externalGwDataPath;
 
     private int windowW = 1440;
     private int windowH = 860;
@@ -63,6 +57,7 @@ public final class SimulationEngine {
     private final HardwareTelemetry telemetry = new HardwareTelemetry();
     private final HudOverlay hud = new HudOverlay();
     private final RelativisticAudioEngine audio = new RelativisticAudioEngine();
+    private final FramebufferCapture frameCapture = new FramebufferCapture();
 
     private boolean draggingCamera = false;
     private boolean mouseDown = false;
@@ -71,6 +66,7 @@ public final class SimulationEngine {
     private boolean pendingSpawnStar = false;
     private boolean pendingClearStars = false;
     private boolean pendingScreenshot = false;
+    private boolean pendingResetTaa = false;
 
     private double anchorX;
     private double anchorY;
@@ -83,57 +79,101 @@ public final class SimulationEngine {
     private long window = NULL;
 
     public SimulationEngine() {
-        this(false);
+        this(false, false, null);
     }
 
     public SimulationEngine(boolean captureShowcaseMode) {
+        this(captureShowcaseMode, false, null);
+    }
+
+    public SimulationEngine(boolean captureShowcaseMode, boolean benchmarkMode, Path externalGwDataPath) {
         this.captureShowcaseMode = captureShowcaseMode;
+        this.benchmarkMode = benchmarkMode;
+        this.externalGwDataPath = externalGwDataPath;
     }
 
     public void run() {
+        boolean offscreenMode = captureShowcaseMode || benchmarkMode;
+        if (externalGwDataPath != null) {
+            try {
+                GwReferenceData loaded = GwReferenceData.loadFromFile(externalGwDataPath);
+                System.out.println("[BlackHole] Loaded external GWOSC dataset: " + loaded.label()
+                        + " (" + loaded.sampleCount() + " samples)");
+            } catch (IOException e) {
+                System.err.println("[BlackHole] Failed to load --gw-data " + externalGwDataPath + ": " + e.getMessage());
+            }
+        }
+
         GLFWErrorCallback errorCallback = GLFWErrorCallback.createPrint(System.err);
         errorCallback.set();
         if (!glfwInit()) {
+            errorCallback.free();
             throw new IllegalStateException("Unable to initialize GLFW");
         }
 
         try {
             glfwDefaultWindowHints();
             glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-            glfwWindowHint(GLFW_RESIZABLE, captureShowcaseMode ? GLFW_FALSE : GLFW_TRUE);
+            glfwWindowHint(GLFW_RESIZABLE, offscreenMode ? GLFW_FALSE : GLFW_TRUE);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
             glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
             glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+            if (Boolean.getBoolean("blackhole.glDebug")) {
+                glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+            }
 
-            int initW = captureShowcaseMode ? 640 : windowW;
-            int initH = captureShowcaseMode ? 360 : windowH;
+            int initW = offscreenMode ? 640 : windowW;
+            int initH = offscreenMode ? 360 : windowH;
             window = glfwCreateWindow(initW, initH,
-                    "BlackHole v1.1 — Relativistic Kerr-Schild, Binary Merger, Wormhole & TDE Engine", NULL, NULL);
+                    "BlackHole v2.0 — Relativistic Kerr-Schild, Binary Merger, Wormhole & TDE Engine", NULL, NULL);
             if (window == NULL) {
                 throw new RuntimeException("Failed to create GLFW OpenGL 4.3 Core window");
             }
 
-            if (!captureShowcaseMode) {
+            if (!offscreenMode) {
                 SettingsStore.load(state);
-                applyWindowIcon(window);
+                WindowIconLoader.applyWindowIcon(window);
                 setupCallbacks(window);
+                // Query actual HiDPI physical framebuffer dimensions before creating RenderTargets
+                glfwGetFramebufferSize(window, winSizeWBuf, winSizeHBuf);
+                if (winSizeWBuf[0] > 0 && winSizeHBuf[0] > 0) {
+                    windowW = winSizeWBuf[0];
+                    windowH = winSizeHBuf[0];
+                }
             }
 
             glfwMakeContextCurrent(window);
-            glfwSwapInterval(captureShowcaseMode ? 0 : (state.vsync ? 1 : 0));
-            if (!captureShowcaseMode) {
+            glfwSwapInterval(offscreenMode ? 0 : (state.vsync ? 1 : 0));
+            if (!offscreenMode) {
                 glfwShowWindow(window);
             }
 
             GL.createCapabilities();
+            ShaderProgram.installDebugCallbackIfEnabled();
 
             String glRenderer = glGetString(GL_RENDERER);
             String glVersion = glGetString(GL_VERSION);
             telemetry.initOpenGlInfo(glRenderer, glVersion);
 
+            if (benchmarkMode) {
+                try (BlackHoleRenderer renderer = new BlackHoleRenderer(1920, 1080);
+                     UiRenderer uiRenderer = new UiRenderer();
+                     GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
+                    BenchmarkAndShowcaseRunner.runBenchmarks(renderer, uiRenderer, gpuTimers,
+                            state, camera, binaryPhysics, telemetry, hud);
+                }
+                return;
+            }
+
             if (captureShowcaseMode) {
-                runShowcaseCapture(glRenderer, glVersion);
+                telemetry.startBackgroundSampler();
+                try (BlackHoleRenderer renderer = new BlackHoleRenderer(1920, 1080);
+                     UiRenderer uiRenderer = new UiRenderer();
+                     GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
+                    BenchmarkAndShowcaseRunner.runShowcaseCapture(renderer, uiRenderer, gpuTimers,
+                            state, camera, binaryPhysics, telemetry, hud);
+                }
                 return;
             }
 
@@ -145,17 +185,18 @@ public final class SimulationEngine {
                  GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
 
                 ShaderProgram.checkGlError("SimulationEngine.startup");
-                System.out.println("[BlackHole] OpenGL " + glVersion + " | GPU: " + glRenderer
-                        + " | Cinema Attract Mode, Anamorphic Glare, Compute TDE & Dual Cubemaps validated.");
+                System.out.println("[BlackHole] v2.0.0 | OpenGL " + glVersion + " | GPU: " + glRenderer
+                        + " | Exact Kerr-Schild RK4/DOPRI5(4), 64^3 Grid-Hydro TDE, 2.5PN/QNM Merger & Sci Diag ready.");
 
                 runRenderLoop(renderer, uiRenderer, gpuTimers);
             }
         } finally {
-            if (!captureShowcaseMode) {
+            if (!offscreenMode) {
                 SettingsStore.save(state);
             }
+            frameCapture.close();
             audio.close();
-            telemetry.stop();
+            telemetry.close();
             if (window != NULL) {
                 glfwFreeCallbacks(window);
                 glfwDestroyWindow(window);
@@ -166,13 +207,19 @@ public final class SimulationEngine {
         }
     }
 
-    /** Zero-allocation real-time render loop. */
+    /** Zero-allocation real-time render loop with minimize idle-skip and 6-pass GPU/CPU profiling. */
     private void runRenderLoop(BlackHoleRenderer renderer, UiRenderer uiRenderer, GpuTimerQueries gpuTimers) {
         long lastFrameNano = System.nanoTime();
         long fpsTimerNano = lastFrameNano;
         int frameCounter = 0;
 
         while (!glfwWindowShouldClose(window)) {
+            if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE || windowW <= 0 || windowH <= 0) {
+                glfwWaitEventsTimeout(0.05);
+                lastFrameNano = System.nanoTime();
+                continue;
+            }
+
             long frameStartNano = System.nanoTime();
 
             boolean resizedThisFrame = false;
@@ -182,8 +229,12 @@ public final class SimulationEngine {
                 resizedThisFrame = true;
             }
 
+            if (pendingResetTaa) {
+                renderer.resetTaaHistory();
+                pendingResetTaa = false;
+            }
             if (pendingClearStars) {
-                renderer.clearTdeStars();
+                renderer.clearTdeStars(state.tdeSeed);
                 pendingClearStars = false;
             }
             if (pendingSpawnStar) {
@@ -208,11 +259,14 @@ public final class SimulationEngine {
                 telemetryTick = true;
             }
 
+            float rawGpuTotalMs = 0.0f;
             if (gpuTimers.pollPreviousFrame()) {
-                telemetry.updateGpuPassTimings(gpuTimers.rayMs(), gpuTimers.tdeMs(),
-                        gpuTimers.bloomMs(), gpuTimers.uiMs());
+                telemetry.updateGpuPassTimings(gpuTimers.rayMs(), gpuTimers.tdeComputeMs(),
+                        gpuTimers.tdeRenderMs(), gpuTimers.taaMs(), gpuTimers.postMs(), gpuTimers.uiMs());
+                rawGpuTotalMs = gpuTimers.totalGpuMs();
             }
 
+            long physStart = System.nanoTime();
             if (!state.paused) {
                 state.simTime += simDt;
                 if (state.binaryMode) {
@@ -221,6 +275,7 @@ public final class SimulationEngine {
             }
             state.tickUiTimers(wallDt);
             camera.update(wallDt, state, keyUpHeld, keyDownHeld, renderer.tdeShearEnergy(), true);
+            telemetry.cpuPhysicsMs = telemetry.cpuPhysicsMs * 0.85f + ((System.nanoTime() - physStart) * 1e-6f) * 0.15f;
 
             if (camera.consumeAttractSpawnTrigger() && !state.wormholeMode && !state.binaryMode) {
                 renderer.spawnTdeStar(state);
@@ -229,395 +284,40 @@ public final class SimulationEngine {
                 state.showToast(toastSb);
             }
 
-            // Passes 1..3: Kerr-Schild / Binary Merger / Wormhole Raytrace, Compute TDE, TAA, Bloom, Anamorphic ACES
+            // Passes 1..3: Raytrace, 64^3 Hydro TDE, TAA, Karis Bloom, Anamorphic, Hill ACES + IEC sRGB
             renderer.renderFrame(windowW, windowH, wallDt, simDt, state, camera, binaryPhysics, gpuTimers, 0);
             telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
             telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
             telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
             telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
             telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
+            telemetry.tdeMeanEnergy = renderer.tdeMeanEnergy();
+            telemetry.tdeMeanAngMomY = renderer.tdeMeanAngMomY();
+            telemetry.tdePeakTempK = renderer.tdePeakTempK();
+            telemetry.tdeSubsteps = renderer.tdeSubsteps();
+            telemetry.tdeParticleStepsPerSec = renderer.tdeParticleStepsPerSec();
             audio.updatePhysics(state, camera, renderer.tdeShearEnergy(), binaryPhysics);
 
-            // [F12] Live HUD-free PNG capture read directly from clean post-composite backbuffer (zero flicker)
+            // [F12] Bounded-executor HUD-free PNG snapshot
             if (pendingScreenshot) {
                 pendingScreenshot = false;
-                captureLiveSnapshotAsync(windowW, windowH);
+                frameCapture.captureLiveSnapshotAsync(windowW, windowH, state);
             }
 
-            // Pass 4: Cinema Bottom Pill, Toasts, or Full Glassmorphic Profiler & Controls HUD
+            // Pass 4: Observatory HUD + [F3] Scientific Visualizer
+            long hudStart = System.nanoTime();
             gpuTimers.beginUi();
             hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, telemetryTick, false, state, camera, binaryPhysics, telemetry);
             gpuTimers.endUi();
+            telemetry.cpuHudMs = telemetry.cpuHudMs * 0.85f + ((System.nanoTime() - hudStart) * 1e-6f) * 0.15f;
 
             float rawCpuSubmitMs = (System.nanoTime() - frameStartNano) * 1e-6f;
-            telemetry.recordFrameSample(rawCpuSubmitMs);
+            telemetry.recordFrameSample(rawCpuSubmitMs, rawGpuTotalMs);
 
             gpuTimers.advanceFrame();
 
             glfwSwapBuffers(window);
             glfwPollEvents();
-        }
-    }
-
-    /** Captures a clean HUD-free RGB snapshot from framebuffer 0 and writes PNG asynchronously. */
-    private void captureLiveSnapshotAsync(int width, int height) {
-        byte[] rgb = readFramebufferRgb(0, width, height);
-        String filename = "blackhole_" + SNAPSHOT_FMT.format(LocalDateTime.now()) + ".png";
-        Path captureDir = resolveCaptureDirectory();
-        Path outPath = captureDir.resolve(filename);
-        String displayRel = captureDir.isAbsolute()
-                ? ("~/Pictures/BlackHole/" + filename)
-                : ("captures/" + filename);
-
-        Thread writer = new Thread(() -> {
-            try {
-                PngWriter.writeRgbPng(outPath, width, height, rgb);
-                state.showSavedToast(displayRel);
-                System.out.println("[Capture] Saved " + width + "x" + height + " PNG -> " + outPath);
-            } catch (IOException e) {
-                state.showToast("CAPTURE FAILED: " + e.getMessage());
-                System.err.println("[Capture] Failed to write PNG: " + e.getMessage());
-            }
-        }, "png-snapshot-writer");
-        writer.setDaemon(true);
-        writer.start();
-    }
-
-    /**
-     * Resolves a guaranteed-writable screenshot directory: uses {@code ~/Pictures/BlackHole}
-     * when launched from a packaged installer/AppImage or read-only working directory, and
-     * local {@code captures/} during repository development.
-     */
-    private static Path resolveCaptureDirectory() {
-        boolean packaged = System.getProperty("jpackage.app-path") != null
-                || System.getenv("APPIMAGE") != null;
-        Path cwd = Path.of("").toAbsolutePath();
-        if (packaged || !Files.isWritable(cwd)) {
-            String home = System.getProperty("user.home", ".");
-            return Path.of(home, "Pictures", "BlackHole");
-        }
-        return Path.of("captures");
-    }
-
-    /**
-     * Automated {@code --capture-showcase} generator rendering 6 pixel-exact 1920x1080 PNGs
-     * into {@code docs/media/} via an offscreen RGBA8 capture FBO, then exiting cleanly.
-     */
-    private void runShowcaseCapture(String glRenderer, String glVersion) {
-        int w = SHOWCASE_WIDTH;
-        int h = SHOWCASE_HEIGHT;
-        System.out.println("[Showcase] OpenGL " + glVersion + " | GPU: " + glRenderer
-                + " | Rendering 7 curated " + w + "x" + h + " showcase PNGs into docs/media/...");
-
-        telemetry.startBackgroundSampler();
-        int captureFbo = glGenFramebuffers();
-        int captureTex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, captureTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, captureTex, 0);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            throw new RuntimeException("Showcase 1080p capture FBO incomplete");
-        }
-
-        try (BlackHoleRenderer renderer = new BlackHoleRenderer(w, h);
-             UiRenderer uiRenderer = new UiRenderer();
-             GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
-
-            ShaderProgram.checkGlError("Showcase.init");
-
-            // 1. hero_kerr_edge.png — Gargantua-style edge-on Kerr black hole (a* = 0.96, Doppler + anamorphic flare)
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_CLEAN);
-            state.wormholeMode = false;
-            state.spinParam = 0.96f;
-            state.diskTempScale = 1.02f;
-            state.diskDensity = 1.08f;
-            state.jetPower = 0.55f;
-            state.bloomStrength = 0.42f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.72f;
-            state.exposure = 1.18f;
-            state.fovDeg = 22.0f;
-            state.simTime = 4.2;
-            camera.setShowcasePose(34.0, 0.28, 0.145, -0.17, 0.0, 0.0, state);
-            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
-                    Path.of("docs/media/hero_kerr_edge.png"));
-
-            // 2. tde_shredding.png — Upgraded TDE Lab: Solar G2V (beta=1.85, +24 deg) bound fallback torus + unbound tail
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_CLEAN);
-            state.wormholeMode = false;
-            state.spinParam = 0.96f;
-            state.tdeArchetypeIndex = 0; // Solar G2V
-            state.tdeBeta = 1.85f;
-            state.tdeInclinationDeg = 24.0f;
-            state.diskDensity = 0.44f;
-            state.jetPower = 0.0f;
-            state.bloomStrength = 0.44f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.44f;
-            state.exposure = 1.16f;
-            state.fovDeg = 24.0f;
-            state.simTime = 8.5;
-            camera.setShowcasePose(30.0, 0.85, 0.48, -0.08, 0.0, 0.0, state);
-            renderer.clearTdeStars();
-            renderer.spawnTdeStar(state);
-            renderer.stepTdeComputeOnly(760, 1.0 / 60.0, state);
-            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
-                    Path.of("docs/media/tde_shredding.png"));
-
-            // Benchmark 10x TDE timelapse substepping at 1920x1080 on RTX 4060
-            state.setTimeScale(10.0f);
-            renderer.resetTaaHistory();
-            float tde10xRay = 0f, tde10xTde = 0f, tde10xBlm = 0f;
-            for (int f = 0; f < 24; f++) {
-                double wDt = 1.0 / 120.0;
-                double sDt = state.effectiveSimDt(wDt);
-                state.simTime += sDt;
-                renderer.renderFrame(w, h, wDt, sDt, state, camera, binaryPhysics, gpuTimers, captureFbo);
-                gpuTimers.beginUi();
-                gpuTimers.endUi();
-                glFinish();
-                if (gpuTimers.pollPreviousFrame() && f >= 8) {
-                    tde10xRay = gpuTimers.rayMs();
-                    tde10xTde = gpuTimers.tdeMs();
-                    tde10xBlm = gpuTimers.bloomMs();
-                }
-                gpuTimers.advanceFrame();
-            }
-            float tde10xTot = tde10xRay + tde10xTde + tde10xBlm;
-            System.out.printf("[Showcase] TDE 10x Timelapse 1080p TAA GPU timing: RAY=%.2f ms, TDE=%.2f ms, BLM=%.2f ms, TOTAL=%.2f ms (%.1f FPS)%n",
-                    tde10xRay, tde10xTde, tde10xBlm, tde10xTot, 1000.0f / Math.max(0.1f, tde10xTot));
-
-            // 3. wormhole_throat.png — Morris-Thorne wormhole showing Universe B nebula & ringed planet ghost arcs
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_CLEAN);
-            state.wormholeMode = true;
-            state.wormholeRho = 2.60f;
-            state.wormholeA = 0.45f;
-            state.wormholeM = 1.25f;
-            state.bloomStrength = 0.34f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.26f;
-            state.exposure = 1.20f;
-            state.fovDeg = 22.5f;
-            camera.setShowcaseWormholePose(9.4, 0.06, 0.04, 0.0);
-            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
-                    Path.of("docs/media/wormhole_throat.png"));
-
-            // 4. horizon_plunge.png — Interior Kerr plunge looking back at blueshifted exterior sky & disk ring
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_CLEAN);
-            state.wormholeMode = false;
-            state.spinParam = 0.98f;
-            state.plungeActive = true;
-            state.freeFallMode = true;
-            state.plungeHorizonCrossed = true;
-            state.plungeVelocityC = 1.01f;
-            state.plungeTidalGrad = 2.15f;
-            state.plungeZone = SimulationState.ZONE_INTERIOR;
-            state.cauchyFlashIntensity = 0.22f;
-            state.bloomStrength = 0.36f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.42f;
-            state.exposure = 1.08f;
-            state.fovDeg = 26.0f;
-            state.simTime = 7.5;
-            renderer.clearTdeStars();
-            camera.setShowcasePose(1.02, 0.42, 0.14, -0.06, 1.85, -0.08, state);
-            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
-                    Path.of("docs/media/horizon_plunge.png"));
-
-            // 5. hud_telemetry.png — Modular Glassmorphic Observatory HUD (TDE LAB Tab + Timelapse Dock + Live Counters)
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_FULL);
-            state.activeConsoleTab = SimulationState.TAB_TDE_LAB;
-            state.controlsExpanded = true;
-            state.wormholeMode = false;
-            state.spinParam = 0.98f;
-            state.tdeArchetypeIndex = 2; // Blue O-Type showcase in TDE Lab
-            state.tdeBeta = 2.05f;
-            state.tdeInclinationDeg = 28.0f;
-            state.setTimeScale(1.00f);
-            state.jetPower = 0.55f;
-            state.bloomStrength = 0.40f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.56f;
-            state.exposure = 1.16f;
-            state.fovDeg = 22.5f;
-            state.simTime = 6.0;
-            camera.setShowcasePose(35.0, 0.34, 0.19, -0.14, 0.0, 0.0, state);
-            renderer.clearTdeStars();
-            renderer.spawnTdeStar(state);
-            renderer.stepTdeComputeOnly(560, 1.0 / 60.0, state);
-            // Warm up 1x TAA + hardware GPU timers + full 120-frame oscilloscope trace
-            renderer.resetTaaHistory();
-            for (int f = 0; f < 135; f++) {
-                long t0 = System.nanoTime();
-                double wDt = 1.0 / 120.0;
-                double sDt = state.effectiveSimDt(wDt);
-                state.simTime += sDt;
-                renderer.renderFrame(w, h, wDt, sDt, state, camera, binaryPhysics, gpuTimers, captureFbo);
-                glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
-                glViewport(0, 0, w, h);
-                gpuTimers.beginUi();
-                hud.render(uiRenderer, w, h, -10.0, -10.0, false, false, state, camera, binaryPhysics, telemetry);
-                gpuTimers.endUi();
-                float submitMs = (System.nanoTime() - t0) * 1e-6f;
-                if (f >= 12) {
-                    glFinish();
-                    if (gpuTimers.pollPreviousFrame()) {
-                        telemetry.updateGpuPassTimings(gpuTimers.rayMs(), gpuTimers.tdeMs(),
-                                gpuTimers.bloomMs(), gpuTimers.uiMs());
-                    }
-                    telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
-                    telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
-                    telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
-                    telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
-                    telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
-                    telemetry.pollOpenGlVram();
-                    telemetry.wallFrameMs = Math.max(1.0f, telemetry.gpuTotalMs > 0.1f ? telemetry.gpuTotalMs : submitMs);
-                    telemetry.currentFps = 1000.0f / Math.max(1.0f, telemetry.wallFrameMs);
-                    telemetry.recordFrameSample(submitMs);
-                }
-                gpuTimers.advanceFrame();
-            }
-            System.out.printf("[Showcase] Single Kerr + TDE 1x 1080p TAA GPU timing: RAY=%.2f ms, TDE=%.2f ms, BLM=%.2f ms, UI=%.2f ms, TOTAL=%.2f ms (%.1f FPS)%n",
-                    telemetry.gpuRayMs, telemetry.gpuTdeMs, telemetry.gpuBloomMs, telemetry.gpuUiMs,
-                    telemetry.gpuTotalMs, 1000.0f / Math.max(0.1f, telemetry.gpuTotalMs));
-            // Render final crisp HUD frame with 5.0x Timelapse badge active for showcase clarity
-            state.setTimeScale(5.0f);
-            renderer.renderFrame(w, h, 1.0 / 120.0, 0.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
-            telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
-            telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
-            telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
-            telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
-            telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
-            glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
-            glViewport(0, 0, w, h);
-            gpuTimers.beginUi();
-            hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, binaryPhysics, telemetry);
-            gpuTimers.endUi();
-            gpuTimers.advanceFrame();
-            saveCaptureFbo(captureFbo, w, h, Path.of("docs/media/hud_telemetry.png"));
-
-            // 6. binary_merger.png — Late inspiral / pre-coalescence binary black holes with mutual eyebrow lensing & shock bridge
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_CLEAN);
-            state.wormholeMode = false;
-            state.binaryMode = true;
-            state.binaryMassRatio = 0.65f;
-            state.setTimeScale(1.00f);
-            state.binaryGwOverlay = true;
-            state.diskTempScale = 1.00f;
-            state.diskDensity = 1.08f;
-            state.bloomStrength = 0.25f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.22f;
-            state.exposure = 1.12f;
-            state.fovDeg = 23.0f;
-            binaryPhysics.advanceToSeparation(state.binaryMassRatio, 5.25);
-            double broadsideYaw = Math.atan2(binaryPhysics.pos1X - binaryPhysics.pos2X,
-                    binaryPhysics.pos1Z - binaryPhysics.pos2Z) + Math.PI * 0.5 - 0.14;
-            camera.setShowcasePose(28.5, broadsideYaw, 0.38, -0.07, 0.0, 0.0, state);
-            // Benchmark live 1080p Binary Merger GPU frame time with TAA active
-            renderer.resetTaaHistory();
-            float binRayMs = 0f, binBlmMs = 0f;
-            for (int f = 0; f < 28; f++) {
-                renderer.renderFrame(w, h, 1.0 / 120.0, 1.0 / 120.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
-                gpuTimers.beginUi();
-                gpuTimers.endUi();
-                glFinish();
-                if (gpuTimers.pollPreviousFrame() && f >= 8) {
-                    binRayMs = gpuTimers.rayMs();
-                    binBlmMs = gpuTimers.bloomMs();
-                }
-                gpuTimers.advanceFrame();
-            }
-            float binTotalMs = binRayMs + binBlmMs;
-            System.out.printf("[Showcase] Binary Merger 1080p TAA GPU timing: RAY=%.2f ms, TAA+BLM=%.2f ms, TOTAL=%.2f ms (%.1f FPS)%n",
-                    binRayMs, binBlmMs, binTotalMs, 1000.0f / Math.max(0.1f, binTotalMs));
-            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
-                    Path.of("docs/media/binary_merger.png"));
-
-            // 7. eht_polarization.png — Event Horizon Telescope 230 GHz VLBI + Kerr-dragged Polarized B-Field Swirl
-            state.resetDefaults();
-            state.setHudMode(SimulationState.HUD_CLEAN);
-            state.wormholeMode = false;
-            state.binaryMode = false;
-            state.spinParam = 0.94f;
-            state.ehtRadioPalette = true;
-            state.ehtPolarization = true;
-            state.diskDensity = 1.18f;
-            state.jetPower = 0.25f;
-            state.bloomStrength = 0.38f;
-            state.anamorphicEnabled = true;
-            state.anamorphicStrength = 0.26f;
-            state.exposure = 1.20f;
-            state.fovDeg = 25.5f;
-            state.simTime = 3.6;
-            renderer.clearTdeStars();
-            camera.setShowcasePose(31.5, 0.35, 0.60, -0.05, 0.0, 0.0, state);
-            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, w, h, false,
-                    Path.of("docs/media/eht_polarization.png"));
-
-            ShaderProgram.checkGlError("Showcase.finish");
-            System.out.println("[Showcase] All 7 1920x1080 showcase PNGs saved successfully.");
-        } catch (IOException e) {
-            throw new RuntimeException("Failed writing showcase PNGs", e);
-        } finally {
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glDeleteTextures(captureTex);
-            glDeleteFramebuffers(captureFbo);
-        }
-    }
-
-    private void renderAndSaveShowcase(BlackHoleRenderer renderer, UiRenderer uiRenderer,
-                                       GpuTimerQueries gpuTimers, int captureFbo,
-                                       int w, int h, boolean withHud, Path outPath) throws IOException {
-        // Converge 16 Halton(2,3) TAA sub-pixel jitter samples on the frozen showcase frame
-        renderer.resetTaaHistory();
-        for (int s = 0; s < 16; s++) {
-            renderer.renderFrame(w, h, 0.0, 0.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
-            gpuTimers.beginUi();
-            if (withHud && s == 15) {
-                glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
-                glViewport(0, 0, w, h);
-                hud.render(uiRenderer, w, h, -10.0, -10.0, true, false, state, camera, binaryPhysics, telemetry);
-            }
-            gpuTimers.endUi();
-            gpuTimers.advanceFrame();
-        }
-        saveCaptureFbo(captureFbo, w, h, outPath);
-    }
-
-    private static void saveCaptureFbo(int fbo, int width, int height, Path outPath) throws IOException {
-        glFinish();
-        byte[] rgb = readFramebufferRgb(fbo, width, height);
-        PngWriter.writeRgbPng(outPath, width, height, rgb);
-        long bytes = Files.size(outPath);
-        System.out.println("[Showcase] Wrote " + outPath + " (" + width + "x" + height + ", " + (bytes / 1024) + " KB)");
-    }
-
-    private static byte[] readFramebufferRgb(int fbo, int width, int height) {
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-        if (fbo == 0) {
-            glReadBuffer(GL_BACK);
-        }
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        int byteCount = width * height * 3;
-        ByteBuffer nativeBuf = MemoryUtil.memAlloc(byteCount);
-        try {
-            glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, nativeBuf);
-            byte[] rgb = new byte[byteCount];
-            nativeBuf.get(rgb);
-            return rgb;
-        } finally {
-            MemoryUtil.memFree(nativeBuf);
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         }
     }
 
@@ -820,28 +520,56 @@ public final class SimulationEngine {
                 state.showToast(state.showReticle ? "ASTROPHYSICAL SCALE RETICLE: ON" : "ASTROPHYSICAL SCALE RETICLE: OFF");
             }
             case HudOverlay.ACT_FULLSCREEN -> toggleFullscreen();
+            case SimAction.ACT_INTEGRATOR_TOGGLE -> {
+                state.integratorMode = (state.integratorMode == SimulationState.INTEGRATOR_RK4)
+                        ? SimulationState.INTEGRATOR_DOPRI54 : SimulationState.INTEGRATOR_RK4;
+                pendingResetTaa = true;
+                state.showToast(state.integratorMode == SimulationState.INTEGRATOR_DOPRI54
+                        ? "GEODESIC SOLVER: ADAPTIVE DOPRI5(4)"
+                        : "GEODESIC SOLVER: VGPR-OPTIMIZED RK4");
+            }
+            case SimAction.ACT_SCIENTIFIC_DIAG -> {
+                state.cycleScientificDiagMode();
+                pendingResetTaa = true;
+                state.showToast("SCIENTIFIC MODE: " + state.scientificDiagLabel());
+            }
+            case SimAction.ACT_TDE_HYDRO_TOGGLE -> {
+                state.tdeHydroEnabled = !state.tdeHydroEnabled;
+                state.showToast(state.tdeHydroEnabled
+                        ? "TDE PHYSICS: 64^3 GRID HYDRO + SHOCK"
+                        : "TDE PHYSICS: PURE GRAVITY CONSERVATION");
+            }
             case HudOverlay.ACT_LIGO_GW150914 -> {
+                camera.disengageAttractTour(state);
+                state.clearPlungeTelemetry();
                 state.binaryMode = true;
                 state.wormholeMode = false;
                 state.binaryMassRatio = 0.81f;
                 binaryPhysics.reset(state.binaryMassRatio);
                 state.paused = false;
-                state.showToast("LIGO GW150914: 36 + 29 M_sun (q = 0.81)");
+                pendingResetTaa = true;
+                state.showToast("LIGO GW150914: 35.6 + 30.6 M_sun (q = 0.81)");
             }
             case HudOverlay.ACT_LIGO_GW190412 -> {
+                camera.disengageAttractTour(state);
+                state.clearPlungeTelemetry();
                 state.binaryMode = true;
                 state.wormholeMode = false;
                 state.binaryMassRatio = 0.28f;
                 binaryPhysics.reset(state.binaryMassRatio);
                 state.paused = false;
+                pendingResetTaa = true;
                 state.showToast("LIGO GW190412: 30 + 8.4 M_sun (q = 0.28)");
             }
             case HudOverlay.ACT_LIGO_EQUAL -> {
+                camera.disengageAttractTour(state);
+                state.clearPlungeTelemetry();
                 state.binaryMode = true;
                 state.wormholeMode = false;
                 state.binaryMassRatio = 1.00f;
                 binaryPhysics.reset(state.binaryMassRatio);
                 state.paused = false;
+                pendingResetTaa = true;
                 state.showToast("BINARY MERGER: EQUAL MASS (q = 1.00)");
             }
             case HudOverlay.ACT_AUTO_ORBIT -> {
@@ -1081,6 +809,9 @@ public final class SimulationEngine {
                     }
                 }
                 case GLFW_KEY_Q -> triggerAction(HudOverlay.ACT_RETICLE);
+                case GLFW_KEY_F3 -> triggerAction(SimAction.ACT_SCIENTIFIC_DIAG);
+                case GLFW_KEY_F4 -> triggerAction(SimAction.ACT_INTEGRATOR_TOGGLE);
+                case GLFW_KEY_F5 -> triggerAction(SimAction.ACT_TDE_HYDRO_TOGGLE);
                 case GLFW_KEY_F11 -> triggerAction(HudOverlay.ACT_FULLSCREEN);
                 case GLFW_KEY_ENTER -> {
                     if ((mods & GLFW_MOD_ALT) != 0) {
@@ -1166,45 +897,6 @@ public final class SimulationEngine {
             glfwSetWindowMonitor(window, NULL, windowedX, windowedY, windowedW, windowedH, GLFW_DONT_CARE);
             state.fullscreen = false;
             state.showToast("DISPLAY: WINDOWED");
-        }
-    }
-
-    /** Loads the pre-compressed 64x64 RGBA taskbar icon with zero java.desktop dependency. */
-    private static void applyWindowIcon(long winHandle) {
-        try (InputStream raw = SimulationEngine.class.getResourceAsStream("/icons/blackhole_64.bin")) {
-            if (raw == null) {
-                return;
-            }
-            try (DataInputStream dis = new DataInputStream(new BufferedInputStream(raw))) {
-                int magic = dis.readInt();
-                if (magic != 0x42484943) { // 'BHIC'
-                    return;
-                }
-                int w = dis.readInt();
-                int h = dis.readInt();
-                int expected = w * h * 4;
-                byte[] rgba = new byte[expected];
-                try (InflaterInputStream iis = new InflaterInputStream(dis)) {
-                    int off = 0;
-                    while (off < expected) {
-                        int n = iis.read(rgba, off, expected - off);
-                        if (n < 0) return;
-                        off += n;
-                    }
-                }
-                ByteBuffer buf = MemoryUtil.memAlloc(expected);
-                GLFWImage.Buffer images = GLFWImage.malloc(1);
-                try {
-                    buf.put(rgba).flip();
-                    images.position(0).width(w).height(h).pixels(buf);
-                    glfwSetWindowIcon(winHandle, images);
-                } finally {
-                    images.free();
-                    MemoryUtil.memFree(buf);
-                }
-            }
-        } catch (Throwable ignored) {
-            // Wayland compositors ignore glfwSetWindowIcon; safely no-op
         }
     }
 }

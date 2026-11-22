@@ -403,18 +403,31 @@ public final class RelativisticAudioEngine implements AutoCloseable {
         }
     }
 
+    private final Object alLock = new Object();
+    private boolean closed = false;
+
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         running = false;
-        if (synthThread != null) {
-            synthThread.interrupt();
+        Thread t = synthThread;
+        if (t != null) {
+            t.interrupt();
             try {
-                synthThread.join(400);
+                t.join(1500);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
+            if (t.isAlive()) {
+                return; // Avoid destroying OpenAL device concurrently with an active worker thread
+            }
         }
-        cleanupOpenAl();
+        synchronized (alLock) {
+            cleanupOpenAl();
+        }
     }
 
     private void cleanupOpenAl() {

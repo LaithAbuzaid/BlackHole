@@ -58,6 +58,10 @@ public final class SettingsStore {
             state.exposure = parseFloat(props, "exposure", state.exposure,
                     SimulationState.MIN_EXPOSURE, SimulationState.MAX_EXPOSURE);
             state.showReticle = parseBool(props, "showReticle", state.showReticle);
+            state.tdeHydroEnabled = parseBool(props, "tdeHydroEnabled", state.tdeHydroEnabled);
+            int savedInteg = parseInt(props, "integratorMode", state.integratorMode);
+            state.integratorMode = (savedInteg == SimulationState.INTEGRATOR_DOPRI54)
+                    ? SimulationState.INTEGRATOR_DOPRI54 : SimulationState.INTEGRATOR_RK4;
             int savedHud = parseInt(props, "hudMode", state.hudMode);
             state.setHudMode(savedHud);
         } catch (IOException ignored) {
@@ -80,6 +84,8 @@ public final class SettingsStore {
         props.setProperty("bloomStrength", Float.toString(state.bloomStrength));
         props.setProperty("exposure", Float.toString(state.exposure));
         props.setProperty("showReticle", Boolean.toString(state.showReticle));
+        props.setProperty("tdeHydroEnabled", Boolean.toString(state.tdeHydroEnabled));
+        props.setProperty("integratorMode", Integer.toString(state.integratorMode));
         props.setProperty("hudMode", Integer.toString(state.hudMode));
 
         try {

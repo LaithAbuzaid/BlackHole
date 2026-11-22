@@ -48,13 +48,13 @@ void main() {
 
     vec3 downsample;
     if (uIsFirstPass == 1) {
-        // Proper Jimenez/Karis normalized inverse-luma weighted average:
-        // suppresses single-pixel fireflies while preserving full HDR dynamic range.
-        vec3 g0 = (a + b + d + e) * 0.25;
-        vec3 g1 = (b + c + e + f) * 0.25;
-        vec3 g2 = (d + e + g + h) * 0.25;
-        vec3 g3 = (e + f + h + i) * 0.25;
-        vec3 g4 = (j + k + l + m) * 0.25;
+        // Apply soft-knee extraction per 2x2 group BEFORE Karis inverse-luma weighting
+        // so thin bright photon rings and stars surrounded by black space preserve clean bloom energy.
+        vec3 g0 = softKneeThreshold((a + b + d + e) * 0.25, 0.85, 0.65);
+        vec3 g1 = softKneeThreshold((b + c + e + f) * 0.25, 0.85, 0.65);
+        vec3 g2 = softKneeThreshold((d + e + g + h) * 0.25, 0.85, 0.65);
+        vec3 g3 = softKneeThreshold((e + f + h + i) * 0.25, 0.85, 0.65);
+        vec3 g4 = softKneeThreshold((j + k + l + m) * 0.25, 0.85, 0.65);
 
         float w0 = karisWeight(g0) * 0.125;
         float w1 = karisWeight(g1) * 0.125;
@@ -64,7 +64,6 @@ void main() {
         float wSum = max(1e-5, w0 + w1 + w2 + w3 + w4);
 
         downsample = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / wSum;
-        downsample = softKneeThreshold(downsample, 0.85, 0.65);
     } else {
         downsample = e * 0.125;
         downsample += (a + c + g + i) * 0.03125;

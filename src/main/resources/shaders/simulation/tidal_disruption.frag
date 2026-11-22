@@ -21,14 +21,15 @@ void main() {
     float turb = texture(uNoiseVol, noiseCoord).r;
     float filament = 0.72 + 0.56 * turb;
 
-    // Silky volumetric plasma kernel (broad feathered falloff avoids per-particle pinpricks)
+    // Silky volumetric plasma kernel (broad feathered falloff eliminates per-particle stippling)
     float edgeFade = 1.0 - r2;
-    float softCloud = edgeFade * edgeFade * exp(-r2 * 1.35);
-    float innerGlow = edgeFade * exp(-r2 * 3.10);
-    float density = (0.70 * softCloud + 0.30 * innerGlow) * filament;
+    float softCloud = edgeFade * edgeFade * exp(-r2 * 1.15);
+    float innerGlow = edgeFade * exp(-r2 * 2.60);
+    float density = (0.86 * softCloud + 0.14 * innerGlow) * filament;
 
-    // Rich molten orange/crimson outer corona transitioning into incandescent gold-white core
-    vec3 outerCorona = vColor * vec3(1.12, 0.78, 0.52);
+    // Temperature-aware outer corona: molten amber/crimson for cool photospheres, sapphire-cyan for hot O-type/shocked plasma
+    vec3 coronaTint = mix(vec3(1.12, 0.78, 0.52), vec3(0.68, 0.88, 1.20), smoothstep(0.60, 1.30, vTempNorm));
+    vec3 outerCorona = vColor * coronaTint;
     vec3 hotCore = vColor * vec3(1.15, 1.08, 0.98);
     vec3 finalCol = mix(outerCorona, hotCore, innerGlow * clamp(0.35 + 0.45 * vTempNorm, 0.0, 0.85));
 

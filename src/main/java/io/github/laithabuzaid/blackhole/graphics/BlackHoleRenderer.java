@@ -3,6 +3,7 @@ package io.github.laithabuzaid.blackhole.graphics;
 import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
+import io.github.laithabuzaid.blackhole.math.PlanckBlackbody;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
@@ -38,6 +39,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     };
 
     private final ShaderProgram rayProgram;
+    private final ShaderProgram rayDopriProgram;
     private final ShaderProgram wormholeProgram;
     private final ShaderProgram binaryProgram;
     private final ShaderProgram taaProgram;
@@ -73,41 +75,63 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private boolean prevShowGrid;
     private boolean prevLensing;
     private boolean prevShowDisk;
+    private boolean prevShowJets;
+    private boolean prevDoppler;
+    private boolean prevKerrSpin;
     private boolean prevFreeFall;
+    private int prevIntegratorMode;
+    private int prevDiagMode;
+    private float prevWormholeL;
+    private boolean closed = false;
 
-    // Cached Black Hole uniform locations
-    private final int uResolution;
-    private final int uTime;
-    private final int uCamPos;
-    private final int uCamForward;
-    private final int uCamRight;
-    private final int uCamUp;
-    private final int uSkybox;
-    private final int uNoiseVol;
-    private final int uBlackbodyLut;
-    private final int uSpinA;
-    private final int uHorizonR;
-    private final int uInnerHorizonR;
-    private final int uIscoR;
-    private final int uDiskTempScale;
-    private final int uDiskDensity;
-    private final int uJetPower;
-    private final int uTanHalfFov;
-    private final int uCauchyFlash;
-    private final int uSpaghettify;
-    private final int uSingularityFade;
-    private final int uAccretionSurge;
-    private final int uDoppler;
-    private final int uLensing;
-    private final int uShowDisk;
-    private final int uShowJets;
-    private final int uFreeFall;
-    private final int uShowGrid;
-    private final int uOrderVis;
-    private final int uEhtPolarization;
-    private final int uEhtRadio;
-    private final int uJitter;
-    private final int uFrameIndex;
+    // Cached Black Hole uniform locations (separate specialized RK4 vs DOPRI5(4) programs for optimal GPU VGPR occupancy)
+    private static final class KerrUniforms {
+        final int uResolution, uTime, uCamPos, uCamForward, uCamRight, uCamUp;
+        final int uSkybox, uNoiseVol, uBlackbodyLut;
+        final int uSpinA, uHorizonR, uIscoR, uDiskTempScale, uDiskDensity, uJetPower, uTanHalfFov;
+        final int uCauchyFlash, uSpaghettify, uSingularityFade, uAccretionSurge;
+        final int uDoppler, uLensing, uShowDisk, uShowJets, uFreeFall, uShowGrid;
+        final int uOrderVis, uEhtPolarization, uEhtRadio, uIntegTol, uDiagMode, uJitter, uFrameIndex;
+
+        KerrUniforms(ShaderProgram prog, boolean isDopri) {
+            uResolution = prog.uniformLocation("uResolution");
+            uTime = prog.uniformLocation("uTime");
+            uCamPos = prog.uniformLocation("uCamPos");
+            uCamForward = prog.uniformLocation("uCamForward");
+            uCamRight = prog.uniformLocation("uCamRight");
+            uCamUp = prog.uniformLocation("uCamUp");
+            uSkybox = prog.uniformLocation("uSkybox");
+            uNoiseVol = prog.uniformLocation("uNoiseVol");
+            uBlackbodyLut = prog.uniformLocation("uBlackbodyLut");
+            uSpinA = prog.uniformLocation("uSpinA");
+            uHorizonR = prog.uniformLocation("uHorizonR");
+            uIscoR = prog.uniformLocation("uIscoR");
+            uDiskTempScale = prog.uniformLocation("uDiskTempScale");
+            uDiskDensity = prog.uniformLocation("uDiskDensity");
+            uJetPower = prog.uniformLocation("uJetPower");
+            uTanHalfFov = prog.uniformLocation("uTanHalfFov");
+            uCauchyFlash = prog.uniformLocation("uCauchyFlash");
+            uSpaghettify = prog.uniformLocation("uSpaghettify");
+            uSingularityFade = prog.uniformLocation("uSingularityFade");
+            uAccretionSurge = prog.uniformLocation("uAccretionSurge");
+            uDoppler = prog.uniformLocation("uDoppler");
+            uLensing = prog.uniformLocation("uLensing");
+            uShowDisk = prog.uniformLocation("uShowDisk");
+            uShowJets = prog.uniformLocation("uShowJets");
+            uFreeFall = prog.uniformLocation("uFreeFall");
+            uShowGrid = prog.uniformLocation("uShowGrid");
+            uOrderVis = prog.uniformLocation("uOrderVis");
+            uEhtPolarization = prog.uniformLocation("uEhtPolarization");
+            uEhtRadio = prog.uniformLocation("uEhtRadio");
+            uIntegTol = isDopri ? prog.uniformLocation("uIntegTol") : -1;
+            uDiagMode = prog.uniformLocation("uDiagMode");
+            uJitter = prog.uniformLocation("uJitter");
+            uFrameIndex = prog.uniformLocation("uFrameIndex");
+        }
+    }
+
+    private final KerrUniforms kerrRk4Uniforms;
+    private final KerrUniforms kerrDopriUniforms;
 
     // Cached Wormhole uniform locations
     private final int uWhResolution;
@@ -123,6 +147,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uWhM;
     private final int uWhTanHalfFov;
     private final int uWhShowGrid;
+    private final int uWhDiagMode;
     private final int uWhJitter;
 
     // Cached Binary Merger uniform locations
@@ -165,6 +190,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uBinShowDisk;
     private final int uBinShowGrid;
     private final int uBinGwOverlay;
+    private final int uBinDiagMode;
     private final int uBinJitter;
     private final int uBinFrameIndex;
 
@@ -206,6 +232,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
         this.rayProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/kerr_blackhole.frag");
+        this.rayDopriProgram = ShaderProgram.fromResourcesWithDefines(
+                "/shaders/common/fullscreen.vert", "/shaders/simulation/kerr_blackhole.frag", "#define USE_DOPRI54 1");
         this.wormholeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/morris_thorne_wormhole.frag");
         this.binaryProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/binary_merger.frag");
         this.taaProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/taa_resolve.frag");
@@ -235,39 +263,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
         this.renderTargets = new RenderTargets(initialWidth, initialHeight, BLOOM_LEVELS);
         ShaderProgram.checkGlError("BlackHoleRenderer.init");
 
-        // Cache Black Hole uniform locations
-        uResolution = rayProgram.uniformLocation("uResolution");
-        uTime = rayProgram.uniformLocation("uTime");
-        uCamPos = rayProgram.uniformLocation("uCamPos");
-        uCamForward = rayProgram.uniformLocation("uCamForward");
-        uCamRight = rayProgram.uniformLocation("uCamRight");
-        uCamUp = rayProgram.uniformLocation("uCamUp");
-        uSkybox = rayProgram.uniformLocation("uSkybox");
-        uNoiseVol = rayProgram.uniformLocation("uNoiseVol");
-        uBlackbodyLut = rayProgram.uniformLocation("uBlackbodyLut");
-        uSpinA = rayProgram.uniformLocation("uSpinA");
-        uHorizonR = rayProgram.uniformLocation("uHorizonR");
-        uInnerHorizonR = rayProgram.uniformLocation("uInnerHorizonR");
-        uIscoR = rayProgram.uniformLocation("uIscoR");
-        uDiskTempScale = rayProgram.uniformLocation("uDiskTempScale");
-        uDiskDensity = rayProgram.uniformLocation("uDiskDensity");
-        uJetPower = rayProgram.uniformLocation("uJetPower");
-        uTanHalfFov = rayProgram.uniformLocation("uTanHalfFov");
-        uCauchyFlash = rayProgram.uniformLocation("uCauchyFlash");
-        uSpaghettify = rayProgram.uniformLocation("uSpaghettify");
-        uSingularityFade = rayProgram.uniformLocation("uSingularityFade");
-        uAccretionSurge = rayProgram.uniformLocation("uAccretionSurge");
-        uDoppler = rayProgram.uniformLocation("uDoppler");
-        uLensing = rayProgram.uniformLocation("uLensing");
-        uShowDisk = rayProgram.uniformLocation("uShowDisk");
-        uShowJets = rayProgram.uniformLocation("uShowJets");
-        uFreeFall = rayProgram.uniformLocation("uFreeFall");
-        uShowGrid = rayProgram.uniformLocation("uShowGrid");
-        uOrderVis = rayProgram.uniformLocation("uOrderVis");
-        uEhtPolarization = rayProgram.uniformLocation("uEhtPolarization");
-        uEhtRadio = rayProgram.uniformLocation("uEhtRadio");
-        uJitter = rayProgram.uniformLocation("uJitter");
-        uFrameIndex = rayProgram.uniformLocation("uFrameIndex");
+        // Cache Black Hole uniform locations for both specialized Kerr programs
+        this.kerrRk4Uniforms = new KerrUniforms(rayProgram, false);
+        this.kerrDopriUniforms = new KerrUniforms(rayDopriProgram, true);
 
         // Cache Wormhole uniform locations
         uWhResolution = wormholeProgram.uniformLocation("uResolution");
@@ -283,6 +281,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uWhM = wormholeProgram.uniformLocation("uWormholeM");
         uWhTanHalfFov = wormholeProgram.uniformLocation("uTanHalfFov");
         uWhShowGrid = wormholeProgram.uniformLocation("uShowGrid");
+        uWhDiagMode = wormholeProgram.uniformLocation("uDiagMode");
         uWhJitter = wormholeProgram.uniformLocation("uJitter");
 
         // Cache Binary Merger uniform locations
@@ -325,6 +324,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uBinShowDisk = binaryProgram.uniformLocation("uShowDisk");
         uBinShowGrid = binaryProgram.uniformLocation("uShowGrid");
         uBinGwOverlay = binaryProgram.uniformLocation("uGwOverlay");
+        uBinDiagMode = binaryProgram.uniformLocation("uDiagMode");
         uBinJitter = binaryProgram.uniformLocation("uJitter");
         uBinFrameIndex = binaryProgram.uniformLocation("uFrameIndex");
 
@@ -366,10 +366,13 @@ public final class BlackHoleRenderer implements AutoCloseable {
     }
 
     public void resize(int width, int height) {
-        if (renderTargets != null) {
-            renderTargets.close();
+        // Construct replacement BEFORE closing old RenderTargets so failure never leaves stale handles
+        RenderTargets next = new RenderTargets(width, height, BLOOM_LEVELS);
+        RenderTargets prev = this.renderTargets;
+        this.renderTargets = next;
+        if (prev != null) {
+            prev.close();
         }
-        renderTargets = new RenderTargets(width, height, BLOOM_LEVELS);
         resetTaaHistory();
     }
 
@@ -390,33 +393,25 @@ public final class BlackHoleRenderer implements AutoCloseable {
         tdeSystem.clearAll();
     }
 
+    public void clearTdeStars(long resetSeed) {
+        tdeSystem.clearAll(resetSeed);
+    }
+
     public void stepTdeComputeOnly(int steps, double dt, SimulationState state) {
         tdeSystem.stepComputeOnly(steps, dt, state);
     }
 
-    public int tdeActiveParticles() {
-        return tdeSystem.activeParticleCount();
-    }
-
-    public int tdeBoundParticles() {
-        return tdeSystem.boundParticleCount();
-    }
-
-    public int tdeUnboundParticles() {
-        return tdeSystem.unboundParticleCount();
-    }
-
-    public int tdeSwallowedParticles() {
-        return tdeSystem.totalSwallowedCount();
-    }
-
-    public float tdeShearEnergy() {
-        return tdeSystem.shearEnergy();
-    }
-
-    public float tdeHorizonSurge() {
-        return tdeSystem.horizonAccretionSurge();
-    }
+    public int tdeActiveParticles() { return tdeSystem.activeParticleCount(); }
+    public int tdeBoundParticles() { return tdeSystem.boundParticleCount(); }
+    public int tdeUnboundParticles() { return tdeSystem.unboundParticleCount(); }
+    public int tdeSwallowedParticles() { return tdeSystem.totalSwallowedCount(); }
+    public float tdeShearEnergy() { return tdeSystem.shearEnergy(); }
+    public float tdeHorizonSurge() { return tdeSystem.horizonAccretionSurge(); }
+    public float tdeMeanEnergy() { return tdeSystem.meanSpecificEnergy(); }
+    public float tdeMeanAngMomY() { return tdeSystem.meanAngularMomentumY(); }
+    public int tdePeakTempK() { return tdeSystem.peakTemperatureK(); }
+    public int tdeSubsteps() { return tdeSystem.lastSubstepsPerFrame(); }
+    public double tdeParticleStepsPerSec() { return tdeSystem.particleStepsPerSec(); }
 
     /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to default framebuffer with zero heap allocations. */
     public void renderFrame(int width, int height, double wallDt, double simDt,
@@ -424,11 +419,21 @@ public final class BlackHoleRenderer implements AutoCloseable {
         renderFrame(width, height, wallDt, simDt, state, camera, null, timers, 0);
     }
 
-    /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to {@code outputFbo} with zero heap allocations. */
+    /** Executes Passes 1, 1B (TDE Compute/Render), 1C (TAA), 2 (Bloom + Anamorphic), and 3 (Composite) with zero heap allocations. */
     public void renderFrame(int width, int height, double wallDt, double simDt,
                             SimulationState state, CameraController camera, BinaryMergerPhysics binary,
                             GpuTimerQueries timers, int outputFbo) {
+        // Enforce clean OpenGL state hygiene at frame boundary
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
         glBindVertexArray(quadVao);
+
+        int shaderDiagMode = (state.scientificDiagMode == SimulationState.DIAG_HAMILTONIAN_ERR
+                || state.scientificDiagMode == SimulationState.DIAG_STEP_DENSITY)
+                ? state.scientificDiagMode : 0;
 
         boolean useTaa = state.adaptiveAa4x;
         boolean runBinary = state.binaryMode && binary != null;
@@ -523,6 +528,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1i(uBinShowDisk, state.showDisk ? 1 : 0);
             glUniform1i(uBinShowGrid, state.showGrid ? 1 : 0);
             glUniform1i(uBinGwOverlay, state.binaryGwOverlay ? 1 : 0);
+            glUniform1i(uBinDiagMode, shaderDiagMode);
             glUniform2f(uBinJitter, jitterX, jitterY);
             glUniform1i(uBinFrameIndex, frameIndex);
 
@@ -549,80 +555,96 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1f(uWhM, state.wormholeM);
             glUniform1f(uWhTanHalfFov, tanHalfFov);
             glUniform1i(uWhShowGrid, state.showGrid ? 1 : 0);
+            glUniform1i(uWhDiagMode, shaderDiagMode);
             glUniform2f(uWhJitter, jitterX, jitterY);
 
             glDrawArrays(GL_TRIANGLES, 0, 3);
         } else {
-            rayProgram.use();
+            boolean useDopri = (state.integratorMode == SimulationState.INTEGRATOR_DOPRI54);
+            KerrUniforms ku = useDopri ? kerrDopriUniforms : kerrRk4Uniforms;
+            (useDopri ? rayDopriProgram : rayProgram).use();
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxUniverseA);
-            glUniform1i(uSkybox, 0);
+            glUniform1i(ku.uSkybox, 0);
 
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_3D, noise3dTex);
-            glUniform1i(uNoiseVol, 1);
+            glUniform1i(ku.uNoiseVol, 1);
 
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
-            glUniform1i(uBlackbodyLut, 2);
+            glUniform1i(ku.uBlackbodyLut, 2);
 
-            glUniform2f(uResolution, width, height);
-            glUniform1f(uTime, (float) state.simTime);
-            glUniform3f(uCamPos, camera.posX, camera.posY, camera.posZ);
-            glUniform3f(uCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
-            glUniform3f(uCamRight, camera.rightX, camera.rightY, camera.rightZ);
-            glUniform3f(uCamUp, camera.upX, camera.upY, camera.upZ);
-            glUniform1f(uSpinA, state.effectiveSpin());
-            glUniform1f(uHorizonR, (float) state.outerHorizonRadius());
-            glUniform1f(uInnerHorizonR, (float) state.innerHorizonRadius());
-            glUniform1f(uIscoR, (float) state.progradeIscoRadius());
-            glUniform1f(uDiskTempScale, state.diskTempScale);
-            glUniform1f(uDiskDensity, state.diskDensity);
-            glUniform1f(uJetPower, state.jetPower);
-            glUniform1f(uTanHalfFov, tanHalfFov);
-            glUniform1f(uCauchyFlash, state.cauchyFlashIntensity);
-            glUniform1f(uSpaghettify, state.spaghettification);
-            glUniform1f(uSingularityFade, state.singularityFade);
-            glUniform1f(uAccretionSurge, state.tdeHorizonSurge);
-            glUniform1i(uDoppler, state.dopplerEnabled ? 1 : 0);
-            glUniform1i(uLensing, state.lensingEnabled ? 1 : 0);
-            glUniform1i(uShowDisk, state.showDisk ? 1 : 0);
-            glUniform1i(uShowJets, state.showJets ? 1 : 0);
-            glUniform1i(uFreeFall, (state.freeFallMode || state.plungeActive) ? 1 : 0);
-            glUniform1i(uShowGrid, state.showGrid ? 1 : 0);
-            glUniform1i(uOrderVis, state.orderVisualizer ? 1 : 0);
-            glUniform1i(uEhtPolarization, state.ehtPolarization ? 1 : 0);
-            glUniform1i(uEhtRadio, state.ehtRadioPalette ? 1 : 0);
-            glUniform2f(uJitter, jitterX, jitterY);
-            glUniform1i(uFrameIndex, frameIndex);
+            glUniform2f(ku.uResolution, width, height);
+            glUniform1f(ku.uTime, (float) state.simTime);
+            glUniform3f(ku.uCamPos, camera.posX, camera.posY, camera.posZ);
+            glUniform3f(ku.uCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(ku.uCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(ku.uCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(ku.uSpinA, state.effectiveSpin());
+            glUniform1f(ku.uHorizonR, (float) state.outerHorizonRadius());
+            glUniform1f(ku.uIscoR, (float) state.progradeIscoRadius());
+            glUniform1f(ku.uDiskTempScale, state.diskTempScale);
+            glUniform1f(ku.uDiskDensity, state.diskDensity);
+            glUniform1f(ku.uJetPower, state.jetPower);
+            glUniform1f(ku.uTanHalfFov, tanHalfFov);
+            glUniform1f(ku.uCauchyFlash, state.cauchyFlashIntensity);
+            glUniform1f(ku.uSpaghettify, state.spaghettification);
+            glUniform1f(ku.uSingularityFade, state.singularityFade);
+            glUniform1f(ku.uAccretionSurge, state.tdeHorizonSurge);
+            glUniform1i(ku.uDoppler, state.dopplerEnabled ? 1 : 0);
+            glUniform1i(ku.uLensing, state.lensingEnabled ? 1 : 0);
+            glUniform1i(ku.uShowDisk, state.showDisk ? 1 : 0);
+            glUniform1i(ku.uShowJets, state.showJets ? 1 : 0);
+            glUniform1i(ku.uFreeFall, (state.freeFallMode || state.plungeActive) ? 1 : 0);
+            glUniform1i(ku.uShowGrid, state.showGrid ? 1 : 0);
+            glUniform1i(ku.uOrderVis, state.orderVisualizer ? 1 : 0);
+            glUniform1i(ku.uEhtPolarization, state.ehtPolarization ? 1 : 0);
+            glUniform1i(ku.uEhtRadio, state.ehtRadioPalette ? 1 : 0);
+            if (useDopri) {
+                glUniform1f(ku.uIntegTol, state.integratorRtol);
+            }
+            glUniform1i(ku.uDiagMode, shaderDiagMode);
+            glUniform2f(ku.uJitter, jitterX, jitterY);
+            glUniform1i(ku.uFrameIndex, frameIndex);
 
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         timers.endRay();
 
-        // PASS 1B: OpenGL 4.3 Compute TDE + Volumetric Lensed Plasma Ribbons (Single Kerr mode only)
-        timers.beginTde();
+        // PASS 1B-1: TDE Compute (64^3 Hydro Splat + Single-Dispatch Substepped Verlet-Boris)
+        timers.beginTdeCompute();
         if (!runBinary) {
-            tdeSystem.updateAndRender(width, height, wallDt, simDt, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
+            tdeSystem.dispatchCompute(wallDt, simDt, state);
         }
-        timers.endTde();
+        timers.endTdeCompute();
 
-        // PASS 1C + 2 + 2B + 3: Relativistic TAA Resolve + Karis Bloom + Anamorphic Flare + ACES Composite
+        // PASS 1B-2: TDE Volumetric Instanced HDR Plasma Ribbons (suppressed during |H|/Step heatmaps)
+        timers.beginTdeRender();
+        if (!runBinary && shaderDiagMode == 0) {
+            tdeSystem.renderParticles(width, height, blackbodyLutTex, noise3dTex, jitterX, jitterY, state, camera);
+        }
+        timers.endTdeRender();
+
+        // PASS 1C: Relativistic Temporal Anti-Aliasing (TAA Resolve with Disocclusion & 3x3 Velocity Dilation)
         glBindVertexArray(quadVao);
-        timers.beginBloom();
+        timers.beginTaa();
 
         int resolvedHdrTex = renderTargets.hdrColorTexture();
-        if (useTaa) {
+        float curWhL = (float) camera.currentWormholeL();
+        if (useTaa && shaderDiagMode == 0) {
             boolean curFreeFall = state.freeFallMode || state.plungeActive;
             float dxCam = effCamX - prevCamPosX;
             float dyCam = effCamY - prevCamPosY;
             float dzCam = effCamZ - prevCamPosZ;
             float camJumpSq = dxCam * dxCam + dyCam * dyCam + dzCam * dzCam;
             float fwdDot = camera.forwardX * prevCamFwdX + camera.forwardY * prevCamFwdY + camera.forwardZ * prevCamFwdZ;
+            boolean wormholeCrossedThroat = state.wormholeMode && ((curWhL * prevWormholeL) < 0.0f);
 
             boolean resetHist = !taaHistoryValid
                     || (state.wormholeMode != prevWormholeMode)
+                    || wormholeCrossedThroat
                     || (runBinary != prevBinaryMode)
                     || (state.binaryGwOverlay != prevBinaryGwOverlay)
                     || (state.orderVisualizer != prevOrderVis)
@@ -631,7 +653,12 @@ public final class BlackHoleRenderer implements AutoCloseable {
                     || (state.showGrid != prevShowGrid)
                     || (state.lensingEnabled != prevLensing)
                     || (state.showDisk != prevShowDisk)
+                    || (state.showJets != prevShowJets)
+                    || (state.dopplerEnabled != prevDoppler)
+                    || (state.kerrSpinEnabled != prevKerrSpin)
                     || (curFreeFall != prevFreeFall)
+                    || (state.integratorMode != prevIntegratorMode)
+                    || (shaderDiagMode != prevDiagMode)
                     || (camJumpSq > 6.25f)
                     || (fwdDot < 0.94f)
                     || (Math.abs(tanHalfFov - prevTanHalfFov) > 0.04f);
@@ -689,63 +716,58 @@ public final class BlackHoleRenderer implements AutoCloseable {
             prevShowGrid = state.showGrid;
             prevLensing = state.lensingEnabled;
             prevShowDisk = state.showDisk;
+            prevShowJets = state.showJets;
+            prevDoppler = state.dopplerEnabled;
+            prevKerrSpin = state.kerrSpinEnabled;
             prevFreeFall = curFreeFall;
+            prevIntegratorMode = state.integratorMode;
+            prevDiagMode = shaderDiagMode;
         } else {
             taaHistoryValid = false;
             taaAccumCount = 0;
         }
+        timers.endTaa();
 
-        // Record current camera pose for next frame's temporal reprojection
         prevCamPosX = effCamX; prevCamPosY = effCamY; prevCamPosZ = effCamZ;
         prevCamFwdX = camera.forwardX; prevCamFwdY = camera.forwardY; prevCamFwdZ = camera.forwardZ;
         prevCamRightX = camera.rightX; prevCamRightY = camera.rightY; prevCamRightZ = camera.rightZ;
         prevCamUpX = camera.upX; prevCamUpY = camera.upY; prevCamUpZ = camera.upZ;
         prevTanHalfFov = tanHalfFov;
+        prevWormholeL = curWhL;
         frameIndex++;
 
-        // PASS 2: 5-Level Karis-Averaged Bloom Pyramid (reads temporally resolved HDR scene)
-        downsampleProgram.use();
-        glUniform1i(uDownSource, 0);
-        glActiveTexture(GL_TEXTURE0);
+        // PASS 2 + 2B + 3: Karis Bloom Downsample -> Clean Pre-Upsample Anamorphic -> Bloom Upsample -> Hill ACES + IEC sRGB
+        timers.beginPost();
+        boolean runBloom = (shaderDiagMode == 0) && (state.bloomStrength > 0.001f);
+        boolean runAnamorphic = (shaderDiagMode == 0) && state.anamorphicEnabled && (state.anamorphicStrength > 0.001f);
 
-        for (int i = 0; i < BLOOM_LEVELS; i++) {
-            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
-            glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
-            glBindTexture(GL_TEXTURE_2D, (i == 0) ? resolvedHdrTex : renderTargets.bloomTexture(i - 1));
-            glUniform1i(uIsFirstPass, (i == 0) ? 1 : 0);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (runBloom || runAnamorphic) {
+            downsampleProgram.use();
+            glUniform1i(uDownSource, 0);
+            glActiveTexture(GL_TEXTURE0);
+            int maxDown = runBloom ? BLOOM_LEVELS : Math.min(3, BLOOM_LEVELS);
+            for (int i = 0; i < maxDown; i++) {
+                glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
+                glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
+                glBindTexture(GL_TEXTURE_2D, (i == 0) ? resolvedHdrTex : renderTargets.bloomTexture(i - 1));
+                glUniform1i(uIsFirstPass, (i == 0) ? 1 : 0);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
         }
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        upsampleProgram.use();
-        glUniform1i(uUpSource, 0);
-        glUniform1f(uFilterRadius, 1.15f);
-
-        for (int i = BLOOM_LEVELS - 2; i >= 0; i--) {
-            glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
-            glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
-            glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(i + 1));
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-        }
-        glDisable(GL_BLEND);
-
-        // PASS 2B: 2-Pass Cascaded Horizontal Anamorphic Lens Flare at 1/8 Res (zero discrete ghosts)
-        boolean runAnamorphic = state.anamorphicEnabled && state.anamorphicStrength > 0.001f;
+        // PASS 2B BEFORE BLOOM UPSAMPLE: reads clean un-bloated 1/8-res bloomTexture(2)!
         if (runAnamorphic) {
             anamorphicProgram.use();
             glUniform1i(uAnaSource, 0);
             glActiveTexture(GL_TEXTURE0);
             glViewport(0, 0, renderTargets.anamorphicWidth(), renderTargets.anamorphicHeight());
 
-            // Horizontal pass 1: extract hot peaks from mip 2 + medium streak
             glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.anamorphicFbo(0));
             glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(2));
             glUniform1f(uAnaStepScale, 1.35f);
             glUniform1i(uAnaExtractThreshold, 1);
             glDrawArrays(GL_TRIANGLES, 0, 3);
 
-            // Horizontal pass 2: wide cinema streak cascade
             glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.anamorphicFbo(1));
             glBindTexture(GL_TEXTURE_2D, renderTargets.anamorphicTexture(0));
             glUniform1f(uAnaStepScale, 4.20f);
@@ -753,16 +775,32 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
 
-        // PASS 3: Final Composite + Anamorphic Glare + Lens Dispersion + Vignette + ACES + TPDF Dither
+        if (runBloom) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            upsampleProgram.use();
+            glUniform1i(uUpSource, 0);
+            glUniform1f(uFilterRadius, 1.15f);
+
+            for (int i = BLOOM_LEVELS - 2; i >= 0; i--) {
+                glBindFramebuffer(GL_FRAMEBUFFER, renderTargets.bloomFbo(i));
+                glViewport(0, 0, renderTargets.bloomWidth(i), renderTargets.bloomHeight(i));
+                glBindTexture(GL_TEXTURE_2D, renderTargets.bloomTexture(i + 1));
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
+            glDisable(GL_BLEND);
+        }
+
+        // PASS 3: Final Composite (Stephen Hill ACES RRT+ODT + Exact IEC 61966-2-1 sRGB + Inverse-CDF TPDF Dither)
         glBindFramebuffer(GL_FRAMEBUFFER, outputFbo);
         glViewport(0, 0, width, height);
         compositeProgram.use();
         glUniform1i(uCompHdr, 0);
         glUniform1i(uCompBloom, 1);
         glUniform1i(uCompAnamorphic, 2);
-        glUniform1f(uCompStrength, state.bloomStrength);
+        glUniform1f(uCompStrength, runBloom ? state.bloomStrength : 0.0f);
         glUniform1f(uCompAnamorphicStrength, runAnamorphic ? state.anamorphicStrength : 0.0f);
-        glUniform1f(uCompExposure, state.exposure);
+        glUniform1f(uCompExposure, (shaderDiagMode != 0) ? 1.0f : state.exposure);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, resolvedHdrTex);
@@ -771,11 +809,16 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, renderTargets.anamorphicTexture(1));
         glDrawArrays(GL_TRIANGLES, 0, 3);
-        timers.endBloom();
+        glActiveTexture(GL_TEXTURE0);
+        timers.endPost();
     }
 
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         if (renderTargets != null) {
             renderTargets.close();
         }
@@ -786,6 +829,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glDeleteTextures(noise3dTex);
         glDeleteVertexArrays(quadVao);
         rayProgram.close();
+        rayDopriProgram.close();
         wormholeProgram.close();
         binaryProgram.close();
         taaProgram.close();
@@ -795,136 +839,124 @@ public final class BlackHoleRenderer implements AutoCloseable {
         compositeProgram.close();
     }
 
-    /** Precomputes a 512x1 sqrt-spaced RGB16F Planckian blackbody lookup table (900K..38000K). */
+    /** Precomputes a 512x1 CIE 1931 2-degree spectral Planckian blackbody RGBA16F LUT (900K..38000K). */
     private static int createBlackbodyLutTexture(int width) {
-        FloatBuffer data = MemoryUtil.memAllocFloat(width * 3);
-        for (int i = 0; i < width; i++) {
-            double u = (i + 0.5) / width;
-            double tempK = 900.0 + (u * u) * 37100.0;
-            double t = Math.max(9.0, Math.min(380.0, tempK / 100.0));
-
-            double r, g, b;
-            if (t <= 66.0) {
-                r = 1.0;
-                g = clamp01((99.4708025861 * Math.log(Math.max(1.0, t)) - 161.1195681661) / 255.0);
-            } else {
-                r = clamp01((329.698727446 * Math.pow(t - 60.0, -0.1332047592)) / 255.0);
-                g = clamp01((288.1221695283 * Math.pow(t - 60.0, -0.0755148492)) / 255.0);
-            }
-            if (t >= 66.0) {
-                b = 1.0;
-            } else if (t <= 19.0) {
-                b = 0.0;
-            } else {
-                b = clamp01((138.5177312231 * Math.log(t - 10.0) - 305.0447927307) / 255.0);
-            }
-
-            // Convert sRGB curve to linear HDR space once at startup
-            data.put((float) Math.pow(r, 2.2));
-            data.put((float) Math.pow(g, 2.2));
-            data.put((float) Math.pow(b, 2.2));
+        float[] lutRgba = PlanckBlackbody.buildLutRgba(width, 900.0, 38000.0);
+        FloatBuffer data = MemoryUtil.memAllocFloat(lutRgba.length);
+        try {
+            data.put(lutRgba).flip();
+            int tex = glGenTextures();
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA16F, width, 1);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, 1, GL_RGBA, GL_FLOAT, data);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            ShaderProgram.checkGlError("createBlackbodyLutTexture");
+            return tex;
+        } finally {
+            MemoryUtil.memFree(data);
         }
-        data.flip();
-
-        int tex = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, 1, 0, GL_RGB, GL_FLOAT, data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        MemoryUtil.memFree(data);
-        ShaderProgram.checkGlError("createBlackbodyLutTexture");
-        return tex;
-    }
-
-    private static double clamp01(double v) {
-        return Math.max(0.0, Math.min(1.0, v));
     }
 
     private static int bake3dNoiseVolume(ShaderProgram noiseProg, int size) {
         int tex = glGenTextures();
-        glBindTexture(GL_TEXTURE_3D, tex);
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_R16F, size, size, size, 0, GL_RED, GL_FLOAT, (ByteBuffer) null);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
-
         int fbo = glGenFramebuffers();
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, size, size);
-        noiseProg.use();
-        glUniform1f(noiseProg.uniformLocation("uSize"), (float) size);
-        int uSliceZ = noiseProg.uniformLocation("uSliceZ");
+        boolean ok = false;
+        try {
+            glBindTexture(GL_TEXTURE_3D, tex);
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_R16F, size, size, size, 0, GL_RED, GL_FLOAT, (ByteBuffer) null);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
 
-        for (int z = 0; z < size; z++) {
-            glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_3D, tex, 0, z);
-            if (z == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-                throw new RuntimeException("3D Noise bake framebuffer incomplete");
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, size, size);
+            noiseProg.use();
+            glUniform1f(noiseProg.uniformLocation("uSize"), (float) size);
+            int uSliceZ = noiseProg.uniformLocation("uSliceZ");
+
+            for (int z = 0; z < size; z++) {
+                glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_3D, tex, 0, z);
+                if (z == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                    throw new RuntimeException("3D Noise bake framebuffer incomplete");
+                }
+                glUniform1f(uSliceZ, (z + 0.5f) / size);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
             }
-            glUniform1f(uSliceZ, (z + 0.5f) / size);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            glBindTexture(GL_TEXTURE_3D, tex);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glGenerateMipmap(GL_TEXTURE_3D);
+            glBindTexture(GL_TEXTURE_3D, 0);
+
+            ShaderProgram.checkGlError("bake3dNoiseVolume");
+            ok = true;
+            return tex;
+        } finally {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteFramebuffers(fbo);
+            if (!ok) {
+                glDeleteTextures(tex);
+            }
         }
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glDeleteFramebuffers(fbo);
-
-        // Generate 3D mipmaps so grazing accretion-disk lookups stay alias-free and cache-friendly
-        glBindTexture(GL_TEXTURE_3D, tex);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glGenerateMipmap(GL_TEXTURE_3D);
-        glBindTexture(GL_TEXTURE_3D, 0);
-
-        ShaderProgram.checkGlError("bake3dNoiseVolume");
-        return tex;
     }
 
     private static int bakeHdrSkyboxCubemap(ShaderProgram skyProg, int noiseVolTex, int faceSize, String tag) {
         int cubemap = glGenTextures();
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
-        for (int face = 0; face < 6; face++) {
-            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA16F,
-                    faceSize, faceSize, 0, GL_RGBA, GL_FLOAT, (ByteBuffer) null);
-        }
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
         int fbo = glGenFramebuffers();
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, faceSize, faceSize);
-        skyProg.use();
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_3D, noiseVolTex);
-        glUniform1i(skyProg.uniformLocation("uNoiseVol"), 0);
-        glUniform1f(skyProg.uniformLocation("uFaceSize"), (float) faceSize);
-        int uFace = skyProg.uniformLocation("uFace");
-
-        for (int face = 0; face < 6; face++) {
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cubemap, 0);
-            if (face == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-                throw new RuntimeException("HDR Skybox (" + tag + ") bake framebuffer incomplete");
+        boolean ok = false;
+        try {
+            glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
+            // Packed 32-bit R11F_G11F_B10F halves cubemap VRAM (~32 MB vs 64 MB) & sampling bandwidth
+            for (int face = 0; face < 6; face++) {
+                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_R11F_G11F_B10F,
+                        faceSize, faceSize, 0, GL_RGB, GL_FLOAT, (ByteBuffer) null);
             }
-            glUniform1i(uFace, face);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, faceSize, faceSize);
+            skyProg.use();
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_3D, noiseVolTex);
+            glUniform1i(skyProg.uniformLocation("uNoiseVol"), 0);
+            glUniform1f(skyProg.uniformLocation("uFaceSize"), (float) faceSize);
+            int uFace = skyProg.uniformLocation("uFace");
+
+            for (int face = 0; face < 6; face++) {
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                        GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cubemap, 0);
+                if (face == 0 && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                    throw new RuntimeException("HDR Skybox (" + tag + ") bake framebuffer incomplete");
+                }
+                glUniform1i(uFace, face);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
+
+            glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
+            glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+            glBindTexture(GL_TEXTURE_3D, 0);
+
+            ShaderProgram.checkGlError("bakeHdrSkyboxCubemap(" + tag + ")");
+            ok = true;
+            return cubemap;
+        } finally {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteFramebuffers(fbo);
+            if (!ok) {
+                glDeleteTextures(cubemap);
+            }
         }
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glDeleteFramebuffers(fbo);
-
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
-        glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-
-        ShaderProgram.checkGlError("bakeHdrSkyboxCubemap(" + tag + ")");
-        return cubemap;
     }
 }

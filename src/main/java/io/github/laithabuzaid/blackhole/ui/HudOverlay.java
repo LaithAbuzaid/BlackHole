@@ -2,8 +2,10 @@ package io.github.laithabuzaid.blackhole.ui;
 
 import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
+import io.github.laithabuzaid.blackhole.core.SimAction;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import io.github.laithabuzaid.blackhole.core.StellarArchetype;
+import io.github.laithabuzaid.blackhole.math.KerrMetric;
 import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 
 /**
@@ -75,6 +77,9 @@ public final class HudOverlay {
     public static final int ACT_LIGO_GW150914 = 61;
     public static final int ACT_LIGO_GW190412 = 62;
     public static final int ACT_LIGO_EQUAL = 63;
+    public static final int ACT_INTEGRATOR_TOGGLE = SimAction.ACT_INTEGRATOR_TOGGLE;
+    public static final int ACT_SCIENTIFIC_DIAG = SimAction.ACT_SCIENTIFIC_DIAG;
+    public static final int ACT_TDE_HYDRO_TOGGLE = SimAction.ACT_TDE_HYDRO_TOGGLE;
 
     public static final int ACT_TOGGLE_PANEL = 100;
 
@@ -136,6 +141,8 @@ public final class HudOverlay {
     private int pressedId = 0;
 
     // Reusable scratch StringBuilders & projection buffer (zero heap allocs per frame)
+    private final ScientificVisualizer scientificVisualizer = new ScientificVisualizer();
+    private final double[] shadowExtentScratch = new double[3];
     private final StringBuilder sb = new StringBuilder(128);
     private final StringBuilder sb2 = new StringBuilder(96);
     private final StringBuilder toastScratch = new StringBuilder(96);
@@ -219,10 +226,10 @@ public final class HudOverlay {
         appendFixed2(cachedPassesLine, telemetry.gpuRayMs);
         cachedPassesLine.append(" TDE:");
         appendFixed2(cachedPassesLine, telemetry.gpuTdeMs);
-        cachedPassesLine.append(" BLM:");
-        appendFixed2(cachedPassesLine, telemetry.gpuBloomMs);
-        cachedPassesLine.append(" UI:");
-        appendFixed2(cachedPassesLine, telemetry.gpuUiMs);
+        cachedPassesLine.append(" TAA:");
+        appendFixed2(cachedPassesLine, telemetry.gpuTaaMs);
+        cachedPassesLine.append(" PST:");
+        appendFixed2(cachedPassesLine, telemetry.gpuPostMs);
 
         cachedVramLine.setLength(0);
         if (telemetry.vramTotalMb > 0) {
@@ -293,6 +300,9 @@ public final class HudOverlay {
 
         if (state.showReticle && !state.wormholeMode && !state.plungeActive) {
             renderAstrophysicalReticle(ui, windowW, windowH, state, camera, binary);
+        }
+        if (state.scientificDiagMode != SimulationState.DIAG_OFF) {
+            scientificVisualizer.render(ui, windowW, windowH, state, camera, binary, telemetry);
         }
 
         boolean plungeBannerDrawn = false;
@@ -855,7 +865,7 @@ public final class HudOverlay {
         float rx = windowW - rw - 16f;
         float ry = 16f;
         boolean expanded = state.controlsExpanded && windowH >= 500;
-        float rh = expanded ? Math.min(430f, windowH - 68f) : 44f;
+        float rh = expanded ? Math.min(456f, windowH - 68f) : 44f;
 
         float accR = modeAccentR(state);
         float accG = modeAccentG(state);
@@ -1046,7 +1056,7 @@ public final class HudOverlay {
             py = drawLogTimeScaleSlider(ui, mouseX, mouseY, px, py, innerW, state);
 
             sb.setLength(0);
-            sb.append(Math.round(11800f * state.diskTempScale)).append(" K");
+            sb.append(Math.round(9800f * state.diskTempScale)).append(" K");
             py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "DISK TEMP (K)", state.diskTempScale,
                     SimulationState.MIN_TEMP_SCALE, SimulationState.MAX_TEMP_SCALE, sb, SLIDER_TEMP);
 
@@ -1121,7 +1131,7 @@ public final class HudOverlay {
                     SimulationState.MIN_PLUNGE_SPEED, SimulationState.MAX_PLUNGE_SPEED, sb, SLIDER_PLUNGE_SPEED);
 
             sb.setLength(0);
-            sb.append(Math.round(11800f * state.diskTempScale)).append(" K");
+            sb.append(Math.round(9800f * state.diskTempScale)).append(" K");
             py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "DISK TEMP (K)", state.diskTempScale,
                     SimulationState.MIN_TEMP_SCALE, SimulationState.MAX_TEMP_SCALE, sb, SLIDER_TEMP);
 
@@ -1180,10 +1190,13 @@ public final class HudOverlay {
 
         py = drawLogTimeScaleSlider(ui, mouseX, mouseY, px, py, innerW, state);
 
-        py += 4f;
-        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 24f,
+        py += 2f;
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 22f,
                 "[E] LAUNCH STAR", false, ACT_SHRED_STAR,
                 px + colW + 6f, "[SH+C] CLEAR", false, ACT_TDE_CLEAR);
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 21f,
+                "[F5] 64^3 HYDRO", state.tdeHydroEnabled, ACT_TDE_HYDRO_TOGGLE,
+                px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
 
         py += 4f;
         // Live TDE Physics & GPU Counter Telemetry Card
@@ -1229,6 +1242,9 @@ public final class HudOverlay {
         py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                 "[M] TEMPORAL AA", state.adaptiveAa4x, ACT_ADAPTIVE_AA,
                 px + colW + 6f, "ANAMORPHIC", state.anamorphicEnabled, ACT_ANAMORPHIC);
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                "[F4] DOPRI5(4)", state.integratorMode == SimulationState.INTEGRATOR_DOPRI54, ACT_INTEGRATOR_TOGGLE,
+                px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
         py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                 "[Q] RETICLE", state.showReticle, ACT_RETICLE,
                 px + colW + 6f, "[F11] FULLSCRN", state.fullscreen, ACT_FULLSCREEN);
@@ -1605,8 +1621,21 @@ public final class HudOverlay {
             case ACT_LIGO_GW150914 -> "GW150914 preset: q=0.81 (36+29 M_sun, first LIGO detection)";
             case ACT_LIGO_GW190412 -> "GW190412 preset: q=0.28 asymmetric high-spin merger";
             case ACT_LIGO_EQUAL -> "Equal-mass binary (q=1.00): peak GW strain & 4.8% radiated M";
+            case ACT_INTEGRATOR_TOGGLE -> "Switch GPU geodesic solver: VGPR-RK4 vs Adaptive DOPRI5(4) [F4]";
+            case ACT_SCIENTIFIC_DIAG -> "Cycle [F3] Sci Mode: |H| Error -> Step Map -> Bardeen Curves";
+            case ACT_TDE_HYDRO_TOGGLE -> "Toggle 64^3 GPU Hydro Pressure+Shock vs Pure Gravity [F5]";
+            case ACT_DISK -> "Toggle volumetric Novikov-Thorne Beer-Lambert accretion disk [D]";
+            case ACT_JETS -> "Toggle collimated bipolar relativistic synchrotron jets [J]";
+            case ACT_SKY_GRID -> "Toggle celestial equatorial/meridian lensing reference grid [C]";
+            case ACT_AUTO_ORBIT -> "Toggle continuous smooth orbital camera sweep [O]";
+            case ACT_ATTRACT_TOUR -> "Toggle Director's Cut autonomous orbital showcase tour [T]";
+            case ACT_AUDIO -> "Toggle procedural 44.1 kHz OpenAL relativistic soundscape [A]";
+            case ACT_VSYNC -> "Toggle display V-Sync lock vs uncapped frame rate [V]";
+            case ACT_ANAMORPHIC -> "Toggle 1/8-res cascaded horizontal anamorphic lens flare";
+            case ACT_BINARY_AUTOLOOP -> "Automatically restart binary merger after QNM ringdown";
+            case ACT_FLY_THROUGH -> "Autonomous bidirectional flight across wormhole throat l=0";
             case ACT_TOGGLE_PANEL -> "Collapse or expand the right Observatory Console";
-            default -> "Hover control for notes \u2022 [H] Cycle HUD";
+            default -> "Hover control \u2022 [H] HUD \u2022 [F3] Sci Diag";
         };
     }
 
@@ -1668,14 +1697,21 @@ public final class HudOverlay {
             if (ok1 && ok2) {
                 ui.drawLine(x1, y1, x2, y2, 1.1f, 0.82f, 0.90f, 1.00f, 0.30f);
             }
-        } else if (projectWorldToScreen(0f, 0f, 0f, windowW, windowH, tanHalfFov, camera)) {
+        } else if (state.scientificDiagMode != SimulationState.DIAG_ANALYTICAL_OVERLAY
+                && projectWorldToScreen(0f, 0f, 0f, windowW, windowH, tanHalfFov, camera)) {
             float cx = projBuf[0];
             float cy = projBuf[1];
-            float bCritPx = Math.max(20f, Math.min(windowH * 0.42f, 5.196f * pxPerRg));
+            double spinA = state.effectiveSpin();
+            double cosInc = Math.max(-0.999, Math.min(0.999, camera.posY / Math.max(2.0, camDist)));
+            KerrMetric.shadowExtent(spinA, Math.acos(Math.abs(cosInc)), shadowExtentScratch);
+            float bCritM = (float) shadowExtentScratch[0];
+            float bCritPx = Math.max(20f, Math.min(windowH * 0.42f, bCritM * pxPerRg));
             drawCornerBrackets(ui, cx, cy, bCritPx, 0.96f, 0.78f, 0.44f, 0.56f);
 
             sb.setLength(0);
-            sb.append("SHADOW b_c=5.20M  r+=");
+            sb.append("SHADOW b_c=");
+            appendFixed2(sb, bCritM);
+            sb.append("M  r+=");
             appendFixed2(sb, (float) state.outerHorizonRadius());
             sb.append("M  ISCO=");
             appendFixed2(sb, (float) state.progradeIscoRadius());
