@@ -1,5 +1,6 @@
 package io.github.laithabuzaid.blackhole.core;
 
+import io.github.laithabuzaid.blackhole.math.BinaryParameters;
 import io.github.laithabuzaid.blackhole.math.KerrMetric;
 import io.github.laithabuzaid.blackhole.math.TdeInitialConditions;
 
@@ -38,8 +39,22 @@ public final class SimulationState {
     public static final float MAX_WORMHOLE_M = 4.00f;
 
     // Binary Black Hole Merger & Gravitational Wave parameter bounds
-    public static final float MIN_MASS_RATIO = 0.25f;
+    public static final float MIN_MASS_RATIO = 0.10f;
     public static final float MAX_MASS_RATIO = 1.00f;
+    public static final float MIN_BIN_COMP_MASS = 5.0f;
+    public static final float MAX_BIN_COMP_MASS = 100.0f;
+    public static final float MIN_BIN_SPIN = -0.95f;
+    public static final float MAX_BIN_SPIN = 0.95f;
+    public static final float MIN_BIN_INIT_SEP = 7.0f;
+    public static final float MAX_BIN_INIT_SEP = 16.0f;
+    public static final float MIN_BIN_ECC = 0.00f;
+    public static final float MAX_BIN_ECC = 0.30f;
+    public static final float MIN_BIN_ORB_INC = -60.0f;
+    public static final float MAX_BIN_ORB_INC = 60.0f;
+    public static final float MIN_BIN_OBS_INC = 0.0f;
+    public static final float MAX_BIN_OBS_INC = 180.0f;
+    public static final float MIN_BIN_DIST_MPC = 50.0f;
+    public static final float MAX_BIN_DIST_MPC = 2000.0f;
     public static final float MIN_BIN_TIME_SCALE = 0.20f;
     public static final float MAX_BIN_TIME_SCALE = 2.50f;
 
@@ -144,9 +159,20 @@ public final class SimulationState {
     public float wormholeA = 0.45f;       // Throat half-length a
     public float wormholeM = 1.25f;       // Lensing transition width M_w
 
-    // Binary Black Hole Merger Sliders
-    public float binaryMassRatio = 0.65f; // Mass ratio q = M2 / M1 [0.25 .. 1.00]
-    public float binaryTimeScale = 1.00f; // Retained for compatibility; global timeScale drives all modes
+    // Binary Black Hole Merger Sliders (v3.0 EOB + Detector Parameters)
+    public float binaryMass1Solar = 35.6f;     // Primary BH source-frame mass M1 [M_sun]
+    public float binaryMass2Solar = 30.6f;     // Secondary BH source-frame mass M2 [M_sun]
+    public float binaryMassRatio = 30.6f / 35.6f; // Derived q = min(M1,M2) / max(M1,M2)
+    public float binaryChi1 = 0.02f;           // Primary dimensionless aligned spin chi_1 [-0.95 .. +0.95]
+    public float binaryChi2 = -0.04f;          // Secondary dimensionless aligned spin chi_2 [-0.95 .. +0.95]
+    public float binaryInitialSep = 10.0f;     // Initial EOB orbital separation r_0 [7 .. 16 M]
+    public float binaryEccentricity = 0.00f;   // Initial orbital eccentricity e_0 [0.00 .. 0.30]
+    public float binaryOrbitalIncDeg = 0.0f;   // 3D orbital plane inclination [-60 .. +60 deg]
+    public float binaryObserverIncDeg = 30.0f; // Observer inclination iota relative to L_hat [0 .. 180 deg]
+    public float binaryDistanceMpc = 440.0f;   // Luminosity distance D_L [50 .. 2000 Mpc]
+    public BinaryParameters.DetectorPreset binaryDetector = BinaryParameters.DetectorPreset.LIGO_HANFORD;
+    public boolean binaryParamsDirty = false;  // Set when any binary parameter changes -> triggers EOB recalc
+    public float binaryTimeScale = 1.00f;      // Retained for compatibility; global timeScale drives all modes
 
     // Interactive TDE Lab Parameters
     public int tdeArchetypeIndex = 0;          // 0=Solar, 1=Red Giant, 2=Blue O-Type, 3=White Dwarf
@@ -170,6 +196,35 @@ public final class SimulationState {
 
     // Procedural Relativistic Audio
     public float audioVolume = 0.60f;     // Master volume [0.00 .. 1.00]
+
+    /** Builds a validated {@link BinaryParameters} snapshot from current state sliders. */
+    public BinaryParameters buildBinaryParameters() {
+        binaryMassRatio = Math.min(binaryMass1Solar, binaryMass2Solar)
+                / Math.max(1e-3f, Math.max(binaryMass1Solar, binaryMass2Solar));
+        return new BinaryParameters(
+                binaryMass1Solar, binaryMass2Solar,
+                binaryChi1, binaryChi2,
+                binaryInitialSep, binaryEccentricity,
+                binaryOrbitalIncDeg, binaryObserverIncDeg,
+                binaryDistanceMpc, binaryDetector
+        );
+    }
+
+    /** Copies a preset {@link BinaryParameters} into all UI state fields and marks dynamics dirty. */
+    public void applyBinaryParameters(BinaryParameters p) {
+        this.binaryMass1Solar = (float) p.mass1Solar;
+        this.binaryMass2Solar = (float) p.mass2Solar;
+        this.binaryMassRatio = (float) p.massRatioQ;
+        this.binaryChi1 = (float) p.chi1;
+        this.binaryChi2 = (float) p.chi2;
+        this.binaryInitialSep = (float) p.initialSepM;
+        this.binaryEccentricity = (float) p.eccentricity;
+        this.binaryOrbitalIncDeg = (float) p.orbitalIncDeg;
+        this.binaryObserverIncDeg = (float) p.observerIncDeg;
+        this.binaryDistanceMpc = (float) p.luminosityDistMpc;
+        this.binaryDetector = p.detectorPreset;
+        this.binaryParamsDirty = true;
+    }
 
     public StellarArchetype currentTdeArchetype() {
         return StellarArchetype.fromIndex(tdeArchetypeIndex);
@@ -379,7 +434,8 @@ public final class SimulationState {
         wormholeA = 0.45f;
         wormholeM = 1.25f;
 
-        binaryMassRatio = 0.65f;
+        applyBinaryParameters(BinaryParameters.presetGw150914());
+        binaryParamsDirty = false;
         binaryTimeScale = 1.00f;
         binaryGwOverlay = false;
         binaryAutoLoop = true;

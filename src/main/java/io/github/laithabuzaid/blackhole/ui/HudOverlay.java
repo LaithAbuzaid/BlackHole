@@ -80,6 +80,8 @@ public final class HudOverlay {
     public static final int ACT_INTEGRATOR_TOGGLE = SimAction.ACT_INTEGRATOR_TOGGLE;
     public static final int ACT_SCIENTIFIC_DIAG = SimAction.ACT_SCIENTIFIC_DIAG;
     public static final int ACT_TDE_HYDRO_TOGGLE = SimAction.ACT_TDE_HYDRO_TOGGLE;
+    public static final int ACT_LIGO_ALIGNED_SPIN = SimAction.ACT_LIGO_ALIGNED_SPIN;
+    public static final int ACT_BIN_DETECTOR_CYCLE = SimAction.ACT_BIN_DETECTOR_CYCLE;
 
     public static final int ACT_TOGGLE_PANEL = 100;
 
@@ -101,6 +103,15 @@ public final class HudOverlay {
     public static final int SLIDER_TIME_SCALE = 216;
     public static final int SLIDER_TDE_BETA = 217;
     public static final int SLIDER_TDE_INC = 218;
+    public static final int SLIDER_BIN_M1 = 219;
+    public static final int SLIDER_BIN_M2 = 220;
+    public static final int SLIDER_BIN_CHI1 = 221;
+    public static final int SLIDER_BIN_CHI2 = 222;
+    public static final int SLIDER_BIN_R0 = 223;
+    public static final int SLIDER_BIN_ECC = 224;
+    public static final int SLIDER_BIN_ORB_INC = 225;
+    public static final int SLIDER_BIN_OBS_INC = 226;
+    public static final int SLIDER_BIN_DIST = 227;
 
     // Preset IDs
     public static final int PRESET_EDGE = 301;
@@ -313,7 +324,7 @@ public final class HudOverlay {
                 plungeBannerDrawn = true;
             }
             if (windowW >= 780) {
-                renderRightControlPanel(ui, windowW, windowH, mouseX, mouseY, state, camera, telemetry);
+                renderRightControlPanel(ui, windowW, windowH, mouseX, mouseY, state, camera, binary, telemetry);
             }
             if (windowH >= 420) {
                 renderTimelapseTransportBar(ui, windowW, windowH, mouseX, mouseY, state);
@@ -680,35 +691,37 @@ public final class HudOverlay {
             boolean hotPhase = (ph == BinaryMergerPhysics.Phase.MERGER || ph == BinaryMergerPhysics.Phase.PLUNGE);
 
             sb.setLength(0);
-            sb.append("STAGE: ").append(ph.label()).append("  SEP: ");
+            sb.append("EOB ").append(ph.label()).append(" r:");
             appendFixed2(sb, binary.currentSeparation);
-            sb.append('M');
-            ui.drawText(sb, cx, cy, 1.06f,
+            sb.append("M q:");
+            appendFixed2(sb, binary.massRatioQ);
+            sb.append(" eta:");
+            appendFixed3(sb, binary.symMassRatio);
+            ui.drawText(sb, cx, cy, 0.96f,
                     hotPhase ? 1.00f : 0.40f,
                     hotPhase ? 0.72f : 0.90f,
                     hotPhase ? 0.38f : 1.00f, 0.98f);
-            cy += 14f;
+            cy += 13f;
 
             sb.setLength(0);
-            sb.append("GW FREQ: ");
+            sb.append("fGW:");
             appendFixed1(sb, binary.gwFreqHz);
-            sb.append("Hz  REMNANT a*: ");
-            appendFixed3(sb, binary.remnantSpin);
-            ui.drawText(sb, cx, cy, 1.02f, 0.95f, 0.84f, 0.56f, 0.96f);
-            cy += 14f;
+            sb.append("Hz chi:");
+            appendSigned2(sb, binary.chi1);
+            sb.append('/');
+            appendSigned2(sb, binary.chi2);
+            ui.drawText(sb, cx, cy, 0.96f, 0.95f, 0.84f, 0.56f, 0.96f);
+            cy += 13f;
 
             sb.setLength(0);
-            sb.append("M1:");
-            appendFixed2(sb, binary.mass1);
-            sb.append(" M2:");
-            appendFixed2(sb, binary.mass2);
-            sb.append(" Mf:");
+            sb.append("Mf:");
             appendFixed3(sb, binary.remnantMass);
-            sb.append("M  v:");
-            appendFixed2(sb, binary.orbitalBeta);
-            sb.append('c');
-            ui.drawText(sb, cx, cy, 1.00f, 0.74f, 0.84f, 0.96f, 0.95f);
-            cy += 15f;
+            sb.append("M af:");
+            appendSigned3(sb, binary.remnantSpin);
+            sb.append(" Er:");
+            appendFixed3(sb, binary.radiatedEnergy);
+            ui.drawText(sb, cx, cy, 0.94f, 0.74f, 0.84f, 0.96f, 0.95f);
+            cy += 14f;
         } else if (state.wormholeMode) {
             float lVal = (float) camera.currentWormholeL();
             float throatBand = state.wormholeA + 0.65f;
@@ -794,7 +807,10 @@ public final class HudOverlay {
             ui.drawGlassPanel(gx, gy, gw, gh, 6f, 0.03f, 0.04f, 0.07f, 0.86f, 1f, 1f, 1f, 0.14f);
 
             if (isBinary) {
-                ui.drawText("LIGO STRAIN h+(t) | QUADRUPOLE GW", gx + 6f, gy + 5f, 0.98f, 0.45f, 0.88f, 1.0f, 0.92f);
+                sb.setLength(0);
+                sb.append("NORM. VISUAL h+ | |h_det|=");
+                appendSci1(sb, Math.abs(binary.detectorStrain));
+                ui.drawText(sb, gx + 6f, gy + 5f, 0.90f, 0.45f, 0.88f, 1.0f, 0.92f);
                 float midY = gy + 17f + (gh - 22f) * 0.5f;
                 float halfAmpPx = (gh - 24f) * 0.46f;
                 ui.drawRect(gx + 4f, midY, gw - 8f, 1f, 0f, 1f, 1f, 1f, 0.16f);
@@ -860,12 +876,12 @@ public final class HudOverlay {
     private void renderRightControlPanel(UiRenderer ui, int windowW, int windowH,
                                          double mouseX, double mouseY,
                                          SimulationState state, CameraController camera,
-                                         HardwareTelemetry telemetry) {
+                                         BinaryMergerPhysics binary, HardwareTelemetry telemetry) {
         float rw = 356f;
         float rx = windowW - rw - 16f;
         float ry = 16f;
         boolean expanded = state.controlsExpanded && windowH >= 500;
-        float rh = expanded ? Math.min(456f, windowH - 68f) : 44f;
+        float rh = expanded ? Math.min(state.binaryMode ? 492f : 456f, windowH - 68f) : 44f;
 
         float accR = modeAccentR(state);
         float accG = modeAccentG(state);
@@ -907,8 +923,12 @@ public final class HudOverlay {
                 state.activeConsoleTab == SimulationState.TAB_SCENE, 0.95f, 0.78f, 0.48f, ACT_TAB_SCENE);
         drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap), py, tabW, tabH, "PHYSICS",
                 state.activeConsoleTab == SimulationState.TAB_PHYSICS, 0.36f, 0.86f, 1.00f, ACT_TAB_PHYSICS);
-        drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap) * 2f, py, tabW, tabH, "TDE LAB",
-                state.activeConsoleTab == SimulationState.TAB_TDE_LAB, 1.00f, 0.66f, 0.34f, ACT_TAB_TDE_LAB);
+        drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap) * 2f, py, tabW, tabH,
+                state.binaryMode ? "GW DET" : "TDE LAB",
+                state.activeConsoleTab == SimulationState.TAB_TDE_LAB,
+                state.binaryMode ? 0.36f : 1.00f,
+                state.binaryMode ? 0.88f : 0.66f,
+                state.binaryMode ? 1.00f : 0.34f, ACT_TAB_TDE_LAB);
         drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap) * 3f, py, tabW, tabH, "OPTICS",
                 state.activeConsoleTab == SimulationState.TAB_OPTICS, 0.72f, 0.62f, 1.00f, ACT_TAB_OPTICS);
         py += tabH + 8f;
@@ -921,7 +941,9 @@ public final class HudOverlay {
 
         switch (state.activeConsoleTab) {
             case SimulationState.TAB_PHYSICS -> py = renderPhysicsTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, camera);
-            case SimulationState.TAB_TDE_LAB -> py = renderTdeLabTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, telemetry);
+            case SimulationState.TAB_TDE_LAB -> py = state.binaryMode
+                    ? renderBinaryDetectorTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, binary)
+                    : renderTdeLabTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, telemetry);
             case SimulationState.TAB_OPTICS -> py = renderOpticsTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state);
             default -> py = renderSceneTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, camera);
         }
@@ -1034,48 +1056,62 @@ public final class HudOverlay {
                                    float px, float py, float innerW, float colW, float rowH,
                                    SimulationState state, CameraController camera) {
         if (state.binaryMode) {
-            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
                     "[G] GW RIPPLES", state.binaryGwOverlay, ACT_BINARY_GW_OVERLAY,
                     px + colW + 6f, "AUTO LOOP", state.binaryAutoLoop, ACT_BINARY_AUTOLOOP);
-            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
-                    "[L] LENSING", state.lensingEnabled, ACT_LENSING,
-                    px + colW + 6f, "[B] DOPPLER", state.dopplerEnabled, ACT_DOPPLER);
-            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
-                    "[REPLAY MERGER]", false, ACT_BINARY_REPLAY,
-                    px + colW + 6f, "[D] DISK", state.showDisk, ACT_DISK);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    state.integratorMode == SimulationState.INTEGRATOR_DOPRI54 ? "[F4] DOPRI5(4)" : "[F4] VGPR-RK4",
+                    state.integratorMode == SimulationState.INTEGRATOR_DOPRI54, ACT_INTEGRATOR_TOGGLE,
+                    px + colW + 6f, "[SH+X] REPLAY", false, ACT_BINARY_REPLAY);
 
-            py += 4f;
+            py += 2f;
             ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
-            py += 8f;
+            py += 6f;
 
             sb.setLength(0);
-            appendFixed2(sb, state.binaryMassRatio);
-            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "MASS RATIO (q)", state.binaryMassRatio,
-                    SimulationState.MIN_MASS_RATIO, SimulationState.MAX_MASS_RATIO, sb, SLIDER_BIN_MASS_RATIO);
-
-            py = drawLogTimeScaleSlider(ui, mouseX, mouseY, px, py, innerW, state);
-
-            sb.setLength(0);
-            sb.append(Math.round(9800f * state.diskTempScale)).append(" K");
-            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "DISK TEMP (K)", state.diskTempScale,
-                    SimulationState.MIN_TEMP_SCALE, SimulationState.MAX_TEMP_SCALE, sb, SLIDER_TEMP);
+            appendFixed1(sb, state.binaryMass1Solar);
+            sb.append(" Msun");
+            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "PRIMARY MASS M1", state.binaryMass1Solar,
+                    SimulationState.MIN_BIN_COMP_MASS, SimulationState.MAX_BIN_COMP_MASS, sb, SLIDER_BIN_M1);
 
             sb.setLength(0);
-            appendFixed2(sb, state.diskDensity);
-            sb.append('x');
-            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "PLASMA DENSITY", state.diskDensity,
-                    SimulationState.MIN_DENSITY, SimulationState.MAX_DENSITY, sb, SLIDER_DENSITY);
+            appendFixed1(sb, state.binaryMass2Solar);
+            sb.append(" Msun");
+            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "SECONDARY MASS M2", state.binaryMass2Solar,
+                    SimulationState.MIN_BIN_COMP_MASS, SimulationState.MAX_BIN_COMP_MASS, sb, SLIDER_BIN_M2);
 
-            py += 4f;
+            sb.setLength(0);
+            appendSigned2(sb, state.binaryChi1);
+            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "PRIMARY SPIN chi_1", state.binaryChi1,
+                    SimulationState.MIN_BIN_SPIN, SimulationState.MAX_BIN_SPIN, sb, SLIDER_BIN_CHI1);
+
+            sb.setLength(0);
+            appendSigned2(sb, state.binaryChi2);
+            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "SECONDARY SPIN chi_2", state.binaryChi2,
+                    SimulationState.MIN_BIN_SPIN, SimulationState.MAX_BIN_SPIN, sb, SLIDER_BIN_CHI2);
+
+            sb.setLength(0);
+            appendFixed1(sb, state.binaryInitialSep);
+            sb.append(" M");
+            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "INIT SEPARATION r0", state.binaryInitialSep,
+                    SimulationState.MIN_BIN_INIT_SEP, SimulationState.MAX_BIN_INIT_SEP, sb, SLIDER_BIN_R0);
+
+            sb.setLength(0);
+            appendFixed2(sb, state.binaryEccentricity);
+            py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "ECCENTRICITY e0", state.binaryEccentricity,
+                    SimulationState.MIN_BIN_ECC, SimulationState.MAX_BIN_ECC, sb, SLIDER_BIN_ECC);
+
+            py += 2f;
             ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
-            py += 7f;
-            ui.drawText("LIGO EVENT PRESETS", px, py, 0.92f, 0.66f, 0.78f, 0.92f, 0.92f);
-            py += 14f;
-            float evW = (innerW - 12f) / 3f;
-            drawPresetButton(ui, mouseX, mouseY, px, py, evW, 21f, "GW150914", ACT_LIGO_GW150914);
-            drawPresetButton(ui, mouseX, mouseY, px + (evW + 6f), py, evW, 21f, "GW190412", ACT_LIGO_GW190412);
-            drawPresetButton(ui, mouseX, mouseY, px + (evW + 6f) * 2f, py, evW, 21f, "EQUAL 1:1", ACT_LIGO_EQUAL);
-            py += 25f;
+            py += 6f;
+            ui.drawText("ASTROPHYSICAL PRESETS", px, py, 0.88f, 0.66f, 0.78f, 0.92f, 0.92f);
+            py += 13f;
+            drawPresetButton(ui, mouseX, mouseY, px, py, colW, 19f, "GW150914", ACT_LIGO_GW150914);
+            drawPresetButton(ui, mouseX, mouseY, px + colW + 6f, py, colW, 19f, "GW190412", ACT_LIGO_GW190412);
+            py += 22f;
+            drawPresetButton(ui, mouseX, mouseY, px, py, colW, 19f, "EQUAL 1:1", ACT_LIGO_EQUAL);
+            drawPresetButton(ui, mouseX, mouseY, px + colW + 6f, py, colW, 19f, "SPIN +0.75", ACT_LIGO_ALIGNED_SPIN);
+            py += 22f;
         } else if (state.wormholeMode) {
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "[FLY THROUGH]", camera.isFlyingThrough(), ACT_FLY_THROUGH,
@@ -1148,6 +1184,101 @@ public final class HudOverlay {
                     SimulationState.MIN_JET_POWER, SimulationState.MAX_JET_POWER, sb, SLIDER_JET_POWER);
 
             py = drawLogTimeScaleSlider(ui, mouseX, mouseY, px, py, innerW, state);
+        }
+        return py;
+    }
+
+    private float renderBinaryDetectorTab(UiRenderer ui, double mouseX, double mouseY,
+                                          float px, float py, float innerW, float colW, float rowH,
+                                          SimulationState state, BinaryMergerPhysics binary) {
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 21f,
+                state.binaryDetector.label(), true, ACT_BIN_DETECTOR_CYCLE,
+                px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
+
+        py += 4f;
+        ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
+        py += 7f;
+
+        sb.setLength(0);
+        int orbInc = Math.round(state.binaryOrbitalIncDeg);
+        if (orbInc > 0) sb.append('+');
+        sb.append(orbInc).append('°');
+        py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "ORBITAL INCLINATION", state.binaryOrbitalIncDeg,
+                SimulationState.MIN_BIN_ORB_INC, SimulationState.MAX_BIN_ORB_INC, sb, SLIDER_BIN_ORB_INC);
+
+        sb.setLength(0);
+        sb.append(Math.round(state.binaryObserverIncDeg)).append('°');
+        py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "OBSERVER INCL (iota)", state.binaryObserverIncDeg,
+                SimulationState.MIN_BIN_OBS_INC, SimulationState.MAX_BIN_OBS_INC, sb, SLIDER_BIN_OBS_INC);
+
+        sb.setLength(0);
+        sb.append(Math.round(state.binaryDistanceMpc)).append(" Mpc");
+        py = drawSlider(ui, mouseX, mouseY, px, py, innerW, "DISTANCE D_L (Mpc)", state.binaryDistanceMpc,
+                SimulationState.MIN_BIN_DIST_MPC, SimulationState.MAX_BIN_DIST_MPC, sb, SLIDER_BIN_DIST);
+
+        py = drawLogTimeScaleSlider(ui, mouseX, mouseY, px, py, innerW, state);
+
+        if (binary != null) {
+            py += 4f;
+            float cardH = 112f;
+            ui.drawGlassPanel(px, py, innerW, cardH, 7f,
+                    0.04f, 0.05f, 0.09f, 0.88f,
+                    0.36f, 0.86f, 1.00f, 0.36f);
+            float ty = py + 8f;
+
+            sb.setLength(0);
+            sb.append("DETECTOR: ").append(state.binaryDetector.label()).append("  z=");
+            appendFixed3(sb, (float) binary.parameters().redshiftZ);
+            sb.append("  Mdet=");
+            appendFixed1(sb, (float) binary.parameters().detectorMassSolar);
+            ui.drawText(sb, px + 8f, ty, 0.88f, 0.36f, 0.88f, 1.00f, 0.98f);
+            ty += 15f;
+
+            sb.setLength(0);
+            sb.append("F+=");
+            appendSigned2(sb, (float) binary.antennaFPlus);
+            sb.append("  Fx=");
+            appendSigned2(sb, (float) binary.antennaFCross);
+            sb.append("  HM PWR=");
+            appendFixed1(sb, (float) (binary.higherModePowerFrac * 100.0));
+            sb.append('%');
+            ui.drawText(sb, px + 8f, ty, 0.88f, 0.88f, 0.92f, 0.98f, 0.94f);
+            ty += 15f;
+
+            sb.setLength(0);
+            sb.append("h_+(t)=");
+            appendSignedSci1(sb, binary.physHPlus);
+            sb.append("  h_x=");
+            appendSignedSci1(sb, binary.physHCross);
+            ui.drawText(sb, px + 8f, ty, 0.86f, 0.96f, 0.84f, 0.56f, 0.96f);
+            ty += 15f;
+
+            sb.setLength(0);
+            sb.append("h_det=");
+            appendSignedSci1(sb, binary.detectorStrain);
+            sb.append("  PEAK=");
+            appendSci1(sb, binary.peakDetectorStrain);
+            ui.drawText(sb, px + 8f, ty, 0.86f, 0.44f, 0.96f, 0.72f, 0.96f);
+            ty += 15f;
+
+            sb.setLength(0);
+            sb.append("E_bind=");
+            appendSigned3(sb, binary.orbitalEnergy);
+            sb.append("  L_orb=");
+            appendFixed3(sb, binary.orbitalAngularMomentum);
+            ui.drawText(sb, px + 8f, ty, 0.86f, 0.78f, 0.86f, 0.96f, 0.92f);
+            ty += 15f;
+
+            sb.setLength(0);
+            sb.append("QNM f220=");
+            appendFixed1(sb, (float) io.github.laithabuzaid.blackhole.math.GravitationalWaveDetector
+                    .geomOmegaToHz(binary.qnmFreqGeom(), binary.parameters().detectorMassSolar));
+            sb.append("Hz  tau=");
+            appendFixed1(sb, (float) binary.qnmTauGeom());
+            sb.append('M');
+            ui.drawText(sb, px + 8f, ty, 0.86f, 0.74f, 0.82f, 0.94f, 0.92f);
+
+            py += cardH + 4f;
         }
         return py;
     }
@@ -1521,7 +1652,49 @@ public final class HudOverlay {
             case SLIDER_WH_RHO -> state.wormholeRho = val;
             case SLIDER_WH_A -> state.wormholeA = val;
             case SLIDER_WH_M -> state.wormholeM = val;
-            case SLIDER_BIN_MASS_RATIO -> state.binaryMassRatio = val;
+            case SLIDER_BIN_MASS_RATIO -> {
+                state.binaryMassRatio = val;
+                float tot = state.binaryMass1Solar + state.binaryMass2Solar;
+                state.binaryMass1Solar = tot / (1.0f + val);
+                state.binaryMass2Solar = tot - state.binaryMass1Solar;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_M1 -> {
+                state.binaryMass1Solar = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_M2 -> {
+                state.binaryMass2Solar = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_CHI1 -> {
+                state.binaryChi1 = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_CHI2 -> {
+                state.binaryChi2 = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_R0 -> {
+                state.binaryInitialSep = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_ECC -> {
+                state.binaryEccentricity = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_ORB_INC -> {
+                state.binaryOrbitalIncDeg = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_OBS_INC -> {
+                state.binaryObserverIncDeg = val;
+                state.binaryParamsDirty = true;
+            }
+            case SLIDER_BIN_DIST -> {
+                state.binaryDistanceMpc = val;
+                state.binaryParamsDirty = true;
+            }
             case SLIDER_TIME_SCALE -> {
                 float scaled = (float) (SimulationState.MIN_TIME_SCALE * Math.exp(norm * LOG_TIME_RATIO));
                 state.setTimeScale(scaled);
@@ -1590,6 +1763,17 @@ public final class HudOverlay {
             case SLIDER_DENSITY -> "Volumetric accretion plasma optical thickness";
             case SLIDER_JET_POWER -> "Relativistic collimated polar synchrotron jet intensity";
             case SLIDER_BIN_MASS_RATIO -> "Binary mass ratio q = M2/M1 (sets remnant mass & spin a_f)";
+            case SLIDER_BIN_M1 -> "Primary black hole source-frame mass M1 (solar masses)";
+            case SLIDER_BIN_M2 -> "Secondary black hole source-frame mass M2 (solar masses)";
+            case SLIDER_BIN_CHI1 -> "Primary aligned dimensionless spin chi_1 (-0.95 to +0.95)";
+            case SLIDER_BIN_CHI2 -> "Secondary aligned dimensionless spin chi_2 (-0.95 to +0.95)";
+            case SLIDER_BIN_R0 -> "Initial EOB orbital separation r_0 in geometric units (M)";
+            case SLIDER_BIN_ECC -> "Initial orbital eccentricity e_0 (periapsis-precessing EOB)";
+            case SLIDER_BIN_ORB_INC -> "3D orbital plane & spin axis inclination (degrees)";
+            case SLIDER_BIN_OBS_INC -> "Observer inclination iota for -2Y_lm polarizations & higher modes";
+            case SLIDER_BIN_DIST -> "Luminosity distance D_L (Mpc) -> redshift z & SI strain h_det";
+            case ACT_LIGO_ALIGNED_SPIN -> "Equal 1:1 aligned spin (chi=+0.75): orbital hang-up & af~0.89";
+            case ACT_BIN_DETECTOR_CYCLE -> "Cycle GW interferometer antenna pattern (Optimal/H1/L1/V1)";
             case SLIDER_WH_RHO -> "Wormhole throat radius rho in geometric units";
             case SLIDER_WH_A -> "Wormhole throat half-length a separating Universe A & B";
             case SLIDER_WH_M -> "Wormhole lensing curvature transition width M_w";
@@ -1803,5 +1987,40 @@ public final class HudOverlay {
         if (frac < 100) dst.append('0');
         if (frac < 10) dst.append('0');
         dst.append(frac);
+    }
+
+    private static void appendSigned2(StringBuilder dst, float val) {
+        if (val >= 0f) dst.append('+');
+        appendFixed2(dst, val);
+    }
+
+    private static void appendSigned3(StringBuilder dst, float val) {
+        if (val >= 0f) dst.append('+');
+        appendFixed3(dst, val);
+    }
+
+    private static void appendSignedSci1(StringBuilder dst, double val) {
+        if (val < 0.0) {
+            dst.append('-');
+            val = -val;
+        } else {
+            dst.append('+');
+        }
+        appendSci1(dst, val);
+    }
+
+    private static void appendSci1(StringBuilder dst, double absVal) {
+        if (absVal < 1e-30 || !Double.isFinite(absVal)) {
+            dst.append("0.0e0");
+            return;
+        }
+        int exp = (int) Math.floor(Math.log10(absVal));
+        double mant = absVal / Math.pow(10.0, exp);
+        if (mant >= 9.95) {
+            mant *= 0.1;
+            exp++;
+        }
+        appendFixed1(dst, (float) mant);
+        dst.append('e').append(exp);
     }
 }

@@ -3,6 +3,7 @@ package io.github.laithabuzaid.blackhole.graphics;
 import io.github.laithabuzaid.blackhole.core.BinaryMergerPhysics;
 import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
+import io.github.laithabuzaid.blackhole.math.BinaryParameters;
 import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 import io.github.laithabuzaid.blackhole.ui.HudOverlay;
 import io.github.laithabuzaid.blackhole.ui.UiRenderer;
@@ -44,7 +45,7 @@ public final class BenchmarkAndShowcaseRunner {
             String gpuName = glGetString(GL_RENDERER);
             String glVer = glGetString(GL_VERSION);
             telemetry.initOpenGlInfo(gpuName, glVer);
-            System.out.println("=== BlackHole v2.0.0 Repeatable 1080p Benchmark ===");
+            System.out.println("=== BlackHole v3.0.0 Repeatable 1080p Benchmark ===");
             System.out.println("GPU: " + gpuName + " | OpenGL: " + glVer);
             System.out.printf("%-28s | %6s | %6s | %6s | %6s | %6s | %6s | %6s | %7s | %6s%n",
                     "Scenario", "RAY", "TDE_C", "TDE_R", "TAA", "POST", "UI", "TOTAL", "FPS", "P95");
@@ -84,13 +85,22 @@ public final class BenchmarkAndShowcaseRunner {
             measureScenario("Kerr + TDE Hydro 10x", renderer, uiRenderer, gpuTimers, captureFbo,
                     1.0 / 120.0, 10.0 / 120.0, false, state, camera, binaryPhysics, telemetry, hud);
 
-            // 5. Binary Black Hole Merger (1x + MRT TAA)
+            // 5. Binary Black Hole Merger (EOB + Boosted Spinning KS, RK4 + MRT TAA)
             resetForShot(state);
             state.binaryMode = true;
-            state.binaryMassRatio = 0.81f;
-            binaryPhysics.advanceToSeparation(0.81f, 5.25);
+            state.integratorMode = SimulationState.INTEGRATOR_RK4;
+            state.applyBinaryParameters(BinaryParameters.presetGw150914());
+            state.binaryParamsDirty = false;
+            binaryPhysics.reset(state.buildBinaryParameters());
+            binaryPhysics.advanceCurrentToSeparation(5.25);
             camera.setShowcasePose(28.5, 0.65, 0.38, -0.07, 0.0, 0.0, state);
-            measureScenario("Binary Merger (1x + TAA)", renderer, uiRenderer, gpuTimers, captureFbo,
+            measureScenario("Binary Merger RK4 (1x+TAA)", renderer, uiRenderer, gpuTimers, captureFbo,
+                    1.0 / 120.0, 1.0 / 120.0, false, state, camera, binaryPhysics, telemetry, hud);
+
+            // 6. Binary Black Hole Merger (EOB + Boosted Spinning KS, Adaptive DOPRI5(4) + TAA)
+            state.integratorMode = SimulationState.INTEGRATOR_DOPRI54;
+            state.integratorRtol = 2.5e-4f;
+            measureScenario("Binary Merger DOPRI5(4)", renderer, uiRenderer, gpuTimers, captureFbo,
                     1.0 / 120.0, 1.0 / 120.0, false, state, camera, binaryPhysics, telemetry, hud);
 
             ShaderProgram.checkGlError("Benchmark.finish");
@@ -305,11 +315,12 @@ public final class BenchmarkAndShowcaseRunner {
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
                     state, camera, binaryPhysics, telemetry, hud, Path.of("docs/media/hud_telemetry.png"));
 
-            // 6. binary_merger.png
+            // 6. binary_merger.png (EOB 3PN+NLO-Spin GW150914 + Boosted Spinning Kerr-Schild)
             resetForShot(state);
             state.setHudMode(SimulationState.HUD_CLEAN);
             state.binaryMode = true;
-            state.binaryMassRatio = 0.81f;
+            state.applyBinaryParameters(BinaryParameters.presetGw150914());
+            state.binaryParamsDirty = false;
             state.binaryGwOverlay = true;
             state.diskTempScale = 1.00f;
             state.diskDensity = 1.08f;
@@ -318,7 +329,8 @@ public final class BenchmarkAndShowcaseRunner {
             state.anamorphicStrength = 0.22f;
             state.exposure = 1.18f;
             state.fovDeg = 23.0f;
-            binaryPhysics.advanceToSeparation(state.binaryMassRatio, 5.25);
+            binaryPhysics.reset(state.buildBinaryParameters());
+            binaryPhysics.advanceCurrentToSeparation(5.25);
             double broadsideYaw = Math.atan2(binaryPhysics.pos1X - binaryPhysics.pos2X,
                     binaryPhysics.pos1Z - binaryPhysics.pos2Z) + Math.PI * 0.5 - 0.14;
             camera.setShowcasePose(28.5, broadsideYaw, 0.38, -0.07, 0.0, 0.0, state);

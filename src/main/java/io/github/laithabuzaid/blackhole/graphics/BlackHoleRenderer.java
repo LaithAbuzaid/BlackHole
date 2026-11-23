@@ -42,6 +42,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final ShaderProgram rayDopriProgram;
     private final ShaderProgram wormholeProgram;
     private final ShaderProgram binaryProgram;
+    private final ShaderProgram binaryDopriProgram;
     private final ShaderProgram taaProgram;
     private final ShaderProgram downsampleProgram;
     private final ShaderProgram upsampleProgram;
@@ -150,49 +151,72 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private final int uWhDiagMode;
     private final int uWhJitter;
 
-    // Cached Binary Merger uniform locations
-    private final int uBinResolution;
-    private final int uBinTime;
-    private final int uBinDt;
-    private final int uBinCamPos;
-    private final int uBinCamForward;
-    private final int uBinCamRight;
-    private final int uBinCamUp;
-    private final int uBinTanHalfFov;
-    private final int uBinPrevCamPos;
-    private final int uBinPrevCamForward;
-    private final int uBinPrevCamRight;
-    private final int uBinPrevCamUp;
-    private final int uBinPrevTanHalfFov;
-    private final int uBinSkybox;
-    private final int uBinNoiseVol;
-    private final int uBinBlackbodyLut;
-    private final int uBinPos1;
-    private final int uBinPos2;
-    private final int uBinVel1;
-    private final int uBinVel2;
-    private final int uBinMass1;
-    private final int uBinMass2;
-    private final int uBinRemnantMass;
-    private final int uBinRemnantSpin;
-    private final int uBinMergeBlend;
-    private final int uBinSeparation;
-    private final int uBinOrbitalPhase;
-    private final int uBinGwPhase;
-    private final int uBinGwFreqHz;
-    private final int uBinStrainAmp;
-    private final int uBinRingdownEnv;
-    private final int uBinMergerPulse;
-    private final int uBinDiskTempScale;
-    private final int uBinDiskDensity;
-    private final int uBinDoppler;
-    private final int uBinLensing;
-    private final int uBinShowDisk;
-    private final int uBinShowGrid;
-    private final int uBinGwOverlay;
-    private final int uBinDiagMode;
-    private final int uBinJitter;
-    private final int uBinFrameIndex;
+    // Cached Binary Merger uniform locations (specialized RK4 vs DOPRI5(4) programs)
+    private static final class BinaryUniforms {
+        final int uResolution, uTime, uGeomDt, uCamPos, uCamForward, uCamRight, uCamUp, uTanHalfFov;
+        final int uPrevCamPos, uPrevCamForward, uPrevCamRight, uPrevCamUp, uPrevTanHalfFov;
+        final int uSkybox, uNoiseVol, uBlackbodyLut;
+        final int uPos1, uPos2, uVel1, uVel2, uMass1, uMass2, uChi1, uChi2;
+        final int uRemnantMass, uRemnantSpin, uMergeBlend, uSeparation, uOrbitalPhase;
+        final int uGwPhase, uGwOmegaGeom, uStrainAmp, uRingdownEnv, uMergerPulse;
+        final int uOrbE1, uOrbLHat, uOrbE3;
+        final int uDiskTempScale, uDiskDensity, uDoppler, uLensing, uShowDisk, uShowGrid, uGwOverlay;
+        final int uDiagMode, uIntegTol, uJitter, uFrameIndex;
+
+        BinaryUniforms(ShaderProgram prog, boolean isDopri) {
+            uResolution = prog.uniformLocation("uResolution");
+            uTime = prog.uniformLocation("uTime");
+            uGeomDt = prog.uniformLocation("uGeomDt");
+            uCamPos = prog.uniformLocation("uCamPos");
+            uCamForward = prog.uniformLocation("uCamForward");
+            uCamRight = prog.uniformLocation("uCamRight");
+            uCamUp = prog.uniformLocation("uCamUp");
+            uTanHalfFov = prog.uniformLocation("uTanHalfFov");
+            uPrevCamPos = prog.uniformLocation("uPrevCamPos");
+            uPrevCamForward = prog.uniformLocation("uPrevCamForward");
+            uPrevCamRight = prog.uniformLocation("uPrevCamRight");
+            uPrevCamUp = prog.uniformLocation("uPrevCamUp");
+            uPrevTanHalfFov = prog.uniformLocation("uPrevTanHalfFov");
+            uSkybox = prog.uniformLocation("uSkybox");
+            uNoiseVol = prog.uniformLocation("uNoiseVol");
+            uBlackbodyLut = prog.uniformLocation("uBlackbodyLut");
+            uPos1 = prog.uniformLocation("uPos1");
+            uPos2 = prog.uniformLocation("uPos2");
+            uVel1 = prog.uniformLocation("uVel1");
+            uVel2 = prog.uniformLocation("uVel2");
+            uMass1 = prog.uniformLocation("uMass1");
+            uMass2 = prog.uniformLocation("uMass2");
+            uChi1 = prog.uniformLocation("uChi1");
+            uChi2 = prog.uniformLocation("uChi2");
+            uRemnantMass = prog.uniformLocation("uRemnantMass");
+            uRemnantSpin = prog.uniformLocation("uRemnantSpin");
+            uMergeBlend = prog.uniformLocation("uMergeBlend");
+            uSeparation = prog.uniformLocation("uSeparation");
+            uOrbitalPhase = prog.uniformLocation("uOrbitalPhase");
+            uGwPhase = prog.uniformLocation("uGwPhase");
+            uGwOmegaGeom = prog.uniformLocation("uGwOmegaGeom");
+            uStrainAmp = prog.uniformLocation("uStrainAmp");
+            uRingdownEnv = prog.uniformLocation("uRingdownEnv");
+            uMergerPulse = prog.uniformLocation("uMergerPulse");
+            uOrbE1 = prog.uniformLocation("uOrbE1");
+            uOrbLHat = prog.uniformLocation("uOrbLHat");
+            uOrbE3 = prog.uniformLocation("uOrbE3");
+            uDiskTempScale = prog.uniformLocation("uDiskTempScale");
+            uDiskDensity = prog.uniformLocation("uDiskDensity");
+            uDoppler = prog.uniformLocation("uDoppler");
+            uLensing = prog.uniformLocation("uLensing");
+            uShowDisk = prog.uniformLocation("uShowDisk");
+            uShowGrid = prog.uniformLocation("uShowGrid");
+            uGwOverlay = prog.uniformLocation("uGwOverlay");
+            uDiagMode = prog.uniformLocation("uDiagMode");
+            uIntegTol = isDopri ? prog.uniformLocation("uIntegTol") : -1;
+            uJitter = prog.uniformLocation("uJitter");
+            uFrameIndex = prog.uniformLocation("uFrameIndex");
+        }
+    }
+
+    private final BinaryUniforms binaryRk4Uniforms;
+    private final BinaryUniforms binaryDopriUniforms;
 
     // Cached TAA Resolve uniform locations
     private final int uTaaCurrent;
@@ -236,6 +260,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
                 "/shaders/common/fullscreen.vert", "/shaders/simulation/kerr_blackhole.frag", "#define USE_DOPRI54 1");
         this.wormholeProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/morris_thorne_wormhole.frag");
         this.binaryProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/simulation/binary_merger.frag");
+        this.binaryDopriProgram = ShaderProgram.fromResourcesWithDefines(
+                "/shaders/common/fullscreen.vert", "/shaders/simulation/binary_merger.frag", "#define USE_DOPRI54 1");
         this.taaProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/taa_resolve.frag");
         this.downsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_downsample.frag");
         this.upsampleProgram = ShaderProgram.fromResources("/shaders/common/fullscreen.vert", "/shaders/post/bloom_upsample.frag");
@@ -284,49 +310,9 @@ public final class BlackHoleRenderer implements AutoCloseable {
         uWhDiagMode = wormholeProgram.uniformLocation("uDiagMode");
         uWhJitter = wormholeProgram.uniformLocation("uJitter");
 
-        // Cache Binary Merger uniform locations
-        uBinResolution = binaryProgram.uniformLocation("uResolution");
-        uBinTime = binaryProgram.uniformLocation("uTime");
-        uBinDt = binaryProgram.uniformLocation("uDt");
-        uBinCamPos = binaryProgram.uniformLocation("uCamPos");
-        uBinCamForward = binaryProgram.uniformLocation("uCamForward");
-        uBinCamRight = binaryProgram.uniformLocation("uCamRight");
-        uBinCamUp = binaryProgram.uniformLocation("uCamUp");
-        uBinTanHalfFov = binaryProgram.uniformLocation("uTanHalfFov");
-        uBinPrevCamPos = binaryProgram.uniformLocation("uPrevCamPos");
-        uBinPrevCamForward = binaryProgram.uniformLocation("uPrevCamForward");
-        uBinPrevCamRight = binaryProgram.uniformLocation("uPrevCamRight");
-        uBinPrevCamUp = binaryProgram.uniformLocation("uPrevCamUp");
-        uBinPrevTanHalfFov = binaryProgram.uniformLocation("uPrevTanHalfFov");
-        uBinSkybox = binaryProgram.uniformLocation("uSkybox");
-        uBinNoiseVol = binaryProgram.uniformLocation("uNoiseVol");
-        uBinBlackbodyLut = binaryProgram.uniformLocation("uBlackbodyLut");
-        uBinPos1 = binaryProgram.uniformLocation("uPos1");
-        uBinPos2 = binaryProgram.uniformLocation("uPos2");
-        uBinVel1 = binaryProgram.uniformLocation("uVel1");
-        uBinVel2 = binaryProgram.uniformLocation("uVel2");
-        uBinMass1 = binaryProgram.uniformLocation("uMass1");
-        uBinMass2 = binaryProgram.uniformLocation("uMass2");
-        uBinRemnantMass = binaryProgram.uniformLocation("uRemnantMass");
-        uBinRemnantSpin = binaryProgram.uniformLocation("uRemnantSpin");
-        uBinMergeBlend = binaryProgram.uniformLocation("uMergeBlend");
-        uBinSeparation = binaryProgram.uniformLocation("uSeparation");
-        uBinOrbitalPhase = binaryProgram.uniformLocation("uOrbitalPhase");
-        uBinGwPhase = binaryProgram.uniformLocation("uGwPhase");
-        uBinGwFreqHz = binaryProgram.uniformLocation("uGwFreqHz");
-        uBinStrainAmp = binaryProgram.uniformLocation("uStrainAmp");
-        uBinRingdownEnv = binaryProgram.uniformLocation("uRingdownEnv");
-        uBinMergerPulse = binaryProgram.uniformLocation("uMergerPulse");
-        uBinDiskTempScale = binaryProgram.uniformLocation("uDiskTempScale");
-        uBinDiskDensity = binaryProgram.uniformLocation("uDiskDensity");
-        uBinDoppler = binaryProgram.uniformLocation("uDoppler");
-        uBinLensing = binaryProgram.uniformLocation("uLensing");
-        uBinShowDisk = binaryProgram.uniformLocation("uShowDisk");
-        uBinShowGrid = binaryProgram.uniformLocation("uShowGrid");
-        uBinGwOverlay = binaryProgram.uniformLocation("uGwOverlay");
-        uBinDiagMode = binaryProgram.uniformLocation("uDiagMode");
-        uBinJitter = binaryProgram.uniformLocation("uJitter");
-        uBinFrameIndex = binaryProgram.uniformLocation("uFrameIndex");
+        // Cache Binary Merger uniform locations for both RK4 and DOPRI5(4) programs
+        this.binaryRk4Uniforms = new BinaryUniforms(binaryProgram, false);
+        this.binaryDopriUniforms = new BinaryUniforms(binaryDopriProgram, true);
 
         // Cache TAA Resolve uniform locations
         uTaaCurrent = taaProgram.uniformLocation("uCurrentTex");
@@ -461,21 +447,23 @@ public final class BlackHoleRenderer implements AutoCloseable {
         glViewport(0, 0, width, height);
 
         if (runBinary) {
-            binaryProgram.use();
+            boolean useDopriBin = (state.integratorMode == SimulationState.INTEGRATOR_DOPRI54);
+            BinaryUniforms bu = useDopriBin ? binaryDopriUniforms : binaryRk4Uniforms;
+            (useDopriBin ? binaryDopriProgram : binaryProgram).use();
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxUniverseA);
-            glUniform1i(uBinSkybox, 0);
+            glUniform1i(bu.uSkybox, 0);
 
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_3D, noise3dTex);
-            glUniform1i(uBinNoiseVol, 1);
+            glUniform1i(bu.uNoiseVol, 1);
 
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, blackbodyLutTex);
-            glUniform1i(uBinBlackbodyLut, 2);
+            glUniform1i(bu.uBlackbodyLut, 2);
 
-            float binDt = (state.paused || simDt <= 0.0) ? 0.0f : (float) simDt;
+            float binGeomDt = (state.paused || simDt <= 0.0) ? 0.0f : binary.lastStepGeomDt;
             float pCamX = taaHistoryValid ? prevCamPosX : effCamX;
             float pCamY = taaHistoryValid ? prevCamPosY : effCamY;
             float pCamZ = taaHistoryValid ? prevCamPosZ : effCamZ;
@@ -490,47 +478,55 @@ public final class BlackHoleRenderer implements AutoCloseable {
             float pUpZ = taaHistoryValid ? prevCamUpZ : camera.upZ;
             float pFov = taaHistoryValid ? prevTanHalfFov : tanHalfFov;
 
-            glUniform2f(uBinResolution, width, height);
-            glUniform1f(uBinTime, binary.binaryTime);
-            glUniform1f(uBinDt, binDt);
-            glUniform3f(uBinCamPos, camera.posX, camera.posY, camera.posZ);
-            glUniform3f(uBinCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
-            glUniform3f(uBinCamRight, camera.rightX, camera.rightY, camera.rightZ);
-            glUniform3f(uBinCamUp, camera.upX, camera.upY, camera.upZ);
-            glUniform1f(uBinTanHalfFov, tanHalfFov);
-            glUniform3f(uBinPrevCamPos, pCamX, pCamY, pCamZ);
-            glUniform3f(uBinPrevCamForward, pFwdX, pFwdY, pFwdZ);
-            glUniform3f(uBinPrevCamRight, pRightX, pRightY, pRightZ);
-            glUniform3f(uBinPrevCamUp, pUpX, pUpY, pUpZ);
-            glUniform1f(uBinPrevTanHalfFov, pFov);
+            glUniform2f(bu.uResolution, width, height);
+            glUniform1f(bu.uTime, binary.binaryTime);
+            glUniform1f(bu.uGeomDt, binGeomDt);
+            glUniform3f(bu.uCamPos, camera.posX, camera.posY, camera.posZ);
+            glUniform3f(bu.uCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(bu.uCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(bu.uCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(bu.uTanHalfFov, tanHalfFov);
+            glUniform3f(bu.uPrevCamPos, pCamX, pCamY, pCamZ);
+            glUniform3f(bu.uPrevCamForward, pFwdX, pFwdY, pFwdZ);
+            glUniform3f(bu.uPrevCamRight, pRightX, pRightY, pRightZ);
+            glUniform3f(bu.uPrevCamUp, pUpX, pUpY, pUpZ);
+            glUniform1f(bu.uPrevTanHalfFov, pFov);
 
-            glUniform3f(uBinPos1, binary.pos1X, binary.pos1Y, binary.pos1Z);
-            glUniform3f(uBinPos2, binary.pos2X, binary.pos2Y, binary.pos2Z);
-            glUniform3f(uBinVel1, binary.vel1X, binary.vel1Y, binary.vel1Z);
-            glUniform3f(uBinVel2, binary.vel2X, binary.vel2Y, binary.vel2Z);
-            glUniform1f(uBinMass1, binary.mass1);
-            glUniform1f(uBinMass2, binary.mass2);
-            glUniform1f(uBinRemnantMass, binary.remnantMass);
-            glUniform1f(uBinRemnantSpin, binary.remnantSpin);
-            glUniform1f(uBinMergeBlend, binary.mergeBlend);
-            glUniform1f(uBinSeparation, binary.currentSeparation);
-            glUniform1f(uBinOrbitalPhase, binary.currentOrbitalPhase);
-            glUniform1f(uBinGwPhase, binary.gwPhaseOut);
-            glUniform1f(uBinGwFreqHz, binary.gwFreqHz);
-            glUniform1f(uBinStrainAmp, binary.strainAmplitude);
-            glUniform1f(uBinRingdownEnv, binary.ringdownEnv);
-            glUniform1f(uBinMergerPulse, binary.mergerPulse);
+            glUniform3f(bu.uPos1, binary.pos1X, binary.pos1Y, binary.pos1Z);
+            glUniform3f(bu.uPos2, binary.pos2X, binary.pos2Y, binary.pos2Z);
+            glUniform3f(bu.uVel1, binary.vel1X, binary.vel1Y, binary.vel1Z);
+            glUniform3f(bu.uVel2, binary.vel2X, binary.vel2Y, binary.vel2Z);
+            glUniform1f(bu.uMass1, binary.mass1);
+            glUniform1f(bu.uMass2, binary.mass2);
+            glUniform1f(bu.uChi1, binary.chi1);
+            glUniform1f(bu.uChi2, binary.chi2);
+            glUniform1f(bu.uRemnantMass, binary.remnantMass);
+            glUniform1f(bu.uRemnantSpin, binary.remnantSpin);
+            glUniform1f(bu.uMergeBlend, binary.mergeBlend);
+            glUniform1f(bu.uSeparation, binary.currentSeparation);
+            glUniform1f(bu.uOrbitalPhase, binary.currentOrbitalPhase);
+            glUniform1f(bu.uGwPhase, binary.gwPhaseOut);
+            glUniform1f(bu.uGwOmegaGeom, binary.gwFreqGeom);
+            glUniform1f(bu.uStrainAmp, binary.strainAmplitude);
+            glUniform1f(bu.uRingdownEnv, binary.ringdownEnv);
+            glUniform1f(bu.uMergerPulse, binary.mergerPulse);
+            glUniform3f(bu.uOrbE1, binary.orbE1X, binary.orbE1Y, binary.orbE1Z);
+            glUniform3f(bu.uOrbLHat, binary.orbLHX, binary.orbLHY, binary.orbLHZ);
+            glUniform3f(bu.uOrbE3, binary.orbE3X, binary.orbE3Y, binary.orbE3Z);
 
-            glUniform1f(uBinDiskTempScale, state.diskTempScale);
-            glUniform1f(uBinDiskDensity, state.diskDensity);
-            glUniform1i(uBinDoppler, state.dopplerEnabled ? 1 : 0);
-            glUniform1i(uBinLensing, state.lensingEnabled ? 1 : 0);
-            glUniform1i(uBinShowDisk, state.showDisk ? 1 : 0);
-            glUniform1i(uBinShowGrid, state.showGrid ? 1 : 0);
-            glUniform1i(uBinGwOverlay, state.binaryGwOverlay ? 1 : 0);
-            glUniform1i(uBinDiagMode, shaderDiagMode);
-            glUniform2f(uBinJitter, jitterX, jitterY);
-            glUniform1i(uBinFrameIndex, frameIndex);
+            glUniform1f(bu.uDiskTempScale, state.diskTempScale);
+            glUniform1f(bu.uDiskDensity, state.diskDensity);
+            glUniform1i(bu.uDoppler, state.dopplerEnabled ? 1 : 0);
+            glUniform1i(bu.uLensing, state.lensingEnabled ? 1 : 0);
+            glUniform1i(bu.uShowDisk, state.showDisk ? 1 : 0);
+            glUniform1i(bu.uShowGrid, state.showGrid ? 1 : 0);
+            glUniform1i(bu.uGwOverlay, state.binaryGwOverlay ? 1 : 0);
+            glUniform1i(bu.uDiagMode, shaderDiagMode);
+            if (useDopriBin) {
+                glUniform1f(bu.uIntegTol, state.integratorRtol);
+            }
+            glUniform2f(bu.uJitter, jitterX, jitterY);
+            glUniform1i(bu.uFrameIndex, frameIndex);
 
             glDrawArrays(GL_TRIANGLES, 0, 3);
         } else if (state.wormholeMode) {
@@ -832,6 +828,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         rayDopriProgram.close();
         wormholeProgram.close();
         binaryProgram.close();
+        binaryDopriProgram.close();
         taaProgram.close();
         downsampleProgram.close();
         upsampleProgram.close();

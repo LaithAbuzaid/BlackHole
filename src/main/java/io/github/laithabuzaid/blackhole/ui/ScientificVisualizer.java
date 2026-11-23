@@ -246,7 +246,7 @@ public final class ScientificVisualizer {
     private void renderScientificStatusBanner(UiRenderer ui, int width, int height,
                                               SimulationState state, BinaryMergerPhysics binary,
                                               HardwareTelemetry telemetry) {
-        float w = Math.min(720f, width - 40f);
+        float w = Math.min(780f, width - 40f);
         float h = 64f;
         float x = (width - w) * 0.5f;
         float y = height - 118f;
@@ -256,7 +256,9 @@ public final class ScientificVisualizer {
         sb1.setLength(0);
         sb1.append("[F3] SCI MODE: ").append(state.scientificDiagLabel());
         if (state.binaryMode) {
-            sb1.append("  |  APPROX: 1PN/2.5PN + NR-CALIBRATED QNM + SUPERPOSED KS");
+            sb1.append("  |  EOB 3PN+NLO-SPIN + EFFECTIVE BOOSTED KERR-SCHILD (")
+               .append(state.integratorMode == SimulationState.INTEGRATOR_DOPRI54 ? "DOPRI5(4)" : "RK4")
+               .append(')');
         } else if (state.wormholeMode) {
             sb1.append("  |  EXACT MORRIS-THORNE DNEG METRIC (EXOTIC NEC VIOLATION)");
         } else {
@@ -265,14 +267,24 @@ public final class ScientificVisualizer {
 
         sb2.setLength(0);
         if (state.binaryMode && binary != null) {
-            sb2.append("E_bind=");
+            sb2.append("q=");
+            appendFixed2(sb2, binary.massRatioQ);
+            sb2.append(" eta=");
+            appendFixed3(sb2, binary.symMassRatio);
+            sb2.append(" chi=");
+            appendFixed2(sb2, binary.chi1);
+            sb2.append('/');
+            appendFixed2(sb2, binary.chi2);
+            sb2.append(" r=");
+            appendFixed2(sb2, binary.currentSeparation);
+            sb2.append("M Om=");
+            appendFixed3(sb2, binary.orbitalOmegaGeom);
+            sb2.append(" Eb=");
             appendFixed3(sb2, binary.orbitalEnergy);
-            sb2.append("M  E_rad=");
+            sb2.append(" Er=");
             appendFixed4(sb2, binary.radiatedEnergy);
-            sb2.append("M  L_orb=");
+            sb2.append(" L=");
             appendFixed3(sb2, binary.orbitalAngularMomentum);
-            sb2.append("  QNM w220=");
-            appendFixed3(sb2, (float) binary.qnmFreqGeom());
         } else if (state.wormholeMode) {
             sb2.append("rho=");
             appendFixed2(sb2, state.wormholeRho);
@@ -292,13 +304,27 @@ public final class ScientificVisualizer {
         }
 
         sb3.setLength(0);
-        sb3.append("GPU P95=").append(Math.round(telemetry.gpuP95Ms * 100f) / 100f)
-                .append("ms  P99=").append(Math.round(telemetry.gpuP99Ms * 100f) / 100f)
-                .append("ms  |  RENDER ALLOC=").append(telemetry.renderAllocBytesLastFrame)
-                .append(" B/f  |  TDE: ").append(state.tdeHydroEnabled ? "64^3 HYDRO" : "PURE GRAV");
-        if (telemetry.tdeActiveParticles > 0) {
-            sb3.append(" <E>=").append(Math.round(telemetry.tdeMeanEnergy * 1000f) / 1000f)
-                    .append(" <Ly>=").append(Math.round(telemetry.tdeMeanAngMomY * 100f) / 100f);
+        if (state.binaryMode && binary != null) {
+            sb3.append("Mf=");
+            appendFixed3(sb3, binary.remnantMass);
+            sb3.append(" af=");
+            appendFixed3(sb3, binary.remnantSpin);
+            sb3.append(" fGW=");
+            appendFixed1(sb3, binary.gwFreqHz);
+            sb3.append("Hz HM=");
+            appendFixed1(sb3, (float) (binary.higherModePowerFrac * 100.0));
+            sb3.append("% | EOB_BAL=");
+            appendFixed4(sb3, (float) binary.eobEnergyBalanceErr);
+            sb3.append(" | GPU P95=").append(Math.round(telemetry.gpuP95Ms * 100f) / 100f).append("ms");
+        } else {
+            sb3.append("GPU P95=").append(Math.round(telemetry.gpuP95Ms * 100f) / 100f)
+                    .append("ms  P99=").append(Math.round(telemetry.gpuP99Ms * 100f) / 100f)
+                    .append("ms  |  RENDER ALLOC=").append(telemetry.renderAllocBytesLastFrame)
+                    .append(" B/f  |  TDE: ").append(state.tdeHydroEnabled ? "64^3 HYDRO" : "PURE GRAV");
+            if (telemetry.tdeActiveParticles > 0) {
+                sb3.append(" <E>=").append(Math.round(telemetry.tdeMeanEnergy * 1000f) / 1000f)
+                        .append(" <Ly>=").append(Math.round(telemetry.tdeMeanAngMomY * 100f) / 100f);
+            }
         }
 
         ui.drawText(sb1, x + 12f, y + 10f, 0.92f, 0.30f, 0.96f, 0.88f, 0.98f);
@@ -452,6 +478,12 @@ public final class ScientificVisualizer {
         out[0] = (ndcX * 0.5f + 0.5f) * w;
         out[1] = (0.5f - ndcY * 0.5f) * h;
         return true;
+    }
+
+    private static void appendFixed1(StringBuilder sb, float v) {
+        if (v < 0f) { sb.append('-'); v = -v; }
+        int s = Math.round(v * 10f);
+        sb.append(s / 10).append('.').append(s % 10);
     }
 
     private static void appendFixed2(StringBuilder sb, float v) {

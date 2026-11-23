@@ -5,6 +5,7 @@ import io.github.laithabuzaid.blackhole.graphics.BenchmarkAndShowcaseRunner;
 import io.github.laithabuzaid.blackhole.graphics.BlackHoleRenderer;
 import io.github.laithabuzaid.blackhole.graphics.GpuTimerQueries;
 import io.github.laithabuzaid.blackhole.graphics.ShaderProgram;
+import io.github.laithabuzaid.blackhole.math.BinaryParameters;
 import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 import io.github.laithabuzaid.blackhole.ui.HudOverlay;
 import io.github.laithabuzaid.blackhole.ui.UiRenderer;
@@ -185,7 +186,7 @@ public final class SimulationEngine {
                  GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
 
                 ShaderProgram.checkGlError("SimulationEngine.startup");
-                System.out.println("[BlackHole] v2.0.0 | OpenGL " + glVersion + " | GPU: " + glRenderer
+                System.out.println("[BlackHole] v3.0.0 | OpenGL " + glVersion + " | GPU: " + glRenderer
                         + " | Exact Kerr-Schild RK4/DOPRI5(4), 64^3 Grid-Hydro TDE, 2.5PN/QNM Merger & Sci Diag ready.");
 
                 runRenderLoop(renderer, uiRenderer, gpuTimers);
@@ -267,10 +268,15 @@ public final class SimulationEngine {
             }
 
             long physStart = System.nanoTime();
+            if (state.binaryMode && state.binaryParamsDirty) {
+                state.binaryParamsDirty = false;
+                binaryPhysics.reset(state.buildBinaryParameters());
+                pendingResetTaa = true;
+            }
             if (!state.paused) {
                 state.simTime += simDt;
                 if (state.binaryMode) {
-                    binaryPhysics.step(wallDt, state.binaryMassRatio, state.timeScale, state.binaryAutoLoop);
+                    binaryPhysics.step(wallDt, state.timeScale, state.binaryAutoLoop);
                 }
             }
             state.tickUiTimers(wallDt);
@@ -347,9 +353,10 @@ public final class SimulationEngine {
                 state.wormholeMode = false;
                 state.binaryMode = !state.binaryMode;
                 if (state.binaryMode) {
-                    binaryPhysics.reset(state.binaryMassRatio);
+                    state.binaryParamsDirty = false;
+                    binaryPhysics.reset(state.buildBinaryParameters());
                     camera.applyPresetBinaryOblique();
-                    state.showToast("SPACETIME: BINARY BLACK HOLE MERGER");
+                    state.showToast("SPACETIME: EOB BINARY BLACK HOLE MERGER");
                 } else {
                     camera.applyPresetGargantuaEdge();
                     state.showToast("SPACETIME: KERR-SCHILD BLACK HOLE");
@@ -357,9 +364,10 @@ public final class SimulationEngine {
             }
             case HudOverlay.ACT_BINARY_REPLAY -> {
                 if (state.binaryMode) {
-                    binaryPhysics.reset(state.binaryMassRatio);
+                    state.binaryParamsDirty = false;
+                    binaryPhysics.reset(state.buildBinaryParameters());
                     state.paused = false;
-                    state.showToast("BINARY MERGER: REPLAYING INSPIRAL");
+                    state.showToast("EOB BINARY MERGER: REPLAYING INSPIRAL");
                 }
             }
             case HudOverlay.ACT_BINARY_GW_OVERLAY -> {
@@ -544,33 +552,53 @@ public final class SimulationEngine {
                 state.clearPlungeTelemetry();
                 state.binaryMode = true;
                 state.wormholeMode = false;
-                state.binaryMassRatio = 0.81f;
-                binaryPhysics.reset(state.binaryMassRatio);
+                state.applyBinaryParameters(BinaryParameters.presetGw150914());
+                state.binaryParamsDirty = false;
+                binaryPhysics.reset(state.buildBinaryParameters());
                 state.paused = false;
                 pendingResetTaa = true;
-                state.showToast("LIGO GW150914: 35.6 + 30.6 M_sun (q = 0.81)");
+                state.showToast("GW150914: 35.6+30.6 M_sun, chi=+0.02/-0.04, 440 Mpc");
             }
             case HudOverlay.ACT_LIGO_GW190412 -> {
                 camera.disengageAttractTour(state);
                 state.clearPlungeTelemetry();
                 state.binaryMode = true;
                 state.wormholeMode = false;
-                state.binaryMassRatio = 0.28f;
-                binaryPhysics.reset(state.binaryMassRatio);
+                state.applyBinaryParameters(BinaryParameters.presetGw190412());
+                state.binaryParamsDirty = false;
+                binaryPhysics.reset(state.buildBinaryParameters());
                 state.paused = false;
                 pendingResetTaa = true;
-                state.showToast("LIGO GW190412: 30 + 8.4 M_sun (q = 0.28)");
+                state.showToast("GW190412: 30.1+8.3 M_sun, chi1=+0.44, 740 Mpc");
             }
             case HudOverlay.ACT_LIGO_EQUAL -> {
                 camera.disengageAttractTour(state);
                 state.clearPlungeTelemetry();
                 state.binaryMode = true;
                 state.wormholeMode = false;
-                state.binaryMassRatio = 1.00f;
-                binaryPhysics.reset(state.binaryMassRatio);
+                state.applyBinaryParameters(BinaryParameters.presetEqualNonSpinning());
+                state.binaryParamsDirty = false;
+                binaryPhysics.reset(state.buildBinaryParameters());
                 state.paused = false;
                 pendingResetTaa = true;
-                state.showToast("BINARY MERGER: EQUAL MASS (q = 1.00)");
+                state.showToast("SXS:BBH:0180 EQUAL 1:1 NON-SPINNING (q=1.00)");
+            }
+            case SimAction.ACT_LIGO_ALIGNED_SPIN -> {
+                camera.disengageAttractTour(state);
+                state.clearPlungeTelemetry();
+                state.binaryMode = true;
+                state.wormholeMode = false;
+                state.applyBinaryParameters(BinaryParameters.presetEqualAlignedSpin());
+                state.binaryParamsDirty = false;
+                binaryPhysics.reset(state.buildBinaryParameters());
+                state.paused = false;
+                pendingResetTaa = true;
+                state.showToast("EQUAL 1:1 ALIGNED SPIN: chi1=chi2=+0.75 (HANG-UP)");
+            }
+            case SimAction.ACT_BIN_DETECTOR_CYCLE -> {
+                state.binaryDetector = state.binaryDetector.next();
+                state.binaryParamsDirty = true;
+                state.showToast("GW DETECTOR: " + state.binaryDetector.label());
             }
             case HudOverlay.ACT_AUTO_ORBIT -> {
                 camera.disengageAttractTour(state);
@@ -655,7 +683,8 @@ public final class SimulationEngine {
                 state.resetDefaults();
                 pendingClearStars = true;
                 if (state.binaryMode) {
-                    binaryPhysics.reset(state.binaryMassRatio);
+                    state.binaryParamsDirty = false;
+                    binaryPhysics.reset(state.buildBinaryParameters());
                     camera.applyPresetBinaryOblique();
                 } else if (state.wormholeMode) {
                     camera.resetWormholeDefaults();
