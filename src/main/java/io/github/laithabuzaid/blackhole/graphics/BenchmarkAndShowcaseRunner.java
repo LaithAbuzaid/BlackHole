@@ -47,7 +47,7 @@ public final class BenchmarkAndShowcaseRunner {
             String gpuName = glGetString(GL_RENDERER);
             String glVer = glGetString(GL_VERSION);
             telemetry.initOpenGlInfo(gpuName, glVer);
-            System.out.println("=== BlackHole v3.0.0 Repeatable 1080p Benchmark ===");
+            System.out.println("=== BlackHole v3.1.0 Repeatable 1080p Benchmark ===");
             System.out.println("GPU: " + gpuName + " | OpenGL: " + glVer);
             System.out.printf("%-28s | %6s | %6s | %6s | %6s | %6s | %6s | %6s | %7s | %6s%n",
                     "Scenario", "RAY", "TDE_C", "TDE_R", "TAA", "POST", "UI", "TOTAL", "FPS", "P95");

@@ -207,7 +207,7 @@ public final class SimulationEngine {
                  GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
 
                 ShaderProgram.checkGlError("SimulationEngine.startup");
-                System.out.println("[BlackHole] v3.0.0 | OpenGL " + glVersion + " | GPU: " + glRenderer
+                System.out.println("[BlackHole] v3.1.0 | OpenGL " + glVersion + " | GPU: " + glRenderer
                         + " | Exact Kerr-Schild RK4/DOPRI5(4), 64^3 Grid-Hydro TDE, 2.5PN/QNM Merger & Sci Diag ready.");
 
                 runRenderLoop(renderer, uiRenderer, gpuTimers);

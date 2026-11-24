@@ -5,7 +5,7 @@ import io.github.laithabuzaid.blackhole.core.SimulationEngine;
 import java.nio.file.Path;
 
 /**
- * Entry point for the Relativistic Black Hole Simulator ({@code v3.0.0}).
+ * Entry point for the Relativistic Black Hole Simulator ({@code v3.1.0}).
  *
  * <p>Supported CLI flags:
  * <ul>
@@ -41,8 +41,8 @@ public final class Main {
                         }
                     }
                     case "--help", "-h" -> {
-                        System.out.println("BlackHole v3.0.0 — General-Relativistic Black Hole Observatory");
-                        System.out.println("Usage: java --enable-native-access=ALL-UNNAMED -jar blackhole-3.0.0.jar [options]");
+                        System.out.println("BlackHole v3.1.0 — General-Relativistic Black Hole Observatory");
+                        System.out.println("Usage: java --enable-native-access=ALL-UNNAMED -jar blackhole-3.1.0.jar [options]");
                         System.out.println("  --capture-showcase     Render 8 curated 1920x1080 showcase PNGs into docs/media/");
                         System.out.println("  --capture-verification Render 10 scientific 1920x1080 PNGs into docs/media/after/");
                         System.out.println("  --benchmark            Run repeatable 1080p GPU/CPU/zero-GC benchmark suite");

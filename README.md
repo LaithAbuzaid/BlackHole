@@ -107,7 +107,7 @@
 
 ## Measured 1080p Benchmarks (`--benchmark`)
 
-Measured via `java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --benchmark` on an **NVIDIA GeForce RTX 4060** (OpenGL `4.3.0`, driver `620.70.06`, `1920×1080`, 0 GL errors):
+Measured via `java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.1.0.jar --benchmark` on an **NVIDIA GeForce RTX 4060** (OpenGL `4.3.0`, driver `620.70.06`, `1920×1080`, 0 GL errors):
 
 | Scenario | RAY (ms) | TDE_C (ms) | TDE_R (ms) | TAA (ms) | POST (ms) | UI (ms) | TOTAL (ms) | Avg FPS | P95 (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -189,8 +189,8 @@ Pre-built native releases (~22–24 MB with a minimal bundled `jlink` runtime) a
 
 | Platform | Download | How to Run |
 |---|---|---|
-| **Windows (x64)** | `BlackHole-3.0.0-Windows-x64-Setup.exe` *(or `Portable.zip`)* | Run the installer (adds Start Menu & Desktop shortcuts), or unzip and launch `BlackHole.exe` |
-| **Linux (x86_64)** | `BlackHole-3.0.0-Linux-x86_64.AppImage` *(or `.deb`)* | `chmod +x BlackHole-3.0.0-Linux-x86_64.AppImage && ./BlackHole-3.0.0-Linux-x86_64.AppImage` |
+| **Windows (x64)** | `BlackHole-3.1.0-Windows-x64-Setup.exe` *(or `Portable.zip`)* | Run the installer (adds Start Menu & Desktop shortcuts), or unzip and launch `BlackHole.exe` |
+| **Linux (x86_64)** | `BlackHole-3.1.0-Linux-x86_64.AppImage` *(or `.deb`)* | `chmod +x BlackHole-3.1.0-Linux-x86_64.AppImage && ./BlackHole-3.1.0-Linux-x86_64.AppImage` |
 
 > **GPU Requirement:** OpenGL 4.3 Core (Windows 10/11 x64 or Linux x86_64). *(macOS is capped at OpenGL 4.1 by Apple and does not support OpenGL 4.3 Compute Shaders.)*
 
@@ -204,20 +204,20 @@ OS-specific LWJGL/OpenAL native classifiers (`natives-linux`, `natives-windows`)
 ### Linux
 ```bash
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.1.0.jar
 ```
 
 ### Windows (PowerShell / CMD)
 ```powershell
 mvn clean package
-java --enable-native-access=ALL-UNNAMED -jar target\blackhole-3.0.0.jar
+java --enable-native-access=ALL-UNNAMED -jar target\blackhole-3.1.0.jar
 ```
 
 ### Run Repeatable 1080p GPU Benchmark & Regenerate Showcase / Verification PNGs
 ```bash
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --benchmark
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --capture-showcase
-java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --capture-verification
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.1.0.jar --benchmark
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.1.0.jar --capture-showcase
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.1.0.jar --capture-verification
 ```
 > `--benchmark` measures all 6 1080p workloads across all 6 GPU timer passes with zero GL errors; `--capture-showcase` renders all 8 curated `1920×1080` showcase stills into `docs/media/`; `--capture-verification` renders all 10 `1920×1080` scientific verification diagnostics into `docs/media/after/` and exits cleanly with status `0`.
 
