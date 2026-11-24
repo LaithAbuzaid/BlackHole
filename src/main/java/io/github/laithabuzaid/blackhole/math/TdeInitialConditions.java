@@ -19,6 +19,50 @@ public final class TdeInitialConditions {
     }
 
     /**
+     * Computes the exact Paczynski-Wiita parabolic launch center and initial orbital velocity
+     * {@code [cx, cy, cz, vx, vy, vz]} shared identically by particle spawning and trajectory overlays.
+     */
+    public static void computeLaunchOrbit(
+            StellarArchetype archetype,
+            float penetrationBeta,
+            float inclinationDeg,
+            float spinParam,
+            int launchVariant,
+            double[] out6
+    ) {
+        double rPlus = KerrMetric.outerHorizonRadius(spinParam);
+        double rPeri = archetype.computePeriapsis(penetrationBeta, rPlus);
+        double rPwEff = 2.0;
+
+        double startR = Math.max(15.5, rPeri * 3.1 + archetype.starRadius * 3.2 + (launchVariant % 3) * 1.4);
+        double azimuth = 0.52 + (launchVariant % 5) * 1.18;
+        double incRad = Math.toRadians(Math.max(-65.0, Math.min(65.0, inclinationDeg)));
+
+        double rxHat = Math.cos(azimuth);
+        double rzHat = Math.sin(azimuth);
+        double txHat = -rzHat;
+        double tzHat = rxHat;
+
+        double rPeriSafe = Math.max(rPwEff + 0.45, rPeri);
+        double vPeriSq = Math.min(0.90, (2.0 / Math.max(0.35, rPeriSafe - rPwEff)) * 0.992);
+        double L = rPeriSafe * Math.sqrt(vPeriSq);
+
+        double vStartSq = Math.max(0.015, (2.0 / Math.max(0.45, startR - rPwEff)) * 0.992);
+        double vTan = Math.min(Math.sqrt(vStartSq) * 0.90, L / startR);
+        double vRadIn = Math.sqrt(Math.max(0.008, vStartSq - vTan * vTan));
+
+        double cosInc = Math.cos(incRad);
+        double sinInc = Math.sin(incRad);
+
+        out6[0] = startR * rxHat;
+        out6[1] = 0.0;
+        out6[2] = startR * rzHat;
+        out6[3] = -vRadIn * rxHat + vTan * cosInc * txHat;
+        out6[4] = vTan * sinInc;
+        out6[5] = -vRadIn * rzHat + vTan * cosInc * tzHat;
+    }
+
+    /**
      * Generates {@code particleCount} particles (8 floats per particle: {@code pos.xyz, tempK, vel.xyz, massWeight})
      * into {@code outBuf} (position reset to 0 and flipped on return) using a deterministic LCG seeded by {@code seed}.
      *
@@ -34,41 +78,14 @@ public final class TdeInitialConditions {
             long seed,
             FloatBuffer outBuf
     ) {
-        double rPlus = KerrMetric.outerHorizonRadius(spinParam);
-        double rPeri = archetype.computePeriapsis(penetrationBeta, rPlus);
-        // Standard Paczynski-Wiita radius denominator r_PW = r - r_s (r_s = 2M for Schwarzschild)
-        double rPwEff = 2.0;
-
-        double startR = Math.max(15.5, rPeri * 3.1 + archetype.starRadius * 3.2 + (launchVariant % 3) * 1.4);
-        double azimuth = 0.52 + (launchVariant % 5) * 1.18;
-        double incRad = Math.toRadians(Math.max(-65.0, Math.min(65.0, inclinationDeg)));
-
-        double rxHat = Math.cos(azimuth);
-        double rzHat = Math.sin(azimuth);
-        double txHat = -rzHat;
-        double tzHat = rxHat;
-
-        double cx = startR * rxHat;
-        double cy = 0.0;
-        double cz = startR * rzHat;
-
-        // Parabolic / marginally bound trajectory in Paczynski-Wiita potential V(r) = -1 / (r - rPwEff)
-        // Marginally bound capture radius is r_mb = 4M (L_crit = 4M); keeping vPeriSq uncapped up to
-        // the compute shader speed ceiling (0.90) ensures r_p > 4.25M orbits whip around periapsis
-        // into genuine Hills bound/unbound tidal streams rather than plunging prematurely.
-        double rPeriSafe = Math.max(rPwEff + 0.45, rPeri);
-        double vPeriSq = Math.min(0.90, (2.0 / Math.max(0.35, rPeriSafe - rPwEff)) * 0.992);
-        double L = rPeriSafe * Math.sqrt(vPeriSq);
-
-        double vStartSq = Math.max(0.015, (2.0 / Math.max(0.45, startR - rPwEff)) * 0.992);
-        double vTan = Math.min(Math.sqrt(vStartSq) * 0.90, L / startR);
-        double vRadIn = Math.sqrt(Math.max(0.008, vStartSq - vTan * vTan));
-
-        double cosInc = Math.cos(incRad);
-        double sinInc = Math.sin(incRad);
-        double vBaseX = -vRadIn * rxHat + vTan * cosInc * txHat;
-        double vBaseY = vTan * sinInc;
-        double vBaseZ = -vRadIn * rzHat + vTan * cosInc * tzHat;
+        double[] orb6 = new double[6];
+        computeLaunchOrbit(archetype, penetrationBeta, inclinationDeg, spinParam, launchVariant, orb6);
+        double cx = orb6[0];
+        double cy = orb6[1];
+        double cz = orb6[2];
+        double vBaseX = orb6[3];
+        double vBaseY = orb6[4];
+        double vBaseZ = orb6[5];
 
         // Enforce p >= 1/3 so 3D density n(r) ~ r^(1/p - 3) is NEVER hollow at the core
         double p = Math.max(1.0 / 3.0, archetype.densityExponent);

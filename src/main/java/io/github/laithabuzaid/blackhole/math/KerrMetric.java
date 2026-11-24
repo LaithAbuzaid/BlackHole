@@ -182,6 +182,25 @@ public final class KerrMetric {
         return Math.sqrt(Math.max(1e-16, 0.5 * (b + disc)));
     }
 
+    /**
+     * Exact Kerr-Schild oblate spheroidal {@code (r, theta, phi)} to Cartesian {@code (x, y, z)}
+     * with spin axis {@code y}: {@code rho_KS = sqrt(r^2 + a^2) sin(theta)}, {@code y = r cos(theta)}.
+     */
+    public static void oblateToCartesian(double r, double thetaRad, double phiRad, double a, float[] outXyz) {
+        double sinT = Math.sin(thetaRad);
+        double cosT = Math.cos(thetaRad);
+        double rhoKs = Math.sqrt(r * r + a * a) * sinT;
+        outXyz[0] = (float) (rhoKs * Math.cos(phiRad));
+        outXyz[1] = (float) (r * cosT);
+        outXyz[2] = (float) (rhoKs * Math.sin(phiRad));
+    }
+
+    /** Exact static-shell lapse / gravitational redshift factor {@code alpha = sqrt(max(0, 1 - 2r / (r^2 + a^2 cos^2(theta))))}. */
+    public static double staticLapse(double r, double cosTheta, double a) {
+        double sigma = Math.max(1e-8, r * r + a * a * cosTheta * cosTheta);
+        return Math.sqrt(Math.max(0.0, 1.0 - (2.0 * r) / sigma));
+    }
+
     /** Evaluates Kerr-Schild {@code H}, {@code l = (lx, ly, lz)}, and {@code r} into {@code out5 = [r, H, lx, ly, lz]}. */
     public static void metricScalarAndNullVector(double x, double y, double z, double a, double[] out5) {
         double r = kerrRadius(x, y, z, a);

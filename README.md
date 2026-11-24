@@ -91,7 +91,7 @@
 | Subsystem | Implementation Highlights |
 |---|---|
 | **Kerr–Schild RK4 & DOPRI5(4)** | Exact Cartesian spheroidal radius $r$, analytic metric gradients ($\nabla r, \nabla H, \nabla(\mathbf{l}\cdot\mathbf{p})$), and dual GPU null geodesic solvers (`[F4]`): register-lean VGPR-RK4 and adaptive 5th-order Dormand–Prince **DOPRI5(4)** conserving $\mathcal{H} = \frac{1}{2}g^{\mu\nu}p_\mu p_\nu = 0$. Exact $r_+ = M + \sqrt{M^2 - a^2}$, Bardeen–Press–Teukolsky prograde ISCO, cubic Hermite equatorial crossings ($n = 0, 1, \ge 2$), 128³ baked periodic 3D disk turbulence, and covariant Doppler beaming + Planck blackbody LUT. |
-| **Scientific Diagnostics (`[F3]`)** | Live `[F3]` mode cycle (`OFF` → `HAMILTONIAN ERROR` → `STEP DENSITY` → `ANALYTICAL OVERLAY`) rendering per-pixel $\log_{10}|\mathcal{H}|$ conservation heatmaps, adaptive step-count maps, and an analytic finite-distance **Bardeen critical shadow** overlay with concentric $r_+$, $r_{\text{ph}+}$, $r_{\text{ergo}}$ contours and live DOPRI5(4) equatorial geodesic trajectories. |
+| **Scientific Diagnostics (`[F3]`)** | Live `[F3]` mode cycle (`OFF` → `HAMILTONIAN ERROR` → `STEP DENSITY` → `ANALYTICAL OVERLAY`) dispatching cleanly per spacetime mode (`BinaryVisualizer`, `KerrVisualizer` + `TdeVisualizer`, `WormholeVisualizer`). Renders per-pixel $\log_{10}|\mathcal{H}|$ / wormhole null-constraint error heatmaps, adaptive step maps, exact Kerr-Schild oblate geometry ($\rho_{\text{KS}} = \sqrt{r^2+a^2}\sin\theta$, pinched ergosphere, prograde/retrograde $r_{\text{ph}}$ and ISCO), ZAMO frame-dragging arrows, 7 DOPRI5(4) Kerr geodesics, Novikov–Thorne disk `Temp / Doppler / Vel` colormaps, EHT EVPA ticks (`MAD`/`SANE` + Faraday omission disclosure), TDE Bound/Unbound states + 64³ hydro slice/volume visualizer (`tidal_hydro_vis.frag`), Morris–Thorne Flamm/Dneg $z(r)$ embedding + 6 DOPRI5(4) rays, Doran Plunge proper-vs-coordinate time & tidal stretch diagnostics, and complete Binary multipolar/detector/energy plots. |
 | **Binary Black Hole Merger (`[X]`)** | **Effective-One-Body (EOB)** orbital dynamics (`EobBinaryDynamics.java`, integrated via adaptive `DOPRI5(4)`): 3PN Padé $P^1_3[A_{\text{3PN}}](u)$ + Kerr centrifugal radius $r_c^2$, NLO DJS-gauge spin–orbit coupling ($\chi_1, \chi_2 \in [-0.98, +0.98]$), unequal masses ($q \in [0.05, 1]$), eccentric release ($e_0 \le 0.45$), and dynamical ISCO & $\Omega$-peak merger attachment (no arbitrary separation threshold). Factorized multipolar waveforms & flux across $(2,2), (2,1), (3,3), (4,4)$ with $C^1$-continuous QNM ringdown; published NR-calibrated spinning remnant fits (**Barausse & Rezzolla 2009**, **Barausse, Morozova & Rezzolla 2012**, **Berti, Cardoso & Will 2006**); real SI detector strain via Planck-2018 $\Lambda$CDM $z(D_L)$, exact ${}_{-2}Y_{\ell m}(\iota_{\text{obs}})$, and Jaranowski–Królak–Schutz $(F_+, F_\times)$ (`OPTIMAL / LIGO H1 / LIGO L1 / VIRGO V1`). Ray-traced via an **analytical effective** superposed spinning Kerr–Schild + 1PN gravitomagnetic spacetime (`binary_merger.frag`, dual RK4 & DOPRI5(4)) — exact in isolated & post-merger Kerr limits, explicitly *not* a 3+1 NR binary spacetime. See [Binary Physics Reference](docs/BINARY_PHYSICS.md) for all equations, calibration domains, and validity boundaries. |
 | **Doran Horizon Plunge** | Exact $L_z = 0$ horizon-penetrating Kerr–Schild / Doran free-fall observer tetrad (`[P]` / `[F]`) crossing $r_+$ cleanly ($\beta_{\text{in}} = c$ at $r_+$) with independent 360° free-look, proper time ($\tau$) vs. diverging coordinate time ($t_\infty \to \infty$), relativistic blueshift, Kerr inner Cauchy horizon ($r_-$) mass-inflation flash, Schwarzschild anisotropic optical spaghettification, and tidal camera micro-rumble. |
 | **Morris–Thorne Wormhole** | Exact *Interstellar* / Dneg embedding radius $r(l)$ with live throat radius $\rho$, throat half-length $a$, and lensing width $M_w$. Smooth bidirectional flight across $l = 0$ between GPU-baked `1024×1024×6` mipmapped HDR cubemaps (**Universe A**: Milky Way; **Universe B**: teal-amber nebula & ringed gas giant) with camera-invariant sheet continuation and `textureGrad` ray differentials. |
@@ -99,7 +99,7 @@
 | **Interactive Compute TDE Lab** | `65,536` particles per star (2-slot `131,072` ring-buffered SSBO) across 4 stellar archetypes (**Solar G2V**, **Red Supergiant**, **Blue O-Type**, **White Dwarf**) with live penetration factor $\beta = r_t/r_p$ (`0.6`–`4.0`) and orbital inclination (`-65°` to `+65°`). Standard Paczyński–Wiita gravity ($V = -\frac{1}{r - 2M}$) paired with exact kinetic-energy-preserving **Boris Lense–Thirring precession** and toggleable (`[F5]`) **64³ GPU Eulerian–Lagrangian grid hydrodynamics** (polytropic pressure $-\nabla P/\rho$ + stream-intersection shock viscosity) with 256-thread shared-memory atomic reductions and zero-stall ping-pong `GLsync` readbacks. |
 | **Relativistic Temporal AA (TAA)** | 16-phase Halton(2,3) sub-pixel jittered 1-ray/px geodesics resolved via `taa_resolve.frag` with exact 3D camera parallax reprojection (using linear world hit distance in `hdrFbo.a`), 5-tap Catmull-Rom bicubic history sampling, and Karis-weighted 3×3 YCoCg variance clipping for flicker-free photon rings and 130+ FPS 1080p performance. |
 | **Karis Bloom + Anamorphic Glare** | 5-level HDR bloom pyramid (`GL_RGBA16F`) with weight-normalized Jimenez/Karis firefly suppression and quadratic soft-knee extraction, a 2-pass cascaded 13-tap *Interstellar*-style horizontal anamorphic streak at 1/8 resolution (shadow-guarded so black levels inside $r_+$ stay pure), ACES filmic tonemapping, and post-tonemap TPDF dithering. |
-| **Modular Glassmorphic HUD** | 3-state `[H]` cycle (`CLEAN` → `COMPACT` → `FULL`), frosted vertical-gradient SDF panels with top specular rims, bottom-center **Timelapse Transport Bar**, 4-tab Observatory Console (`SCENE` \| `PHYSICS` \| `TDE LAB` / `GW DET` \| `OPTICS`) with validated physical binary parameter controls ($M_1, M_2, \chi_1, \chi_2, r_0, e_0, \iota_{\text{orb}}, \iota_{\text{obs}}, D_L$, detector presets), clear separation of SI detector strain vs. normalized visual amplitude, and pre-baked 3-channel MSDF + SDF JetBrains Mono Medium typography (zero `java.desktop`/AWT dependency). |
+| **Modular Glassmorphic HUD** | 3-state `[H]` cycle (`CLEAN` → `COMPACT` → `FULL`), frosted vertical-gradient SDF panels with top specular rims, bottom-center **Timelapse Transport Bar**, 5-tab Observatory Console (`SCENE` \| `PHYS` \| `TDE` / `GW DET` \| `OPTICS` \| `LAYERS`) with validated physical binary parameter controls ($M_1, M_2, \chi_1, \chi_2, r_0, e_0, \iota_{\text{orb}}, \iota_{\text{obs}}, D_L$, detector presets, GW mode filter), mode-aware visualization layer switches + colormaps (`[RESET VIS]`), clear distinction of SI detector strain vs. normalized visual amplitude, provenance tags (`[E]/[A]/[F]/[V]`), and pre-baked 3-channel MSDF + SDF JetBrains Mono Medium typography (zero `java.desktop`/AWT dependency). |
 | **Procedural OpenAL Audio** | Zero-asset 44.1 kHz stereo PCM daemon synthesizer (`lwjgl-openal`) generating gravitational-redshift sub-bass drones, Doppler-panned accretion roar, TDE periapsis plasma crackle, and sweeping wormhole throat harmonics (with graceful silent fallback). |
 | **Hardware `GL_TIME_ELAPSED` Profiling** | 3-slot asynchronous ring-buffered OpenGL timer queries measuring all 6 GPU passes (**Raytrace**, **TDE Compute**, **TDE Render**, **TAA**, **Post/Bloom**, **UI**) independently alongside `nvidia-smi` / `GL_NVX_gpu_memory_info` telemetry, JVM/system CPU load, and a 120-frame oscilloscope trace — all with **zero per-frame Java heap allocations**. |
 
@@ -111,16 +111,16 @@ Measured via `java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.
 
 | Scenario | RAY (ms) | TDE_C (ms) | TDE_R (ms) | TAA (ms) | POST (ms) | UI (ms) | TOTAL (ms) | Avg FPS | P95 (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Kerr VGPR-RK4 (`1×`)** | 6.83 | 0.00 | 0.00 | 0.61 | 0.24 | 0.00 | **7.68** | **130.2** | 8.23 |
-| **Kerr DOPRI5(4) (`1×`)** | 11.41 | 0.00 | 0.00 | 0.64 | 0.23 | 0.00 | **12.29** | **81.4** | 12.59 |
-| **Kerr + 65k TDE 64³ Hydro (`1×` + Full HUD)** | 6.59 | 0.74 | 0.68 | 0.31 | 0.28 | 0.01 | **8.61** | **116.2** | 8.87 |
-| **Kerr + 65k TDE 64³ Hydro (`10×` Timelapse)** | 6.65 | 0.64 | 1.42 | 0.34 | 0.28 | 0.00 | **9.33** | **107.2** | 9.90 |
-| **Binary Merger Spinning KS RK4 (`1×` + MRT TAA)** | 14.32 | 0.00 | 0.00 | 0.72 | 0.23 | 0.00 | **15.28** | **65.5** | 16.53 |
-| **Binary Merger Spinning KS DOPRI5(4) (`1×` + TAA)** | 18.90 | 0.00 | 0.00 | 0.67 | 0.23 | 0.00 | **19.81** | **50.5** | 20.79 |
+| **Kerr VGPR-RK4 (`1×`)** | 6.58 | 0.00 | 0.00 | 0.48 | 0.23 | 0.00 | **7.28** | **137.3** | 7.87 |
+| **Kerr DOPRI5(4) (`1×`)** | 11.43 | 0.00 | 0.00 | 0.54 | 0.23 | 0.00 | **12.20** | **82.0** | 12.30 |
+| **Kerr + 65k TDE 64³ Hydro (`1×` + Full HUD)** | 6.63 | 0.58 | 0.68 | 0.32 | 0.27 | 0.02 | **8.49** | **117.8** | 8.80 |
+| **Kerr + 65k TDE 64³ Hydro (`10×` Timelapse)** | 6.68 | 0.41 | 1.42 | 0.39 | 0.26 | 0.00 | **9.15** | **109.3** | 9.81 |
+| **Binary Merger Spinning KS RK4 (`1×` + MRT TAA)** | 14.29 | 0.00 | 0.00 | 0.56 | 0.23 | 0.00 | **15.09** | **66.3** | 16.17 |
+| **Binary Merger Spinning KS DOPRI5(4) (`1×` + TAA)** | 18.94 | 0.00 | 0.00 | 0.58 | 0.23 | 0.00 | **19.75** | **50.6** | 20.77 |
 
-All **49 headless JUnit 5 validation tests** (`mvn -B test`) verify exact Kerr–Schild metric identities, Doran interior horizon escape, Bardeen shadow extrema, DOPRI5(4) geodesic convergence, Morris–Thorne wormhole invariance, EOB spinning orbital dynamics & hang-up, independent **SXS Numerical Relativity catalog** remnant predictions (`SXS:BBH:0180, 0152, 0157, 0154, 0169, 0168, 0305`), Chandrasekhar/Leaver Schwarzschild QNMs, GW150914 physical SI detector strain & frequency, binary spacetime Hamiltonian conservation ($|\mathcal{H}_{\text{bin}}| < 10^{-10}$) & 4th-order RK4 convergence, and GLSL shader uniform contracts.
+All **53 headless JUnit 5 validation tests** (`mvn -B test`) verify exact Kerr–Schild metric & oblate coordinate identities, Doran interior horizon escape, Bardeen shadow extrema, DOPRI5(4) geodesic convergence, Morris–Thorne embedding & wormhole invariance, TDE launch & particle conservation, EOB spinning orbital dynamics & hang-up, independent **SXS Numerical Relativity catalog** remnant predictions (`SXS:BBH:0180, 0152, 0157, 0154, 0169, 0168, 0305`), Chandrasekhar/Leaver Schwarzschild QNMs, GW150914 physical SI detector strain & frequency, binary spacetime Hamiltonian conservation ($|\mathcal{H}_{\text{bin}}| < 10^{-10}$) & 4th-order RK4 convergence, and GLSL shader uniform contracts (`tidal_hydro_vis.frag` included).
 
-> **Full Mathematical Formulation & Validity Boundaries:** See [`docs/BINARY_PHYSICS.md`](docs/BINARY_PHYSICS.md) for the complete EOB Hamiltonian, factorized multipolar waveform equations, NR remnant fits (and calibration domains), detector transformations, explicit exact vs. approximate vs. visualization classifications, and scientific bibliography.
+> **Full Physics Audit & Mathematical Formulation:** See [`docs/PHYSICS_VISUALIZATION_AUDIT.md`](docs/PHYSICS_VISUALIZATION_AUDIT.md) for the subsystem physics-to-visualization audit (with baseline [`docs/media/before/`](docs/media/before/) and verification [`docs/media/after/`](docs/media/after/) captures) and [`docs/BINARY_PHYSICS.md`](docs/BINARY_PHYSICS.md) for the complete EOB Hamiltonian, factorized multipolar waveform equations, NR remnant fits, detector transformations, and explicit validity boundaries.
 
 ---
 
@@ -148,12 +148,13 @@ src/
 │   ├── java/
 │   │   ├── module-info.java
 │   │   └── io/github/laithabuzaid/blackhole/
-│   │       ├── Main.java                       # CLI entry (--capture-showcase, --benchmark)
+│   │       ├── Main.java                       # CLI entry (--capture-showcase, --capture-verification, --benchmark, --gw-data)
 │   │       ├── audio/RelativisticAudioEngine.java
 │   │       ├── core/
 │   │       │   ├── BinaryMergerPhysics.java    # Adaptive DOPRI5(4) EOB driver, C1 QNM bridge & SI detector telemetry
 │   │       │   ├── CameraController.java       # Orbit, Plunge, Binary, Wormhole & Attract Tour
-│   │       │   ├── SimulationEngine.java       # GLFW loop, async [F12], --benchmark & --capture-showcase
+│   │       │   ├── SimAction.java              # Shared HUD / engine action IDs
+│   │       │   ├── SimulationEngine.java       # GLFW loop, async [F12], --benchmark, --capture-showcase & --capture-verification
 │   │       │   ├── SimulationState.java
 │   │       │   └── StellarArchetype.java       # 4 TDE star classes, beta periapsis & substep plan
 │   │       ├── graphics/
@@ -165,17 +166,19 @@ src/
 │   │       │   └── TidalDisruptionSystem.java
 │   │       ├── math/                           # EobBinaryDynamics, BinaryRemnantModel, BinaryParameters, GravitationalWaveDetector, BinarySpacetimeMetric, KerrMetric, MorrisThorneMetric, DOPRI5(4)/RK4/Symplectic, PlanckBlackbody
 │   │       ├── telemetry/HardwareTelemetry.java
-│   │       ├── ui/{HudOverlay.java, ScientificVisualizer.java, UiRenderer.java}
-│   │       └── util/{FramebufferCapture.java, PngWriter.java, SettingsStore.java}
+│   │       ├── ui/
+│   │       │   ├── vis/{BinaryVisualizer, KerrVisualizer, TdeVisualizer, WormholeVisualizer, Projection3D, PlotWidgets}.java
+│   │       │   └── {HudOverlay.java, ScientificVisualizer.java, UiRenderer.java}
+│   │       └── util/{FramebufferCapture.java, GwReferenceData.java, PngWriter.java, SettingsStore.java}
 │   └── resources/
 │       ├── fonts/jetbrains_mono_mtsdf.bin      # Pre-baked 3-channel MSDF + SDF atlas
 │       └── shaders/
 │           ├── common/fullscreen.vert
 │           ├── bake/{noise_volume.frag, skybox_milkyway.frag, skybox_nebula.frag}
-│           ├── simulation/{kerr_blackhole.frag, binary_merger.frag, morris_thorne_wormhole.frag, tidal_hydro_splat.comp, tidal_disruption.*}
+│           ├── simulation/{kerr_blackhole.frag, binary_merger.frag, morris_thorne_wormhole.frag, tidal_hydro_splat.comp, tidal_hydro_vis.frag, tidal_disruption.*}
 │           ├── post/{taa_resolve.frag, bloom_downsample.frag, bloom_upsample.frag, anamorphic_blur.frag, tonemap_composite.frag}
 │           └── ui/{hud.vert, hud.frag}
-└── test/java/io/github/laithabuzaid/blackhole/ # 49 headless JUnit 5 physics, EOB/SXS NR, binary spacetime, geodesic, camera & shader tests
+└── test/java/io/github/laithabuzaid/blackhole/ # 53 headless JUnit 5 physics, EOB/SXS NR, V3 visualization, binary spacetime, geodesic, camera & shader tests
 ```
 
 ---
@@ -210,12 +213,13 @@ mvn clean package
 java --enable-native-access=ALL-UNNAMED -jar target\blackhole-3.0.0.jar
 ```
 
-### Run Repeatable 1080p GPU Benchmark & Regenerate All 8 Showcase PNGs
+### Run Repeatable 1080p GPU Benchmark & Regenerate Showcase / Verification PNGs
 ```bash
 java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --benchmark
 java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --capture-showcase
+java --enable-native-access=ALL-UNNAMED -jar target/blackhole-3.0.0.jar --capture-verification
 ```
-> `--benchmark` measures all 6 1080p workloads across all 6 GPU timer passes with zero GL errors; `--capture-showcase` renders all 8 curated `1920×1080` showcase stills into `docs/media/` using an offscreen FBO and exits cleanly with status `0`.
+> `--benchmark` measures all 6 1080p workloads across all 6 GPU timer passes with zero GL errors; `--capture-showcase` renders all 8 curated `1920×1080` showcase stills into `docs/media/`; `--capture-verification` renders all 10 `1920×1080` scientific verification diagnostics into `docs/media/after/` and exits cleanly with status `0`.
 
 ---
 

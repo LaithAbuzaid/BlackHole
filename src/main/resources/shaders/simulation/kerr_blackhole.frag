@@ -30,6 +30,8 @@ uniform int uShowGrid;
 uniform int uOrderVis;
 uniform int uEhtPolarization;
 uniform int uEhtRadio;
+uniform int uDiskVisMode;      // 0=Blackbody, 1=Temp(K), 2=Doppler g, 3=Velocity v/c
+uniform int uEhtModel;         // 0=MAD (poloidal+toroidal), 1=SANE (tight toroidal)
 #ifdef USE_DOPRI54
 uniform float uIntegTol;       // Adaptive DOPRI5(4) local tolerance
 #endif
@@ -725,24 +727,43 @@ RayResult traceGeodesic(vec2 pixelCoord, float a, float a2,
                                 float g3 = gFactor * gFactor * gFactor;
                                 intensityBoost = g3 / (1.0 + 0.055 * g3);
 
-                                if (uEhtRadio == 1) {
+                                if (uDiskVisMode == 1) {
+                                    emitCol = turboColormap(clamp((baseTemp - 1500.0) / 18500.0, 0.0, 1.0));
+                                    intensityBoost = 1.15;
+                                } else if (uDiskVisMode == 2) {
+                                    float gNorm = clamp((gFactor - 0.35) / 1.65, 0.0, 1.0);
+                                    vec3 redC = vec3(0.95, 0.22, 0.14);
+                                    vec3 whtC = vec3(0.92, 0.94, 0.98);
+                                    vec3 bluC = vec3(0.16, 0.72, 1.00);
+                                    emitCol = (gNorm < 0.5) ? mix(redC, whtC, gNorm * 2.0) : mix(whtC, bluC, (gNorm - 0.5) * 2.0);
+                                    intensityBoost = 1.15;
+                                } else if (uDiskVisMode == 3) {
+                                    float rEffV = max(iscoR, hitR);
+                                    float vOrbMag = rEffV / max(1e-4, rEffV * sqrt(rEffV) + a);
+                                    emitCol = turboColormap(clamp(vOrbMag / 0.70, 0.0, 1.0));
+                                    if (abs(hitR - iscoR) < 0.14) {
+                                        emitCol = vec3(1.25, 1.25, 1.35);
+                                    }
+                                    intensityBoost = 1.15;
+                                } else if (uEhtRadio == 1) {
                                     float tb = clamp(pow(density * intensityBoost * 0.58, 0.55), 0.0, 1.0);
                                     emitCol = sampleEhtRadioPalette(tb) * (0.65 + 1.55 * tb);
                                     intensityBoost = 1.0 + 0.38 * tb;
                                 }
 
                                 if (uEhtPolarization == 1) {
-                                    // Co-moving MAD/SANE toroidal+poloidal B-field projected orthogonal to null ray k_hat
-                                    // (optically thin synchrotron EVPA visualization; Faraday rotation not modeled)
+                                    // Co-moving MAD (stronger poloidal/radial spiral) vs SANE (tighter toroidal) B-field
+                                    // projected orthogonal to null ray k_hat (optically thin synchrotron EVPA; Faraday rotation not modeled)
                                     vec3 rHat = safeNormalize(vec3(hitP.x, 0.0, hitP.z), vec3(1.0, 0.0, 0.0));
                                     vec3 phiHat = vec3(-rHat.z, 0.0, rHat.x);
-                                    float pitchAngle = atan(1.0, 1.55 + 2.10 * a);
+                                    float pitchDenom = (uEhtModel == 1) ? (2.80 + 3.20 * a) : (0.95 + 1.15 * a);
+                                    float pitchAngle = atan(1.0, pitchDenom);
                                     vec3 bField = cos(pitchAngle) * phiHat + sin(pitchAngle) * rHat;
                                     // Synchrotron linear polarization is perpendicular to both k_hat and B (e_pol ~ k x B)
                                     vec3 bPerp = bField - dot(bField, hitDir) * hitDir;
                                     float sinPitchRay = clamp(length(bPerp), 0.0, 1.0); // sin(theta_B) emission factor
 
-                                    float pitchWind = 1.65 + 2.15 * a;
+                                    float pitchWind = (uEhtModel == 1) ? (2.40 + 3.10 * a) : (0.95 + 1.25 * a);
                                     float logR = log(max(1.0, hitR / max(1.0, iscoR)));
                                     float spiralCoord = phi - pitchWind * logR - uTime * 0.24;
                                     float warp = 0.22 * sin(2.0 * phi - 3.0 * logR + uTime * 0.18)

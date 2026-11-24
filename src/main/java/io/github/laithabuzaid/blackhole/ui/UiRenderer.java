@@ -23,7 +23,7 @@ import static org.lwjgl.opengl.GL33.*;
  */
 public final class UiRenderer implements AutoCloseable {
 
-    private static final int MAX_QUADS = 8192;
+    private static final int MAX_QUADS = 32768;
     private static final int FLOATS_PER_VERT = 14; // pos(2) + uv(2) + color(4) + rect(4) + params(2)
     private static final int MTSDF_MAGIC = 0x4D545344; // 'MTSD'
     private static final String MTSDF_RESOURCE = "/fonts/jetbrains_mono_mtsdf.bin";
@@ -190,6 +190,74 @@ public final class UiRenderer implements AutoCloseable {
         putVert(x1 - nx, y1 - ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
         putVert(x1 + nx, y1 + ny, 0f, 0f, r, g, b, a, mx, my, 1e5f, 1e5f, 0f, 0f);
         quadCount++;
+    }
+
+    /** Zero-allocation dashed 2D segment for distinguishing retrograde/subordinate/reference curves. */
+    public void drawDashedLine(float x0, float y0, float x1, float y1, float thickness,
+                               float dashPx, float gapPx, float r, float g, float b, float a) {
+        float dx = x1 - x0;
+        float dy = y1 - y0;
+        float len = (float) Math.sqrt(dx * dx + dy * dy);
+        if (len < 0.5f) {
+            return;
+        }
+        float ux = dx / len;
+        float uy = dy / len;
+        float period = Math.max(2f, dashPx + gapPx);
+        float s = 0f;
+        while (s < len) {
+            float e = Math.min(len, s + dashPx);
+            drawLine(x0 + ux * s, y0 + uy * s, x0 + ux * e, y0 + uy * e, thickness, r, g, b, a);
+            s += period;
+        }
+    }
+
+    /** Zero-allocation 2D vector arrow with crisp triangular head wings. */
+    public void drawArrow(float x0, float y0, float x1, float y1, float thickness, float headPx,
+                          float r, float g, float b, float a) {
+        float dx = x1 - x0;
+        float dy = y1 - y0;
+        float len = (float) Math.sqrt(dx * dx + dy * dy);
+        if (len < 1.5f) {
+            return;
+        }
+        drawLine(x0, y0, x1, y1, thickness, r, g, b, a);
+        float ux = dx / len;
+        float uy = dy / len;
+        float px = -uy;
+        float py = ux;
+        float h = Math.min(headPx, len * 0.45f);
+        float w = h * 0.48f;
+        drawLine(x1, y1, x1 - ux * h + px * w, y1 - uy * h + py * w, thickness, r, g, b, a);
+        drawLine(x1, y1, x1 - ux * h - px * w, y1 - uy * h - py * w, thickness, r, g, b, a);
+    }
+
+    /** Zero-allocation 2D circle outline built from line segments. */
+    public void drawCircleOutline(float cx, float cy, float radius, int segs, float thickness,
+                                  float r, float g, float b, float a) {
+        if (radius <= 0.5f || segs < 6) {
+            return;
+        }
+        float step = (float) ((2.0 * Math.PI) / segs);
+        float prevX = cx + radius;
+        float prevY = cy;
+        for (int i = 1; i <= segs; i++) {
+            float ang = i * step;
+            float nx = cx + (float) Math.cos(ang) * radius;
+            float ny = cy + (float) Math.sin(ang) * radius;
+            drawLine(prevX, prevY, nx, ny, thickness, r, g, b, a);
+            prevX = nx;
+            prevY = ny;
+        }
+    }
+
+    /** Compact provenance/scale pill badge for [E] EXACT, [A] APPROX, [F] NR FIT, [V] VISUAL tags. */
+    public void drawBadge(float x, float y, String text, float scale, float r, float g, float b) {
+        float tw = text.length() * 8f * scale;
+        float bw = tw + 10f;
+        float bh = 14f * scale + 2f;
+        drawGlassPanel(x, y, bw, bh, 4f, r * 0.16f, g * 0.16f, b * 0.16f, 0.88f, r, g, b, 0.72f);
+        drawText(text, x + 5f, y + 3.5f * scale, scale, r, g, b, 0.98f);
     }
 
     public void drawText(CharSequence text, float x, float y, float scale,

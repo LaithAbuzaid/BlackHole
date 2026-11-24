@@ -21,6 +21,7 @@ public final class Main {
 
     public static void main(String[] args) {
         boolean captureShowcase = false;
+        boolean captureVerification = false;
         boolean runBenchmark = false;
         Path gwDataPath = null;
 
@@ -29,6 +30,7 @@ public final class Main {
                 String arg = args[i];
                 switch (arg) {
                     case "--capture-showcase" -> captureShowcase = true;
+                    case "--capture-verification" -> captureVerification = true;
                     case "--benchmark" -> runBenchmark = true;
                     case "--gw-data" -> {
                         if (i + 1 < args.length) {
@@ -41,15 +43,16 @@ public final class Main {
                     case "--help", "-h" -> {
                         System.out.println("BlackHole v3.0.0 — General-Relativistic Black Hole Observatory");
                         System.out.println("Usage: java --enable-native-access=ALL-UNNAMED -jar blackhole-3.0.0.jar [options]");
-                        System.out.println("  --capture-showcase   Render 8 curated 1920x1080 showcase PNGs into docs/media/");
-                        System.out.println("  --benchmark          Run repeatable 1080p GPU/CPU/zero-GC benchmark suite");
-                        System.out.println("  --gw-data <file>     Load an external GWOSC strain CSV for LIGO overlay comparison");
+                        System.out.println("  --capture-showcase     Render 8 curated 1920x1080 showcase PNGs into docs/media/");
+                        System.out.println("  --capture-verification Render 10 scientific 1920x1080 PNGs into docs/media/after/");
+                        System.out.println("  --benchmark            Run repeatable 1080p GPU/CPU/zero-GC benchmark suite");
+                        System.out.println("  --gw-data <file>       Load an external GWOSC strain CSV for LIGO overlay comparison");
                         return;
                     }
                     default -> System.err.println("[BlackHole] Ignoring unknown argument: " + arg);
                 }
             }
         }
-        new SimulationEngine(captureShowcase, runBenchmark, gwDataPath).run();
+        new SimulationEngine(captureShowcase, runBenchmark, gwDataPath, captureVerification).run();
     }
 }

@@ -25,6 +25,18 @@ public final class CameraController {
     private static final double MAX_WORMHOLE_L = 35.0;
     private static final double WORMHOLE_KEY_SPEED = 11.0;
 
+    public static final int PLUNGE_HIST_LEN = 160;
+    private final float[] plungeHistTau = new float[PLUNGE_HIST_LEN];
+    private final float[] plungeHistCoordT = new float[PLUNGE_HIST_LEN];
+    private final float[] plungeHistR = new float[PLUNGE_HIST_LEN];
+    private final float[] plungeHistBeta = new float[PLUNGE_HIST_LEN];
+    private final float[] plungeHistTidal = new float[PLUNGE_HIST_LEN];
+    private final float[] plungeHistRedshift = new float[PLUNGE_HIST_LEN];
+    private int plungeHistCursor = 0;
+    private int plungeHistCount = 0;
+    private double plungeSampleAccum = 0.0;
+    private float plungeRedshiftFactor = 1.0f;
+
     // Black hole orbital state
     private double targetDist = 38.0;
     private double camDist = 38.0;
@@ -330,11 +342,66 @@ public final class CameraController {
         state.plungeVelocityC = (float) KerrMetric.doranRadialInfallSpeed(r, cosTheta0, a);
         state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, r * r * r));
         classifyPlungeZone(r, a, state);
+
+        clearPlungeHistory();
+        double lapse0 = KerrMetric.staticLapse(r, cosTheta0, a);
+        plungeRedshiftFactor = (lapse0 > 1e-4) ? (float) (1.0 / lapse0) : 99.0f;
+        recordPlungeSample(state, r);
+    }
+
+    /**
+     * Deterministically populates plunge trajectory history from an outer grazing start {@code rStart}
+     * down to the current {@code camDist} (used when a plunge pose is staged directly for inspection).
+     */
+    public void populateDeterministicPlungeHistory(SimulationState state, double rStart) {
+        clearPlungeHistory();
+        double a = state.effectiveSpin();
+        double rPlus = state.outerHorizonRadius();
+        double cosTheta = Math.sin(camPitch);
+        double rNow = Math.max(0.15, camDist);
+        double rBeg = Math.max(rNow + 0.5, rStart);
+        double tau = 0.0;
+        double tCoord = 0.0;
+        boolean crossed = false;
+        int steps = 96;
+        for (int i = 0; i <= steps; i++) {
+            double frac = i / (double) steps;
+            double r = rBeg + (rNow - rBeg) * frac;
+            double vIn = KerrMetric.doranRadialInfallSpeed(r, cosTheta, a);
+            if (i > 0) {
+                double dr = Math.abs(rBeg - rNow) / steps;
+                double dTau = dr / Math.max(0.05, vIn);
+                tau += dTau;
+                if (r > rPlus * 1.003 && !crossed) {
+                    tCoord += dTau * KerrMetric.doranDtBlDtau(r, cosTheta, a);
+                } else {
+                    crossed = true;
+                }
+            }
+            double lapse = KerrMetric.staticLapse(r, cosTheta, a);
+            float zPlus1 = (lapse > 1e-4) ? (float) (1.0 / lapse) : 99.0f;
+            int idx = plungeHistCursor;
+            plungeHistTau[idx] = (float) tau;
+            plungeHistCoordT[idx] = crossed ? Float.POSITIVE_INFINITY : (float) tCoord;
+            plungeHistR[idx] = (float) r;
+            plungeHistBeta[idx] = (float) vIn;
+            plungeHistTidal[idx] = (float) (2.0 / Math.max(1e-3, r * r * r));
+            plungeHistRedshift[idx] = zPlus1;
+            plungeHistCursor = (plungeHistCursor + 1) % PLUNGE_HIST_LEN;
+            if (plungeHistCount < PLUNGE_HIST_LEN) plungeHistCount++;
+            plungeRedshiftFactor = zPlus1;
+        }
+        state.plungeProperTime = tau;
+        state.plungeCoordTime = tCoord;
+        state.plungeHorizonCrossed = crossed;
+        state.plungeVelocityC = (float) KerrMetric.doranRadialInfallSpeed(rNow, cosTheta, a);
+        state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, rNow * rNow * rNow));
     }
 
     /** Aborts an active plunge and smoothly returns the camera to its pre-plunge exterior orbit. */
     public void abortPlunge(SimulationState state) {
         state.clearPlungeTelemetry();
+        clearPlungeHistory();
         state.freeFallMode = false;
         targetDist = Math.max(6.5, savedDist);
         targetYaw = savedYaw;
@@ -435,9 +502,49 @@ public final class CameraController {
             targetDist = rNext;
             state.plungeVelocityC = (float) KerrMetric.doranRadialInfallSpeed(rNext, cosTheta, a);
             state.plungeTidalGrad = (float) (2.0 / Math.max(1e-3, rNext * rNext * rNext));
+            double lapseNow = KerrMetric.staticLapse(rNext, cosTheta, a);
+            plungeRedshiftFactor = (lapseNow > 1e-4) ? (float) (1.0 / lapseNow) : 99.0f;
             classifyPlungeZone(rNext, a, state);
+
+            plungeSampleAccum += dTau;
+            if (plungeSampleAccum >= 0.08 || state.plungeEnded) {
+                plungeSampleAccum = 0.0;
+                recordPlungeSample(state, rNext);
+            }
         }
     }
+
+    private void clearPlungeHistory() {
+        plungeHistCursor = 0;
+        plungeHistCount = 0;
+        plungeSampleAccum = 0.0;
+    }
+
+    private void recordPlungeSample(SimulationState state, double rNow) {
+        int i = plungeHistCursor;
+        plungeHistTau[i] = (float) state.plungeProperTime;
+        plungeHistCoordT[i] = state.plungeHorizonCrossed ? Float.POSITIVE_INFINITY : (float) state.plungeCoordTime;
+        plungeHistR[i] = (float) rNow;
+        plungeHistBeta[i] = state.plungeVelocityC;
+        plungeHistTidal[i] = state.plungeTidalGrad;
+        plungeHistRedshift[i] = plungeRedshiftFactor;
+        plungeHistCursor = (plungeHistCursor + 1) % PLUNGE_HIST_LEN;
+        if (plungeHistCount < PLUNGE_HIST_LEN) {
+            plungeHistCount++;
+        }
+    }
+
+    public int plungeHistCount() { return plungeHistCount; }
+    public int plungeHistStartIdx() { return (plungeHistCount < PLUNGE_HIST_LEN) ? 0 : plungeHistCursor; }
+    public float[] plungeHistTau() { return plungeHistTau; }
+    public float[] plungeHistCoordT() { return plungeHistCoordT; }
+    public float[] plungeHistR() { return plungeHistR; }
+    public float[] plungeHistBeta() { return plungeHistBeta; }
+    public float[] plungeHistTidal() { return plungeHistTidal; }
+    public float[] plungeHistRedshift() { return plungeHistRedshift; }
+    public float plungeRedshiftFactor() { return plungeRedshiftFactor; }
+    public double currentCamPitchRad() { return camPitch; }
+    public double currentCamYawRad() { return camYaw; }
 
     private static double smoothstep(double edge0, double edge1, double x) {
         double t = Math.max(0.0, Math.min(1.0, (x - edge0) / Math.max(1e-8, edge1 - edge0)));

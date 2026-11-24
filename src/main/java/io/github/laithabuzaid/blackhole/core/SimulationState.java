@@ -70,11 +70,42 @@ public final class SimulationState {
     public static final int HUD_COMPACT = 1;
     public static final int HUD_FULL = 2;
 
-    // 4-Tab Right Observatory Console IDs
+    // 5-Tab Right Observatory Console IDs
     public static final int TAB_SCENE = 0;
     public static final int TAB_PHYSICS = 1;
     public static final int TAB_TDE_LAB = 2;
     public static final int TAB_OPTICS = 3;
+    public static final int TAB_SCI_VIS = 4;
+
+    // Visualization mode enums
+    public static final int BIN_MODE_ALL = 0;
+    public static final int BIN_MODE_22  = 1;
+    public static final int BIN_MODE_21  = 2;
+    public static final int BIN_MODE_33  = 3;
+    public static final int BIN_MODE_44  = 4;
+
+    public static final int DISK_VIS_BLACKBODY = 0;
+    public static final int DISK_VIS_TEMP      = 1;
+    public static final int DISK_VIS_DOPPLER   = 2;
+    public static final int DISK_VIS_VELOCITY  = 3;
+
+    public static final int EHT_MODEL_MAD  = 0;
+    public static final int EHT_MODEL_SANE = 1;
+
+    public static final int TDE_COLOR_THERMAL       = 0;
+    public static final int TDE_COLOR_BOUND_UNBOUND = 1;
+    public static final int TDE_COLOR_VELOCITY      = 2;
+    public static final int TDE_COLOR_TEMP          = 3;
+
+    public static final int TDE_HYDRO_VIS_OFF      = 0;
+    public static final int TDE_HYDRO_VIS_DENSITY  = 1;
+    public static final int TDE_HYDRO_VIS_PRESSURE = 2;
+    public static final int TDE_HYDRO_VIS_VELOCITY = 3;
+    public static final int TDE_HYDRO_VIS_SHOCK    = 4;
+    public static final int TDE_HYDRO_VIS_VOLUME   = 5;
+
+    public static final int TDE_SLICE_XZ = 0;
+    public static final int TDE_SLICE_XY = 1;
 
     // Plunge & Audio bounds
     public static final float MIN_PLUNGE_SPEED = 0.10f;
@@ -193,6 +224,31 @@ public final class SimulationState {
     public int integratorMode = INTEGRATOR_RK4;      // 0 = VGPR-opt RK4, 1 = Adaptive Dormand-Prince 5(4)
     public float integratorRtol = 2.5e-4f;           // GPU DOPRI5(4) relative tolerance [1e-5 .. 5e-3]
     public int scientificDiagMode = DIAG_OFF;        // [F3] cycle: Off -> |H| Error -> Step Density -> Analytical Curves
+
+    // Mode-Specific Scientific Visualization Layer Toggles & Modes
+    public boolean visBinTrajectory = true;
+    public boolean visBinHorizonsSpins = true;
+    public boolean visBinGwModes = true;
+    public boolean visBinDetector = true;
+    public boolean visBinEnergy = true;
+    public boolean visBinPropagation = true;
+    public int binGwModeFilter = BIN_MODE_ALL;
+    public boolean showGwReference = false;
+
+    public boolean visKerrGeometry = true;
+    public boolean visKerrFrameDragging = true;
+    public boolean visKerrGeodesics = true;
+    public int kerrDiskVisMode = DISK_VIS_BLACKBODY;
+    public int ehtMagneticModel = EHT_MODEL_MAD;
+    public boolean visEhtGlyphs = true;
+
+    public int tdeParticleColorMode = TDE_COLOR_THERMAL;
+    public int tdeHydroVisMode = TDE_HYDRO_VIS_OFF;
+    public int tdeHydroSlicePlane = TDE_SLICE_XZ;
+    public boolean visTdeOverlay = true;
+
+    public boolean visWormholeEmbedding = true;
+    public boolean visPlungeDiag = true;
 
     // Procedural Relativistic Audio
     public float audioVolume = 0.60f;     // Master volume [0.00 .. 1.00]
@@ -449,6 +505,80 @@ public final class SimulationState {
         tdeSeed = TdeInitialConditions.DEFAULT_SEED;
         integratorMode = INTEGRATOR_RK4;
         integratorRtol = 2.5e-4f;
+        resetVisualizationSettings();
+    }
+
+    /** Resets only scientific visualization layers, colormaps, and diagnostics without altering physics parameters. */
+    public void resetVisualizationSettings() {
         scientificDiagMode = DIAG_OFF;
+        showGrid = false;
+        orderVisualizer = false;
+        ehtPolarization = false;
+        ehtRadioPalette = false;
+        showReticle = false;
+        binaryGwOverlay = false;
+
+        visBinTrajectory = true;
+        visBinHorizonsSpins = true;
+        visBinGwModes = true;
+        visBinDetector = true;
+        visBinEnergy = true;
+        visBinPropagation = true;
+        binGwModeFilter = BIN_MODE_ALL;
+        showGwReference = false;
+
+        visKerrGeometry = true;
+        visKerrFrameDragging = true;
+        visKerrGeodesics = true;
+        kerrDiskVisMode = DISK_VIS_BLACKBODY;
+        ehtMagneticModel = EHT_MODEL_MAD;
+        visEhtGlyphs = true;
+
+        tdeParticleColorMode = TDE_COLOR_THERMAL;
+        tdeHydroVisMode = TDE_HYDRO_VIS_OFF;
+        tdeHydroSlicePlane = TDE_SLICE_XZ;
+        visTdeOverlay = true;
+
+        visWormholeEmbedding = true;
+        visPlungeDiag = true;
+    }
+
+    public String binGwModeLabel() {
+        return switch (binGwModeFilter) {
+            case BIN_MODE_22 -> "(2,2)";
+            case BIN_MODE_21 -> "(2,1)";
+            case BIN_MODE_33 -> "(3,3)";
+            case BIN_MODE_44 -> "(4,4)";
+            default -> "ALL MODES";
+        };
+    }
+
+    public String kerrDiskVisLabel() {
+        return switch (kerrDiskVisMode) {
+            case DISK_VIS_TEMP -> "TEMP (K)";
+            case DISK_VIS_DOPPLER -> "DOPPLER g";
+            case DISK_VIS_VELOCITY -> "VEL v/c";
+            default -> "BLACKBODY";
+        };
+    }
+
+    public String tdeColorLabel() {
+        return switch (tdeParticleColorMode) {
+            case TDE_COLOR_BOUND_UNBOUND -> "BND/UNBND";
+            case TDE_COLOR_VELOCITY -> "VEL v/c";
+            case TDE_COLOR_TEMP -> "TEMP MAP";
+            default -> "THERMAL";
+        };
+    }
+
+    public String tdeHydroVisLabel() {
+        return switch (tdeHydroVisMode) {
+            case TDE_HYDRO_VIS_DENSITY -> "RHO SLICE";
+            case TDE_HYDRO_VIS_PRESSURE -> "PRESS SLICE";
+            case TDE_HYDRO_VIS_VELOCITY -> "VEL SLICE";
+            case TDE_HYDRO_VIS_SHOCK -> "SHOCK SLICE";
+            case TDE_HYDRO_VIS_VOLUME -> "3D VOLUME";
+            default -> "OFF";
+        };
     }
 }

@@ -211,6 +211,7 @@ final class UtilityAndShaderContractTest {
                 "/shaders/simulation/tidal_disruption.comp",
                 "/shaders/simulation/tidal_disruption.vert",
                 "/shaders/simulation/tidal_disruption.frag",
+                "/shaders/simulation/tidal_hydro_vis.frag",
                 "/shaders/post/taa_resolve.frag",
                 "/shaders/post/bloom_downsample.frag",
                 "/shaders/post/bloom_upsample.frag",

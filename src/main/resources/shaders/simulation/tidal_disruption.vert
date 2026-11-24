@@ -21,12 +21,26 @@ uniform float uHorizonR;
 uniform int uDoppler;
 uniform vec2 uJitter;
 uniform vec4 uSlotStyle[2]; // .rgb = archetype tint, .a = ribbon width scale
+uniform int uColorMode;     // 0=Thermal Blackbody, 1=Bound/Unbound/Shearing, 2=Velocity v/c, 3=Temp Map
 
 out vec2 vLocalUv;
 out vec3 vWorldPos;
 out vec3 vColor;
 out float vAlpha;
 out float vTempNorm;
+
+vec3 turboColormap(float t) {
+    float x = clamp(t, 0.0, 1.0);
+    vec3 c0 = vec3(0.11, 0.08, 0.34);
+    vec3 c1 = vec3(0.09, 0.56, 0.78);
+    vec3 c2 = vec3(0.55, 0.88, 0.24);
+    vec3 c3 = vec3(0.98, 0.55, 0.09);
+    vec3 c4 = vec3(0.84, 0.12, 0.14);
+    if (x < 0.25) return mix(c0, c1, x * 4.0);
+    if (x < 0.50) return mix(c1, c2, (x - 0.25) * 4.0);
+    if (x < 0.75) return mix(c2, c3, (x - 0.50) * 4.0);
+    return mix(c3, c4, (x - 0.75) * 4.0);
+}
 
 vec3 sampleBlackbody(float tempKelvin) {
     float norm = clamp((tempKelvin - 900.0) * (1.0 / 37100.0), 0.0, 1.0);
@@ -137,7 +151,27 @@ void main() {
     float boost = g3 / (1.0 + 0.38 * g3);
 
     float tempNorm = clamp((p.velTemp.w - 3000.0) / 18000.0, 0.0, 1.5);
-    vColor = sampleBlackbody(obsTemp) * slotStyle.rgb * boost * (0.50 + 1.28 * tempNorm);
+    if (uColorMode == 1) {
+        // Bound (epsilon < 0), Unbound Tail (epsilon >= 0), Infalling, and Hot Shearing Stream
+        float rPw = max(0.35, length(pos) - 2.0);
+        float epsPw = 0.5 * dot(vel, vel) - (1.0 / rPw);
+        bool infalling = dot(pos, vel) < 0.0;
+        if (r < 8.5 && p.velTemp.w > 10500.0) {
+            vColor = vec3(1.18, 0.34, 1.18); // Hot shearing / nozzle-compressed stream
+        } else if (epsPw < 0.0 && infalling && r < 15.0) {
+            vColor = vec3(0.20, 1.08, 0.72); // Bound material approaching BH
+        } else if (epsPw < 0.0) {
+            vColor = vec3(0.22, 0.66, 1.24); // Bound fallback debris
+        } else {
+            vColor = vec3(1.26, 0.56, 0.14); // Unbound escaping tidal tail
+        }
+    } else if (uColorMode == 2) {
+        vColor = turboColormap(clamp(beta / 0.85, 0.0, 1.0)) * 1.15;
+    } else if (uColorMode == 3) {
+        vColor = turboColormap(clamp((p.velTemp.w - 3000.0) / 35000.0, 0.0, 1.0)) * 1.15;
+    } else {
+        vColor = sampleBlackbody(obsTemp) * slotStyle.rgb * boost * (0.50 + 1.28 * tempNorm);
+    }
     vTempNorm = tempNorm;
     vWorldPos = pos;
 

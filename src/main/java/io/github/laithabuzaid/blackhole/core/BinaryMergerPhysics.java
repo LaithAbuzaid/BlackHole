@@ -60,6 +60,7 @@ public final class BinaryMergerPhysics {
     }
 
     public static final int STRAIN_HISTORY_LEN = 160;
+    public static final int VIS_HISTORY_LEN = 240;
     public static final double INITIAL_SEPARATION = 10.0;
 
     /** Conversion between wall-clock seconds (at 1.0x timeScale) and geometric time t/M. */
@@ -73,6 +74,49 @@ public final class BinaryMergerPhysics {
     private final double[] physStrainHistory = new double[STRAIN_HISTORY_LEN]; // True SI h_det(t)
     private int strainCursor = 0;
     private double sampleAccumGeom = 0.0;
+
+    // Synchronized scientific visualization history buffers (cleared on reset, never advances when paused)
+    private final float[] trail1X = new float[VIS_HISTORY_LEN];
+    private final float[] trail1Y = new float[VIS_HISTORY_LEN];
+    private final float[] trail1Z = new float[VIS_HISTORY_LEN];
+    private final float[] trail2X = new float[VIS_HISTORY_LEN];
+    private final float[] trail2Y = new float[VIS_HISTORY_LEN];
+    private final float[] trail2Z = new float[VIS_HISTORY_LEN];
+    private final byte[] trailPhase = new byte[VIS_HISTORY_LEN];
+
+    private final float[] histGeomTime = new float[VIS_HISTORY_LEN];
+    private final float[] histMode22 = new float[VIS_HISTORY_LEN];
+    private final float[] histMode21 = new float[VIS_HISTORY_LEN];
+    private final float[] histMode33 = new float[VIS_HISTORY_LEN];
+    private final float[] histMode44 = new float[VIS_HISTORY_LEN];
+    private final float[] histAmp22 = new float[VIS_HISTORY_LEN];
+    private final float[] histAmp21 = new float[VIS_HISTORY_LEN];
+    private final float[] histAmp33 = new float[VIS_HISTORY_LEN];
+    private final float[] histAmp44 = new float[VIS_HISTORY_LEN];
+    private final float[] histGeomHPlus = new float[VIS_HISTORY_LEN];
+    private final float[] histGeomHCross = new float[VIS_HISTORY_LEN];
+    private final double[] histPhysHPlus = new double[VIS_HISTORY_LEN];
+    private final double[] histPhysHCross = new double[VIS_HISTORY_LEN];
+    private final double[] histPhysHDet = new double[VIS_HISTORY_LEN];
+    private final float[] histGwFreqHz = new float[VIS_HISTORY_LEN];
+    private final float[] histOmegaGeom = new float[VIS_HISTORY_LEN];
+    private final float[] histSeparation = new float[VIS_HISTORY_LEN];
+    private final float[] histOrbitalEnergy = new float[VIS_HISTORY_LEN];
+    private final float[] histRadiatedEnergy = new float[VIS_HISTORY_LEN];
+    private final float[] histOrbitalAngMom = new float[VIS_HISTORY_LEN];
+    private final float[] histRadiatedAngMom = new float[VIS_HISTORY_LEN];
+    private final float[] histEnergyBalanceErr = new float[VIS_HISTORY_LEN];
+    private int visHistCursor = 0;
+    private int visHistCount = 0;
+
+    // Merger & eccentricity markers
+    public boolean hasMergerOccurred = false;
+    public double mergerGeomTime = 0.0;
+    public float mergerLoc1X, mergerLoc1Y, mergerLoc1Z;
+    public float mergerLoc2X, mergerLoc2Y, mergerLoc2Z;
+    public float mergerComX, mergerComY, mergerComZ;
+    public float minSepSeen = (float) INITIAL_SEPARATION;
+    public float maxSepSeen = (float) INITIAL_SEPARATION;
 
     // Active physical configuration & models
     private BinaryParameters params = BinaryParameters.presetGw150914();
@@ -142,6 +186,8 @@ public final class BinaryMergerPhysics {
     public float currentSeparation = (float) INITIAL_SEPARATION;
     public float currentOrbitalPhase = 0.35f;
     public float orbitalOmegaGeom = 0.031f;
+    public float orbitalOmegaDot = 0.0f;
+    public float radialVel = 0.0f;
     public float orbitalFreqHz = 16.0f;
     public float orbitalBeta = 0.25f;
     public float gwFreqHz = 32.0f;              // Detector-frame dominant (2,2) GW frequency (Hz)
@@ -165,6 +211,9 @@ public final class BinaryMergerPhysics {
     public double antennaFPlus = 1.0;
     public double antennaFCross = 0.0;
     public double higherModePowerFrac = 0.0;    // Fraction of instantaneous GW power in (2,1),(3,3),(4,4)
+    public double powerFrac22 = 1.0, powerFrac21 = 0.0, powerFrac33 = 0.0, powerFrac44 = 0.0;
+    public double hPlus22 = 0.0, hPlus21 = 0.0, hPlus33 = 0.0, hPlus44 = 0.0;
+    public double hCross22 = 0.0, hCross21 = 0.0, hCross33 = 0.0, hCross44 = 0.0;
     public double modeAmp22 = 0.0, modeAmp21 = 0.0, modeAmp33 = 0.0, modeAmp44 = 0.0;
     public double modePhase22 = 0.0, modePhase21 = 0.0, modePhase33 = 0.0, modePhase44 = 0.0;
 
@@ -228,7 +277,72 @@ public final class BinaryMergerPhysics {
         this.strainCursor = 0;
         this.sampleAccumGeom = 0.0;
 
+        clearVisHistories();
+
         publishInspiralOutputs();
+        this.orbitalOmegaDot = 0.0f;
+        this.minSepSeen = this.currentSeparation;
+        this.maxSepSeen = this.currentSeparation;
+        recordVisSample();
+    }
+
+    private void clearVisHistories() {
+        Arrays.fill(trail1X, 0.0f); Arrays.fill(trail1Y, 0.0f); Arrays.fill(trail1Z, 0.0f);
+        Arrays.fill(trail2X, 0.0f); Arrays.fill(trail2Y, 0.0f); Arrays.fill(trail2Z, 0.0f);
+        Arrays.fill(trailPhase, (byte) 0);
+        Arrays.fill(histGeomTime, 0.0f);
+        Arrays.fill(histMode22, 0.0f); Arrays.fill(histMode21, 0.0f);
+        Arrays.fill(histMode33, 0.0f); Arrays.fill(histMode44, 0.0f);
+        Arrays.fill(histAmp22, 0.0f); Arrays.fill(histAmp21, 0.0f);
+        Arrays.fill(histAmp33, 0.0f); Arrays.fill(histAmp44, 0.0f);
+        Arrays.fill(histGeomHPlus, 0.0f); Arrays.fill(histGeomHCross, 0.0f);
+        Arrays.fill(histPhysHPlus, 0.0); Arrays.fill(histPhysHCross, 0.0); Arrays.fill(histPhysHDet, 0.0);
+        Arrays.fill(histGwFreqHz, 0.0f); Arrays.fill(histOmegaGeom, 0.0f); Arrays.fill(histSeparation, 0.0f);
+        Arrays.fill(histOrbitalEnergy, 0.0f); Arrays.fill(histRadiatedEnergy, 0.0f);
+        Arrays.fill(histOrbitalAngMom, 0.0f); Arrays.fill(histRadiatedAngMom, 0.0f);
+        Arrays.fill(histEnergyBalanceErr, 0.0f);
+        visHistCursor = 0;
+        visHistCount = 0;
+        hasMergerOccurred = false;
+        mergerGeomTime = 0.0;
+        mergerLoc1X = mergerLoc1Y = mergerLoc1Z = 0.0f;
+        mergerLoc2X = mergerLoc2Y = mergerLoc2Z = 0.0f;
+        mergerComX = mergerComY = mergerComZ = 0.0f;
+    }
+
+    private void recordVisSample() {
+        int i = visHistCursor;
+        trail1X[i] = pos1X; trail1Y[i] = pos1Y; trail1Z[i] = pos1Z;
+        trail2X[i] = pos2X; trail2Y[i] = pos2Y; trail2Z[i] = pos2Z;
+        trailPhase[i] = (byte) phase.ordinal();
+
+        histGeomTime[i] = (float) geomTime;
+        histMode22[i] = (float) (modeAmp22 * Math.cos(modePhase22));
+        histMode21[i] = (float) (modeAmp21 * Math.cos(modePhase21));
+        histMode33[i] = (float) (modeAmp33 * Math.cos(modePhase33));
+        histMode44[i] = (float) (modeAmp44 * Math.cos(modePhase44));
+        histAmp22[i] = (float) modeAmp22;
+        histAmp21[i] = (float) modeAmp21;
+        histAmp33[i] = (float) modeAmp33;
+        histAmp44[i] = (float) modeAmp44;
+        histGeomHPlus[i] = (float) geomHPlus;
+        histGeomHCross[i] = (float) geomHCross;
+        histPhysHPlus[i] = physHPlus;
+        histPhysHCross[i] = physHCross;
+        histPhysHDet[i] = detectorStrain;
+        histGwFreqHz[i] = gwFreqHz;
+        histOmegaGeom[i] = orbitalOmegaGeom;
+        histSeparation[i] = currentSeparation;
+        histOrbitalEnergy[i] = orbitalEnergy;
+        histRadiatedEnergy[i] = radiatedEnergy;
+        histOrbitalAngMom[i] = orbitalAngularMomentum;
+        histRadiatedAngMom[i] = radiatedAngularMomentum;
+        histEnergyBalanceErr[i] = (float) eobEnergyBalanceErr;
+
+        visHistCursor = (visHistCursor + 1) % VIS_HISTORY_LEN;
+        if (visHistCount < VIS_HISTORY_LEN) {
+            visHistCount++;
+        }
     }
 
     /** Backward-compatible reset from mass ratio {@code q} (non-spinning, 65 M_sun, r_0 = 10M). */
@@ -280,6 +394,7 @@ public final class BinaryMergerPhysics {
                 strainHistory[strainCursor] = strainPlus;
                 physStrainHistory[strainCursor] = detectorStrain;
                 strainCursor = (strainCursor + 1) % STRAIN_HISTORY_LEN;
+                recordVisSample();
             }
         }
     }
@@ -302,6 +417,7 @@ public final class BinaryMergerPhysics {
                 strainHistory[strainCursor] = strainPlus;
                 physStrainHistory[strainCursor] = detectorStrain;
                 strainCursor = (strainCursor + 1) % STRAIN_HISTORY_LEN;
+                recordVisSample();
             }
         }
     }
@@ -369,7 +485,10 @@ public final class BinaryMergerPhysics {
             if (omegaTurnedOver || reachedLightRingFloor) {
                 beginMergerAttachment(actualDt, a22Before, a21Before, a33Before, a44Before);
                 publishMergerRingdownOutputs(0.0);
+                orbitalOmegaDot = (float) ((orbitalOmegaGeom - omegaBefore) / Math.max(1e-5, actualDt));
+                recordVisSample();
             } else {
+                orbitalOmegaDot = (float) ((eobEval.omega - omegaBefore) / Math.max(1e-5, actualDt));
                 prevOmega = eobEval.omega;
                 prevAmp22 = a22Before;
                 prevAmp21 = a21Before;
@@ -378,12 +497,14 @@ public final class BinaryMergerPhysics {
                 publishInspiralOutputs();
             }
         } else {
+            double omegaPrev = orbitalOmegaGeom;
             geomTime += hGeom;
             double dtSinceMatch = geomTime - matchGeomTime;
             if (phase == Phase.MERGER && dtSinceMatch >= mergerDurationGeom) {
                 phase = Phase.RINGDOWN;
             }
             publishMergerRingdownOutputs(dtSinceMatch);
+            orbitalOmegaDot = (float) ((orbitalOmegaGeom - omegaPrev) / Math.max(1e-5, hGeom));
 
             if (dtSinceMatch >= mergerDurationGeom + ringdownDurationGeom) {
                 if (autoLoop) {
@@ -405,6 +526,12 @@ public final class BinaryMergerPhysics {
         matchRadialVel = eobEval.drDt;
         radEnergyAtMatch = radiatedEnergyAccum;
         angMomAtMatch = eob.nu * eobState[3];
+
+        hasMergerOccurred = true;
+        mergerGeomTime = geomTime;
+        mergerLoc1X = pos1X; mergerLoc1Y = pos1Y; mergerLoc1Z = pos1Z;
+        mergerLoc2X = pos2X; mergerLoc2Y = pos2Y; mergerLoc2Z = pos2Z;
+        mergerComX = 0.0f; mergerComY = 0.0f; mergerComZ = 0.0f;
 
         // Physical coalescence & ringdown durations scaled strictly to remnant QNM damping time tau_220
         mergerDurationGeom = Math.max(14.0, 2.2 * remnant.tau220());
@@ -467,6 +594,9 @@ public final class BinaryMergerPhysics {
         ringdownEnv = 0.0f;
         mergerPulse = 0.0f;
         currentSeparation = (float) r;
+        if (currentSeparation < minSepSeen) minSepSeen = currentSeparation;
+        if (currentSeparation > maxSepSeen) maxSepSeen = currentSeparation;
+        radialVel = (float) drDt;
         currentOrbitalPhase = (float) phi;
         orbitalOmegaGeom = (float) omega;
         orbitalFreqHz = (float) GravitationalWaveDetector.geomOmegaToHz(omega, params.detectorMassSolar);
@@ -543,6 +673,7 @@ public final class BinaryMergerPhysics {
         mergerPulse = (float) (sBlend * Math.exp(-remnant.gamma220() * 1.4 * Math.max(0.0, dt - 0.5 * mergerDurationGeom)));
 
         currentSeparation = (float) rEff;
+        radialVel = (float) drEff;
         currentOrbitalPhase = (float) phiOrbNow;
         orbitalOmegaGeom = (float) omegaOrbNow;
         orbitalFreqHz = (float) GravitationalWaveDetector.geomOmegaToHz(omegaOrbNow, params.detectorMassSolar);
@@ -592,6 +723,12 @@ public final class BinaryMergerPhysics {
         antennaFPlus = detOut.fPlus;
         antennaFCross = detOut.fCross;
         higherModePowerFrac = detOut.higherModePowerFrac;
+        powerFrac22 = detOut.powerFrac22;
+        powerFrac21 = detOut.powerFrac21;
+        powerFrac33 = detOut.powerFrac33;
+        powerFrac44 = detOut.powerFrac44;
+        hPlus22 = detOut.hPlus22; hPlus21 = detOut.hPlus21; hPlus33 = detOut.hPlus33; hPlus44 = detOut.hPlus44;
+        hCross22 = detOut.hCross22; hCross21 = detOut.hCross21; hCross33 = detOut.hCross33; hCross44 = detOut.hCross44;
 
         gwFreqGeom = (float) omega22Geom;
         gwFreqHz = (float) detOut.gwFreqDetHz;
@@ -687,6 +824,40 @@ public final class BinaryMergerPhysics {
     public float[] strainHistory() { return strainHistory; }
     public double[] physStrainHistory() { return physStrainHistory; }
     public int strainCursor() { return strainCursor; }
+
+    public int visHistCount() { return visHistCount; }
+    public int visHistStartIdx() { return (visHistCount < VIS_HISTORY_LEN) ? 0 : visHistCursor; }
+    public float[] trail1X() { return trail1X; }
+    public float[] trail1Y() { return trail1Y; }
+    public float[] trail1Z() { return trail1Z; }
+    public float[] trail2X() { return trail2X; }
+    public float[] trail2Y() { return trail2Y; }
+    public float[] trail2Z() { return trail2Z; }
+    public byte[] trailPhase() { return trailPhase; }
+    public float[] histGeomTime() { return histGeomTime; }
+    public float[] histMode22() { return histMode22; }
+    public float[] histMode21() { return histMode21; }
+    public float[] histMode33() { return histMode33; }
+    public float[] histMode44() { return histMode44; }
+    public float[] histAmp22() { return histAmp22; }
+    public float[] histAmp21() { return histAmp21; }
+    public float[] histAmp33() { return histAmp33; }
+    public float[] histAmp44() { return histAmp44; }
+    public float[] histGeomHPlus() { return histGeomHPlus; }
+    public float[] histGeomHCross() { return histGeomHCross; }
+    public double[] histPhysHPlus() { return histPhysHPlus; }
+    public double[] histPhysHCross() { return histPhysHCross; }
+    public double[] histPhysHDet() { return histPhysHDet; }
+    public float[] histGwFreqHz() { return histGwFreqHz; }
+    public float[] histOmegaGeom() { return histOmegaGeom; }
+    public float[] histSeparation() { return histSeparation; }
+    public float[] histOrbitalEnergy() { return histOrbitalEnergy; }
+    public float[] histRadiatedEnergy() { return histRadiatedEnergy; }
+    public float[] histOrbitalAngMom() { return histOrbitalAngMom; }
+    public float[] histRadiatedAngMom() { return histRadiatedAngMom; }
+    public float[] histEnergyBalanceErr() { return histEnergyBalanceErr; }
+    public double initialBindingEnergy() { return initialBindingEnergy; }
+    public double initialTotalAngMom() { return initialTotalAngMom; }
 
     /** Backward-compatible 1PN/EOB helper for existing tests. */
     public static double computeOrbitalOmega(double r, double eta) {

@@ -41,10 +41,12 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private static final float TDE_TIME_SCALE = 6.5f;
     private static final int COUNTER_UINTS = 8; // active, shear, bound, unbound, swallowed, energyFixed, angMomYFixed, peakTempK
     private static final int HYDRO_GRID_CELLS = 64 * 64 * 64; // 262,144 cells * 16 bytes = 4 MiB
+    public static final int TDE_HIST_LEN = 160;
 
     private final ShaderProgram hydroSplatProgram;
     private final ShaderProgram computeProgram;
     private final ShaderProgram renderProgram;
+    private final ShaderProgram hydroVisProgram;
 
     private final int particleSsbo;
     private final int hydroGridSsbo;
@@ -90,6 +92,20 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private final int uRendDoppler;
     private final int uRendJitter;
     private final int uRendSlotStyle;
+    private final int uRendColorMode;
+
+    // Cached hydro grid visualizer uniform locations
+    private final int uHydResolution;
+    private final int uHydCamPos;
+    private final int uHydCamForward;
+    private final int uHydCamRight;
+    private final int uHydCamUp;
+    private final int uHydTanHalfFov;
+    private final int uHydVisMode;
+    private final int uHydSlicePlane;
+    private final int uHydHorizonR;
+
+    private boolean hydroGridSplatCurrent = false;
 
     private int nextSlot = 0;
     private int spawnCounter = 0;
@@ -109,10 +125,34 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     private long rngState = TdeInitialConditions.DEFAULT_SEED;
     private boolean closed = false;
 
+    // Synchronized TDE launch metadata & disruption timeline ring buffers (zero per-frame alloc)
+    private double tdeSimTime = 0.0;
+    private int lastLaunchVariant = 0;
+    private float lastInclinationDeg = 22.0f;
+    private float lastSpinA = 0.98f;
+    private float lastBeta = 1.55f;
+    private float lastTidalRadius = StellarArchetype.SOLAR_MAIN_SEQ.tidalRadius;
+    private float lastPeriapsis = (float) StellarArchetype.SOLAR_MAIN_SEQ.computePeriapsis(1.55, 1.2);
+    private StellarArchetype lastArchetype = StellarArchetype.SOLAR_MAIN_SEQ;
+    private float lastSwallowRatePerSec = 0.0f;
+
+    private final float[] histTime = new float[TDE_HIST_LEN];
+    private final float[] histBoundFrac = new float[TDE_HIST_LEN];
+    private final float[] histUnboundFrac = new float[TDE_HIST_LEN];
+    private final float[] histSwallowedFrac = new float[TDE_HIST_LEN];
+    private final float[] histMeanEnergy = new float[TDE_HIST_LEN];
+    private final float[] histMeanAngMomY = new float[TDE_HIST_LEN];
+    private final float[] histPeakTempK = new float[TDE_HIST_LEN];
+    private final float[] histSwallowRate = new float[TDE_HIST_LEN];
+    private int histCursor = 0;
+    private int histCount = 0;
+    private double histSampleAccum = 0.0;
+
     public TidalDisruptionSystem() {
         ShaderProgram splat = null;
         ShaderProgram comp = null;
         ShaderProgram rend = null;
+        ShaderProgram hvis = null;
         int vao = 0;
         int pSsbo = 0;
         int hSsbo = 0;
@@ -126,6 +166,8 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             comp = ShaderProgram.fromComputeResource("/shaders/simulation/tidal_disruption.comp");
             rend = ShaderProgram.fromResources("/shaders/simulation/tidal_disruption.vert",
                     "/shaders/simulation/tidal_disruption.frag");
+            hvis = ShaderProgram.fromResources("/shaders/common/fullscreen.vert",
+                    "/shaders/simulation/tidal_hydro_vis.frag");
 
             vao = glGenVertexArrays();
 
@@ -157,6 +199,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             this.hydroSplatProgram = splat;
             this.computeProgram = comp;
             this.renderProgram = rend;
+            this.hydroVisProgram = hvis;
             this.emptyVao = vao;
             this.particleSsbo = pSsbo;
             this.hydroGridSsbo = hSsbo;
@@ -189,6 +232,17 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             this.uRendDoppler = renderProgram.uniformLocation("uDoppler");
             this.uRendJitter = renderProgram.uniformLocation("uJitter");
             this.uRendSlotStyle = renderProgram.uniformLocation("uSlotStyle");
+            this.uRendColorMode = renderProgram.uniformLocation("uColorMode");
+
+            this.uHydResolution = hydroVisProgram.uniformLocation("uResolution");
+            this.uHydCamPos = hydroVisProgram.uniformLocation("uCamPos");
+            this.uHydCamForward = hydroVisProgram.uniformLocation("uCamForward");
+            this.uHydCamRight = hydroVisProgram.uniformLocation("uCamRight");
+            this.uHydCamUp = hydroVisProgram.uniformLocation("uCamUp");
+            this.uHydTanHalfFov = hydroVisProgram.uniformLocation("uTanHalfFov");
+            this.uHydVisMode = hydroVisProgram.uniformLocation("uHydroVisMode");
+            this.uHydSlicePlane = hydroVisProgram.uniformLocation("uSlicePlane");
+            this.uHydHorizonR = hydroVisProgram.uniformLocation("uHorizonR");
 
             ShaderProgram.checkGlError("TidalDisruptionSystem.init");
             ok = true;
@@ -207,6 +261,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
                 if (splat != null) splat.close();
                 if (comp != null) comp.close();
                 if (rend != null) rend.close();
+                if (hvis != null) hvis.close();
             }
         }
     }
@@ -230,6 +285,14 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         slotBeta[slot] = beta;
         syncSlotUniformBuffers();
 
+        lastLaunchVariant = variant;
+        lastArchetype = arch;
+        lastBeta = beta;
+        lastInclinationDeg = incDeg;
+        lastSpinA = state.effectiveSpin();
+        lastTidalRadius = arch.tidalRadius;
+        lastPeriapsis = (float) arch.computePeriapsis(beta, state.outerHorizonRadius());
+
         long seedToUse = (variant == 0) ? state.tdeSeed : rngState;
         rngState = TdeInitialConditions.generateStar(
                 arch, beta, incDeg, state.effectiveSpin(), variant,
@@ -241,7 +304,18 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         hasAnyParticles = true;
+        hydroGridSplatCurrent = false;
         activeParticles = Math.min(TOTAL_PARTICLES, activeParticles + PARTICLES_PER_STAR);
+        if (variant == 0) {
+            tdeSimTime = 0.0;
+            histCursor = 0;
+            histCount = 0;
+            histSampleAccum = 0.0;
+            boundParticles = PARTICLES_PER_STAR;
+            unboundParticles = 0;
+            peakTemperatureK = Math.round(arch.coreTempK);
+            recordTdeHistorySample();
+        }
     }
 
     /** Clears all particle SSBO slots on GPU and resets deterministic launch counters & RNG seed. */
@@ -273,6 +347,12 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         nextSlot = 0;
         spawnCounter = 0;
         rngState = (resetSeed == 0L) ? TdeInitialConditions.DEFAULT_SEED : resetSeed;
+        tdeSimTime = 0.0;
+        lastSwallowRatePerSec = 0.0f;
+        histCursor = 0;
+        histCount = 0;
+        histSampleAccum = 0.0;
+        hydroGridSplatCurrent = false;
     }
 
     /** Executes TDE compute pass (64^3 hydro splat + single-dispatch substepped Verlet-Boris solver). */
@@ -286,14 +366,18 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             return;
         }
 
-        pollAsyncCounters(Math.max(0.004, wallDt));
+        pollAsyncCounters(Math.max(0.004, wallDt), !state.paused && simDt > 0.0);
 
         int dispatchCount = Math.max(PARTICLES_PER_STAR, activeSlotCount * PARTICLES_PER_STAR);
         int workgroups = dispatchCount / WORKGROUP_SIZE;
 
+        boolean needHydroSplat = state.tdeHydroEnabled || (state.tdeHydroVisMode > 0 && !hydroGridSplatCurrent);
         if (!state.paused && simDt > 0.0) {
             int substeps = StellarArchetype.computeSubstepCount(simDt);
             double subDt = StellarArchetype.computeSubstepDt(simDt);
+            double frameTdeDt = substeps * subDt * TDE_TIME_SCALE;
+            tdeSimTime += frameTdeDt;
+            histSampleAccum += frameTdeDt;
             lastSubstepsPerFrame = substeps;
             particleStepsPerSec = (activeParticles * (double) (substeps * 2)) / Math.max(1e-4, wallDt);
 
@@ -316,16 +400,9 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, writeSsbo);
             glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
 
-            // Optional Pass 1: 64^3 GPU Eulerian-Lagrangian density & momentum splat
-            if (state.tdeHydroEnabled) {
-                glBindBuffer(GL_SHADER_STORAGE_BUFFER, hydroGridSsbo);
-                glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
-                glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
-
-                hydroSplatProgram.use();
-                glUniform1ui(uSplatParticleCount, dispatchCount);
-                glDispatchCompute(workgroups, 1, 1);
-                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            // Pass 1: 64^3 GPU Eulerian-Lagrangian density & momentum splat (for hydro solver or visualization)
+            if (needHydroSplat) {
+                dispatchHydroSplat(dispatchCount, workgroups);
             }
 
             // Pass 2: Single-dispatch in-shader substepped Verlet-Boris + optional grid hydro pressure/viscosity
@@ -342,9 +419,21 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             // Explicit GL_BUFFER_UPDATE_BARRIER_BIT guarantees coherent host glGetBufferSubData readback
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
+            // Refresh hydro grid after movement if visualizer is active so slice aligns with current particle state
+            if (state.tdeHydroVisMode > 0) {
+                dispatchHydroSplat(dispatchCount, workgroups);
+            } else {
+                hydroGridSplatCurrent = state.tdeHydroEnabled;
+            }
+
             counterFences[writeIdx] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             counterWriteIdx = 1 - writeIdx;
         } else {
+            if (state.tdeHydroVisMode > 0 && !hydroGridSplatCurrent) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleSsbo);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hydroGridSsbo);
+                dispatchHydroSplat(dispatchCount, workgroups);
+            }
             horizonAccretionSurge *= 0.96f;
             lastSubstepsPerFrame = 0;
             particleStepsPerSec = 0.0;
@@ -352,13 +441,46 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         state.tdeHorizonSurge = horizonAccretionSurge;
     }
 
-    /** Renders active HDR volumetric plasma ribbons into the currently bound {@code hdrFbo}. */
+    private void dispatchHydroSplat(int dispatchCount, int workgroups) {
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, hydroGridSsbo);
+        glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, (IntBuffer) null);
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+
+        hydroSplatProgram.use();
+        glUniform1ui(uSplatParticleCount, dispatchCount);
+        glDispatchCompute(workgroups, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        hydroGridSplatCurrent = true;
+    }
+
+    /** Renders active HDR volumetric plasma ribbons (and optional 64^3 Eulerian hydro grid) into bound {@code hdrFbo}. */
     public void renderParticles(int width, int height, int blackbodyLutTex, int noise3dTex,
                                 float jitterX, float jitterY,
                                 SimulationState state, CameraController camera) {
         if (!hasAnyParticles || state.wormholeMode || state.binaryMode) {
             return;
         }
+
+        if (state.tdeHydroVisMode > 0) {
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+            hydroVisProgram.use();
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hydroGridSsbo);
+            glUniform2f(uHydResolution, width, height);
+            glUniform3f(uHydCamPos, camera.posX, camera.posY, camera.posZ);
+            glUniform3f(uHydCamForward, camera.forwardX, camera.forwardY, camera.forwardZ);
+            glUniform3f(uHydCamRight, camera.rightX, camera.rightY, camera.rightZ);
+            glUniform3f(uHydCamUp, camera.upX, camera.upY, camera.upZ);
+            glUniform1f(uHydTanHalfFov, (float) Math.tan(Math.toRadians(state.fovDeg)));
+            glUniform1i(uHydVisMode, state.tdeHydroVisMode);
+            glUniform1i(uHydSlicePlane, state.tdeHydroSlicePlane);
+            glUniform1f(uHydHorizonR, (float) state.outerHorizonRadius());
+            glBindVertexArray(emptyVao);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glBindVertexArray(0);
+            glDisable(GL_BLEND);
+        }
+
         int drawCount = Math.max(PARTICLES_PER_STAR, activeSlotCount * PARTICLES_PER_STAR);
 
         glEnable(GL_BLEND);
@@ -387,6 +509,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         glUniform1i(uRendDoppler, state.dopplerEnabled ? 1 : 0);
         glUniform2f(uRendJitter, jitterX, jitterY);
         glUniform4fv(uRendSlotStyle, slotStyleBuf);
+        glUniform1i(uRendColorMode, state.tdeParticleColorMode);
 
         glBindVertexArray(emptyVao);
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, drawCount);
@@ -404,7 +527,7 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     }
 
     /** Zero-stall non-blocking poll of ping-pong atomic counter SSBOs via GLsync fence. */
-    private void pollAsyncCounters(double wallDt) {
+    private void pollAsyncCounters(double wallDt, boolean simRunning) {
         int readIdx = 1 - counterWriteIdx;
         for (int pass = 0; pass < 2; pass++) {
             int idx = (pass == 0) ? readIdx : counterWriteIdx;
@@ -444,9 +567,15 @@ public final class TidalDisruptionSystem implements AutoCloseable {
                 shearEnergy = shearEnergy * 0.78f + targetShear * 0.22f;
 
                 float swallowRatePerSec = (float) (swallowedDelta / Math.max(0.008, wallDt));
+                lastSwallowRatePerSec = lastSwallowRatePerSec * 0.80f + swallowRatePerSec * 0.20f;
                 float targetSurge = Math.min(1.0f, swallowRatePerSec / 4200.0f);
                 float blend = (targetSurge > horizonAccretionSurge) ? 0.35f : 0.08f;
                 horizonAccretionSurge = horizonAccretionSurge * (1.0f - blend) + targetSurge * blend;
+
+                if (simRunning && histSampleAccum >= 0.35) {
+                    histSampleAccum = 0.0;
+                    recordTdeHistorySample();
+                }
 
                 if (activeParticles == 0) {
                     hasAnyParticles = false;
@@ -457,6 +586,23 @@ public final class TidalDisruptionSystem implements AutoCloseable {
                 }
                 break;
             }
+        }
+    }
+
+    private void recordTdeHistorySample() {
+        float denom = Math.max(1.0f, activeParticles + totalSwallowedParticles);
+        int i = histCursor;
+        histTime[i] = (float) tdeSimTime;
+        histBoundFrac[i] = boundParticles / denom;
+        histUnboundFrac[i] = unboundParticles / denom;
+        histSwallowedFrac[i] = totalSwallowedParticles / denom;
+        histMeanEnergy[i] = totalSpecificEnergy;
+        histMeanAngMomY[i] = totalAngularMomentumY;
+        histPeakTempK[i] = peakTemperatureK;
+        histSwallowRate[i] = lastSwallowRatePerSec;
+        histCursor = (histCursor + 1) % TDE_HIST_LEN;
+        if (histCount < TDE_HIST_LEN) {
+            histCount++;
         }
     }
 
@@ -471,6 +617,25 @@ public final class TidalDisruptionSystem implements AutoCloseable {
     public int peakTemperatureK() { return peakTemperatureK; }
     public int lastSubstepsPerFrame() { return lastSubstepsPerFrame; }
     public double particleStepsPerSec() { return particleStepsPerSec; }
+    public double tdeSimTime() { return tdeSimTime; }
+    public StellarArchetype lastArchetype() { return lastArchetype; }
+    public float lastBeta() { return lastBeta; }
+    public float lastInclinationDeg() { return lastInclinationDeg; }
+    public float lastSpinA() { return lastSpinA; }
+    public int lastLaunchVariant() { return lastLaunchVariant; }
+    public float lastTidalRadius() { return lastTidalRadius; }
+    public float lastPeriapsis() { return lastPeriapsis; }
+    public float lastSwallowRatePerSec() { return lastSwallowRatePerSec; }
+    public int histCount() { return histCount; }
+    public int histStartIdx() { return (histCount < TDE_HIST_LEN) ? 0 : histCursor; }
+    public float[] histTime() { return histTime; }
+    public float[] histBoundFrac() { return histBoundFrac; }
+    public float[] histUnboundFrac() { return histUnboundFrac; }
+    public float[] histSwallowedFrac() { return histSwallowedFrac; }
+    public float[] histMeanEnergy() { return histMeanEnergy; }
+    public float[] histMeanAngMomY() { return histMeanAngMomY; }
+    public float[] histPeakTempK() { return histPeakTempK; }
+    public float[] histSwallowRate() { return histSwallowRate; }
 
     /**
      * Advances the TDE compute solver by {@code steps} fixed ticks without rendering
@@ -526,6 +691,30 @@ public final class TidalDisruptionSystem implements AutoCloseable {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
             glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, readCounters);
             totalSwallowedParticles += readCounters.get(4);
+
+            double chunkTdeDt = batch * dt * TDE_TIME_SCALE;
+            tdeSimTime += chunkTdeDt;
+            histSampleAccum += chunkTdeDt;
+            activeParticles = readCounters.get(0);
+            boundParticles = readCounters.get(2);
+            unboundParticles = readCounters.get(3);
+            int energyFixed = readCounters.get(5);
+            int angMomFixed = readCounters.get(6);
+            peakTemperatureK = readCounters.get(7);
+            if (activeParticles > 0) {
+                totalSpecificEnergy = (energyFixed / 256.0f) / activeParticles;
+                totalAngularMomentumY = (angMomFixed / 256.0f) / activeParticles;
+            }
+            if (histSampleAccum >= 0.35) {
+                histSampleAccum = 0.0;
+                recordTdeHistorySample();
+            }
+        }
+
+        if (state.tdeHydroVisMode > 0 || state.tdeHydroEnabled) {
+            dispatchHydroSplat(dispatchCount, workgroups);
+        } else {
+            hydroGridSplatCurrent = false;
         }
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -586,5 +775,6 @@ public final class TidalDisruptionSystem implements AutoCloseable {
         hydroSplatProgram.close();
         computeProgram.close();
         renderProgram.close();
+        hydroVisProgram.close();
     }
 }

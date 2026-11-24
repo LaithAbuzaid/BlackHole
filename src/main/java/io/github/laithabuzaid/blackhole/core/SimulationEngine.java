@@ -38,7 +38,9 @@ public final class SimulationEngine {
 
     private final boolean captureShowcaseMode;
     private final boolean benchmarkMode;
+    private final boolean captureVerificationMode;
     private final Path externalGwDataPath;
+    private GwReferenceData gwRefData;
 
     private int windowW = 1440;
     private int windowH = 860;
@@ -88,16 +90,24 @@ public final class SimulationEngine {
     }
 
     public SimulationEngine(boolean captureShowcaseMode, boolean benchmarkMode, Path externalGwDataPath) {
+        this(captureShowcaseMode, benchmarkMode, externalGwDataPath, false);
+    }
+
+    public SimulationEngine(boolean captureShowcaseMode, boolean benchmarkMode,
+                            Path externalGwDataPath, boolean captureVerificationMode) {
         this.captureShowcaseMode = captureShowcaseMode;
         this.benchmarkMode = benchmarkMode;
         this.externalGwDataPath = externalGwDataPath;
+        this.captureVerificationMode = captureVerificationMode;
     }
 
     public void run() {
-        boolean offscreenMode = captureShowcaseMode || benchmarkMode;
+        boolean offscreenMode = captureShowcaseMode || benchmarkMode || captureVerificationMode;
+        gwRefData = GwReferenceData.loadBundledGw150914();
         if (externalGwDataPath != null) {
             try {
                 GwReferenceData loaded = GwReferenceData.loadFromFile(externalGwDataPath);
+                gwRefData = loaded;
                 System.out.println("[BlackHole] Loaded external GWOSC dataset: " + loaded.label()
                         + " (" + loaded.sampleCount() + " samples)");
             } catch (IOException e) {
@@ -173,7 +183,18 @@ public final class SimulationEngine {
                      UiRenderer uiRenderer = new UiRenderer();
                      GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
                     BenchmarkAndShowcaseRunner.runShowcaseCapture(renderer, uiRenderer, gpuTimers,
-                            state, camera, binaryPhysics, telemetry, hud);
+                            state, camera, binaryPhysics, telemetry, hud, gwRefData);
+                }
+                return;
+            }
+
+            if (captureVerificationMode) {
+                telemetry.startBackgroundSampler();
+                try (BlackHoleRenderer renderer = new BlackHoleRenderer(1920, 1080);
+                     UiRenderer uiRenderer = new UiRenderer();
+                     GpuTimerQueries gpuTimers = new GpuTimerQueries()) {
+                    BenchmarkAndShowcaseRunner.runVerificationCapture(renderer, uiRenderer, gpuTimers,
+                            state, camera, binaryPhysics, telemetry, hud, gwRefData);
                 }
                 return;
             }
@@ -313,7 +334,8 @@ public final class SimulationEngine {
             // Pass 4: Observatory HUD + [F3] Scientific Visualizer
             long hudStart = System.nanoTime();
             gpuTimers.beginUi();
-            hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, telemetryTick, false, state, camera, binaryPhysics, telemetry);
+            hud.render(uiRenderer, windowW, windowH, mouseX, mouseY, telemetryTick, false,
+                    state, camera, binaryPhysics, renderer.tdeSystem(), gwRefData, telemetry);
             gpuTimers.endUi();
             telemetry.cpuHudMs = telemetry.cpuHudMs * 0.85f + ((System.nanoTime() - hudStart) * 1e-6f) * 0.15f;
 
@@ -403,6 +425,102 @@ public final class SimulationEngine {
             case HudOverlay.ACT_TAB_PHYSICS -> state.activeConsoleTab = SimulationState.TAB_PHYSICS;
             case HudOverlay.ACT_TAB_TDE_LAB -> state.activeConsoleTab = SimulationState.TAB_TDE_LAB;
             case HudOverlay.ACT_TAB_OPTICS -> state.activeConsoleTab = SimulationState.TAB_OPTICS;
+            case SimAction.ACT_TAB_SCI_VIS -> state.activeConsoleTab = SimulationState.TAB_SCI_VIS;
+            case SimAction.ACT_RESET_VIS -> {
+                state.resetVisualizationSettings();
+                pendingResetTaa = true;
+                state.showToast("VISUALIZATION LAYERS RESET");
+            }
+            case SimAction.ACT_GW_REF_OVERLAY -> {
+                state.showGwReference = !state.showGwReference;
+                state.showToast(state.showGwReference ? "GW150914 GWOSC OVERLAY: ON" : "GW150914 GWOSC OVERLAY: OFF");
+            }
+            case SimAction.ACT_BIN_MODE_CYCLE -> {
+                state.binGwModeFilter = (state.binGwModeFilter + 1) % 5;
+                pendingResetTaa = true;
+                state.showToast("GW MODE FILTER: " + state.binGwModeLabel());
+            }
+            case SimAction.ACT_VIS_BIN_TRAJ -> {
+                state.visBinTrajectory = !state.visBinTrajectory;
+                state.showToast(state.visBinTrajectory ? "BINARY TRAJECTORIES: ON" : "BINARY TRAJECTORIES: OFF");
+            }
+            case SimAction.ACT_VIS_BIN_HORIZONS -> {
+                state.visBinHorizonsSpins = !state.visBinHorizonsSpins;
+                state.showToast(state.visBinHorizonsSpins ? "HORIZONS & SPINS: ON" : "HORIZONS & SPINS: OFF");
+            }
+            case SimAction.ACT_VIS_BIN_MODES -> {
+                state.visBinGwModes = !state.visBinGwModes;
+                state.showToast(state.visBinGwModes ? "GW MODES & SPECTROGRAM: ON" : "GW MODES & SPECTROGRAM: OFF");
+            }
+            case SimAction.ACT_VIS_BIN_DETECTOR -> {
+                state.visBinDetector = !state.visBinDetector;
+                state.showToast(state.visBinDetector ? "DETECTOR & SI STRAIN: ON" : "DETECTOR & SI STRAIN: OFF");
+            }
+            case SimAction.ACT_VIS_BIN_ENERGY -> {
+                state.visBinEnergy = !state.visBinEnergy;
+                state.showToast(state.visBinEnergy ? "BINARY E & J BUDGET: ON" : "BINARY E & J BUDGET: OFF");
+            }
+            case SimAction.ACT_VIS_BIN_PROP -> {
+                state.visBinPropagation = !state.visBinPropagation;
+                state.showToast(state.visBinPropagation ? "3D GW WAVEFRONT OVERLAY: ON" : "3D GW WAVEFRONT OVERLAY: OFF");
+            }
+            case SimAction.ACT_KERR_DISK_VIS_CYCLE -> {
+                state.kerrDiskVisMode = (state.kerrDiskVisMode + 1) % 4;
+                pendingResetTaa = true;
+                state.showToast("DISK VIS MODE: " + state.kerrDiskVisLabel());
+            }
+            case SimAction.ACT_EHT_MODEL_TOGGLE -> {
+                state.ehtMagneticModel = (state.ehtMagneticModel == SimulationState.EHT_MODEL_MAD)
+                        ? SimulationState.EHT_MODEL_SANE : SimulationState.EHT_MODEL_MAD;
+                pendingResetTaa = true;
+                state.showToast(state.ehtMagneticModel == SimulationState.EHT_MODEL_MAD
+                        ? "EHT MAGNETIC MODEL: MAD" : "EHT MAGNETIC MODEL: SANE");
+            }
+            case SimAction.ACT_VIS_KERR_GEOM -> {
+                state.visKerrGeometry = !state.visKerrGeometry;
+                state.showToast(state.visKerrGeometry ? "KERR OBLATE GEOMETRY: ON" : "KERR OBLATE GEOMETRY: OFF");
+            }
+            case SimAction.ACT_VIS_KERR_DRAG -> {
+                state.visKerrFrameDragging = !state.visKerrFrameDragging;
+                state.showToast(state.visKerrFrameDragging ? "FRAME DRAGGING FIELD: ON" : "FRAME DRAGGING FIELD: OFF");
+            }
+            case SimAction.ACT_VIS_KERR_GEO -> {
+                state.visKerrGeodesics = !state.visKerrGeodesics;
+                state.showToast(state.visKerrGeodesics ? "DOPRI5(4) GEODESICS: ON" : "DOPRI5(4) GEODESICS: OFF");
+            }
+            case SimAction.ACT_VIS_EHT_GLYPHS -> {
+                state.visEhtGlyphs = !state.visEhtGlyphs;
+                state.showToast(state.visEhtGlyphs ? "EHT EVPA GLYPHS: ON" : "EHT EVPA GLYPHS: OFF");
+            }
+            case SimAction.ACT_TDE_COLOR_CYCLE -> {
+                state.tdeParticleColorMode = (state.tdeParticleColorMode + 1) % 4;
+                pendingResetTaa = true;
+                state.showToast("TDE PARTICLE COLOR: " + state.tdeColorLabel());
+            }
+            case SimAction.ACT_TDE_HYDRO_VIS_CYCLE -> {
+                state.tdeHydroVisMode = (state.tdeHydroVisMode + 1) % 6;
+                pendingResetTaa = true;
+                state.showToast("TDE 64^3 HYDRO VIS: " + state.tdeHydroVisLabel());
+            }
+            case SimAction.ACT_TDE_SLICE_CYCLE -> {
+                state.tdeHydroSlicePlane = (state.tdeHydroSlicePlane == SimulationState.TDE_SLICE_XZ)
+                        ? SimulationState.TDE_SLICE_XY : SimulationState.TDE_SLICE_XZ;
+                pendingResetTaa = true;
+                state.showToast(state.tdeHydroSlicePlane == SimulationState.TDE_SLICE_XY
+                        ? "HYDRO SLICE PLANE: XY (z=0)" : "HYDRO SLICE PLANE: XZ (y=0)");
+            }
+            case SimAction.ACT_VIS_TDE_OVERLAY -> {
+                state.visTdeOverlay = !state.visTdeOverlay;
+                state.showToast(state.visTdeOverlay ? "TDE ORBIT & DEBRIS OVERLAY: ON" : "TDE ORBIT & DEBRIS OVERLAY: OFF");
+            }
+            case SimAction.ACT_VIS_WH_EMBED -> {
+                state.visWormholeEmbedding = !state.visWormholeEmbedding;
+                state.showToast(state.visWormholeEmbedding ? "WORMHOLE EMBEDDING & RAYS: ON" : "WORMHOLE EMBEDDING & RAYS: OFF");
+            }
+            case SimAction.ACT_VIS_PLUNGE_DIAG -> {
+                state.visPlungeDiag = !state.visPlungeDiag;
+                state.showToast(state.visPlungeDiag ? "DORAN PLUNGE DIAGNOSTICS: ON" : "DORAN PLUNGE DIAGNOSTICS: OFF");
+            }
             case HudOverlay.ACT_TIME_SLOWER -> {
                 state.stepTimeScaleDown();
                 showTimeScaleToast();

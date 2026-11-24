@@ -195,6 +195,14 @@ where each body $i \in \{1,2\}$ carries its **exact spinning Kerr–Schild spher
    Verifies $C^1$ phase & amplitude continuity across merger attachment, $(2,2)$ vs higher-mode symmetry (odd-$m$ modes vanish for equal-mass non-spinning binaries and activate for unequal masses / asymmetric spins), face-on circular polarization ($|h_+| = |h_\times|$) vs edge-on linear polarization ($h_\times = 0$ for $(2,2)$), and GW150914 SI detector strain ($\sim 10^{-21}$) and redshifted ringdown frequency ($\approx 246\ \mathrm{Hz}$ vs Abbott et al. 2016 $251\ \mathrm{Hz}$).
 5. **GPU-Mirrored Binary Spacetime & Convergence (`BinarySpacetimeValidationTest`):**
    Verifies $|\mathbf{l}_i|^2 = 1$ across spins and orbital inclinations, forward-in-time ZAMO gravitomagnetic frame dragging along $+\mathbf{v}_i$, exact $<10^{-13}$ reduction to `KerrMetric`, $|\mathcal{H}_{\text{bin}}| < 10^{-10}$ during active spinning inspiral & QNM ringdown, exact 4th-order RK4 convergence ($\approx 16\times$ error reduction on halving $h$), spinning horizon capture, and `binary_merger.frag` uniform contract.
+6. **Synchronized V3 Visualization & Multipolar Histories (`PhysicsVisualizationIntegrationTest`):**
+   Verifies synchronized EOB ring-buffer histories across inspiral/merger/ringdown, odd-mode $(2,1)/(3,3)$ suppression vs activation, eccentricity radial oscillation modulation, luminosity distance $1/D_L$ scaling and detector antenna pattern switching, and clean `reset()` clearing.
+
+### 7.1 Complete V3 Physics-to-Visualization Integration (`BinaryVisualizer` + `binary_merger.frag`)
+
+- **Orbital Dynamics & Geometry (`BinaryVisualizer.java`):** 3D EOB trajectory ring buffers trace BH1/BH2 historical paths colored by phase (inspiral/plunge/ringdown), velocity vectors $\mathbf{v}_1,\mathbf{v}_2$, $\hat{\mathbf{L}}_{\text{orb}}$, orbital plane inclination frame, exact component Kerr-Schild oblate horizons $r_{+,i}$ & aligned spin axes $\chi_i$, merger site markers, and remnant geometry ($M_f, a_f$). Non-precessing aligned-spin dynamics are disclosed explicitly.
+- **Multipolar Wavefield (`binary_merger.frag`):** Uses `uModeAmp[4]`, `uModePhase[4]`, `uGwModeFilter`, and `uGwVisScale` across $(2,2), (2,1), (3,3), (4,4)$ spherical harmonic angular dependencies $\cos(m\phi - \Phi_{\ell m})$ instead of a fixed $m=2$ quadrupole pattern, removing both the previous `max(0.28, uStrainAmp)` visual amplitude floor and post-merger shockwave ring.
+- **Diagnostic Telemetry Panels (`BinaryVisualizer.java`):** Stacked mode tracks & reconstructed total waveform, instantaneous mode power percentages, time-frequency chirp spectrogram against $f_{220}$ / $\tau_{220}$, detector antenna diagram + $(h_+, h_\times)$ polarization ellipse, separate calibrated SI panels for $h_+(t)$, $h_\times(t)$, and $h_{\text{det}}(t)$ (with optional GW150914 GWOSC reference trace), and evolving $E_b / E_{\text{rad}} / J_{\text{orb}} / J_{\text{rad}}$ / balance error plots.
 
 ---
 

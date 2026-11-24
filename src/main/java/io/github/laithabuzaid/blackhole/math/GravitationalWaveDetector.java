@@ -51,6 +51,11 @@ public final class GravitationalWaveDetector {
         public double gwFreqSrcHz;
         /** Higher-mode fractional power contribution {@code sum_{lm!=22} |h_{lm}|^2 / sum_{all} |h_{lm}|^2}. */
         public double higherModePowerFrac;
+        /** Individual dimensionless mode contributions to {@code (R/M) h_+} and {@code (R/M) h_x}. */
+        public double hPlus22, hPlus21, hPlus33, hPlus44;
+        public double hCross22, hCross21, hCross33, hCross44;
+        /** Instantaneous fractional radiation power per mode. */
+        public double powerFrac22, powerFrac21, powerFrac33, powerFrac44;
     }
 
     private GravitationalWaveDetector() {
@@ -135,23 +140,35 @@ public final class GravitationalWaveDetector {
         double y44p = spinWeightedY(4, 4, iota);
         double y44m = spinWeightedY(4, -4, iota);
 
-        double hp = (y22p + y22m) * a22 * Math.cos(phi22)
-                  + (y21p + y21m) * a21 * Math.cos(phi21)
-                  + (y33p - y33m) * a33 * Math.cos(phi33)
-                  + (y44p + y44m) * a44 * Math.cos(phi44);
+        double hp22 = (y22p + y22m) * a22 * Math.cos(phi22);
+        double hp21 = (y21p + y21m) * a21 * Math.cos(phi21);
+        double hp33 = (y33p - y33m) * a33 * Math.cos(phi33);
+        double hp44 = (y44p + y44m) * a44 * Math.cos(phi44);
+        double hp = hp22 + hp21 + hp33 + hp44;
 
-        double hx = (y22p - y22m) * a22 * Math.sin(phi22)
-                  + (y21p - y21m) * a21 * Math.sin(phi21)
-                  + (y33p + y33m) * a33 * Math.sin(phi33)
-                  + (y44p - y44m) * a44 * Math.sin(phi44);
+        double hx22 = (y22p - y22m) * a22 * Math.sin(phi22);
+        double hx21 = (y21p - y21m) * a21 * Math.sin(phi21);
+        double hx33 = (y33p + y33m) * a33 * Math.sin(phi33);
+        double hx44 = (y44p - y44m) * a44 * Math.sin(phi44);
+        double hx = hx22 + hx21 + hx33 + hx44;
 
         double h0 = strainPrefactorH0(params.detectorMassSolar, params.luminosityDistMpc);
         double fp = antennaFPlus(params.skyThetaRad, params.skyPhiRad, params.polarizationPsiRad);
         double fx = antennaFCross(params.skyThetaRad, params.skyPhiRad, params.polarizationPsiRad);
 
         double p22 = a22 * a22;
-        double pHm = a21 * a21 + a33 * a33 + a44 * a44;
+        double p21 = a21 * a21;
+        double p33 = a33 * a33;
+        double p44 = a44 * a44;
+        double pHm = p21 + p33 + p44;
         double pTot = p22 + pHm;
+
+        out.hPlus22 = hp22; out.hPlus21 = hp21; out.hPlus33 = hp33; out.hPlus44 = hp44;
+        out.hCross22 = hx22; out.hCross21 = hx21; out.hCross33 = hx33; out.hCross44 = hx44;
+        out.powerFrac22 = (pTot > 1e-18) ? (p22 / pTot) : 1.0;
+        out.powerFrac21 = (pTot > 1e-18) ? (p21 / pTot) : 0.0;
+        out.powerFrac33 = (pTot > 1e-18) ? (p33 / pTot) : 0.0;
+        out.powerFrac44 = (pTot > 1e-18) ? (p44 / pTot) : 0.0;
 
         out.geomHPlus = hp;
         out.geomHCross = hx;

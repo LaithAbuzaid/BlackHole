@@ -5,8 +5,12 @@ import io.github.laithabuzaid.blackhole.core.CameraController;
 import io.github.laithabuzaid.blackhole.core.SimAction;
 import io.github.laithabuzaid.blackhole.core.SimulationState;
 import io.github.laithabuzaid.blackhole.core.StellarArchetype;
+import io.github.laithabuzaid.blackhole.graphics.TidalDisruptionSystem;
 import io.github.laithabuzaid.blackhole.math.KerrMetric;
+import io.github.laithabuzaid.blackhole.math.MorrisThorneMetric;
 import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
+import io.github.laithabuzaid.blackhole.ui.vis.PlotWidgets;
+import io.github.laithabuzaid.blackhole.util.GwReferenceData;
 
 /**
  * Next-generation modular glassmorphic Observatory HUD:
@@ -80,8 +84,30 @@ public final class HudOverlay {
     public static final int ACT_INTEGRATOR_TOGGLE = SimAction.ACT_INTEGRATOR_TOGGLE;
     public static final int ACT_SCIENTIFIC_DIAG = SimAction.ACT_SCIENTIFIC_DIAG;
     public static final int ACT_TDE_HYDRO_TOGGLE = SimAction.ACT_TDE_HYDRO_TOGGLE;
+    public static final int ACT_GW_REF_OVERLAY = SimAction.ACT_GW_REF_OVERLAY;
     public static final int ACT_LIGO_ALIGNED_SPIN = SimAction.ACT_LIGO_ALIGNED_SPIN;
     public static final int ACT_BIN_DETECTOR_CYCLE = SimAction.ACT_BIN_DETECTOR_CYCLE;
+    public static final int ACT_TAB_SCI_VIS = SimAction.ACT_TAB_SCI_VIS;
+    public static final int ACT_RESET_VIS = SimAction.ACT_RESET_VIS;
+    public static final int ACT_BIN_MODE_CYCLE = SimAction.ACT_BIN_MODE_CYCLE;
+    public static final int ACT_VIS_BIN_TRAJ = SimAction.ACT_VIS_BIN_TRAJ;
+    public static final int ACT_VIS_BIN_HORIZONS = SimAction.ACT_VIS_BIN_HORIZONS;
+    public static final int ACT_VIS_BIN_MODES = SimAction.ACT_VIS_BIN_MODES;
+    public static final int ACT_VIS_BIN_DETECTOR = SimAction.ACT_VIS_BIN_DETECTOR;
+    public static final int ACT_VIS_BIN_ENERGY = SimAction.ACT_VIS_BIN_ENERGY;
+    public static final int ACT_VIS_BIN_PROP = SimAction.ACT_VIS_BIN_PROP;
+    public static final int ACT_KERR_DISK_VIS_CYCLE = SimAction.ACT_KERR_DISK_VIS_CYCLE;
+    public static final int ACT_EHT_MODEL_TOGGLE = SimAction.ACT_EHT_MODEL_TOGGLE;
+    public static final int ACT_VIS_KERR_GEOM = SimAction.ACT_VIS_KERR_GEOM;
+    public static final int ACT_VIS_KERR_DRAG = SimAction.ACT_VIS_KERR_DRAG;
+    public static final int ACT_VIS_KERR_GEO = SimAction.ACT_VIS_KERR_GEO;
+    public static final int ACT_VIS_EHT_GLYPHS = SimAction.ACT_VIS_EHT_GLYPHS;
+    public static final int ACT_TDE_COLOR_CYCLE = SimAction.ACT_TDE_COLOR_CYCLE;
+    public static final int ACT_TDE_HYDRO_VIS_CYCLE = SimAction.ACT_TDE_HYDRO_VIS_CYCLE;
+    public static final int ACT_TDE_SLICE_CYCLE = SimAction.ACT_TDE_SLICE_CYCLE;
+    public static final int ACT_VIS_TDE_OVERLAY = SimAction.ACT_VIS_TDE_OVERLAY;
+    public static final int ACT_VIS_WH_EMBED = SimAction.ACT_VIS_WH_EMBED;
+    public static final int ACT_VIS_PLUNGE_DIAG = SimAction.ACT_VIS_PLUNGE_DIAG;
 
     public static final int ACT_TOGGLE_PANEL = 100;
 
@@ -126,7 +152,7 @@ public final class HudOverlay {
     public static final int PRESET_BIN_TOP = 310;
     public static final int PRESET_BIN_CLOSE = 311;
 
-    private static final int MAX_HITBOXES = 96;
+    private static final int MAX_HITBOXES = 192;
     private static final double LOG_TIME_RATIO = Math.log(SimulationState.MAX_TIME_SCALE / SimulationState.MIN_TIME_SCALE);
 
     private static final class HitBox {
@@ -289,7 +315,8 @@ public final class HudOverlay {
                        boolean suppressOverlays,
                        SimulationState state, CameraController camera,
                        HardwareTelemetry telemetry) {
-        render(ui, windowW, windowH, mouseX, mouseY, refreshTelemetry, suppressOverlays, state, camera, null, telemetry);
+        render(ui, windowW, windowH, mouseX, mouseY, refreshTelemetry, suppressOverlays,
+                state, camera, null, null, null, telemetry);
     }
 
     public void render(UiRenderer ui, int windowW, int windowH,
@@ -297,6 +324,17 @@ public final class HudOverlay {
                        boolean suppressOverlays,
                        SimulationState state, CameraController camera,
                        BinaryMergerPhysics binary,
+                       HardwareTelemetry telemetry) {
+        render(ui, windowW, windowH, mouseX, mouseY, refreshTelemetry, suppressOverlays,
+                state, camera, binary, null, null, telemetry);
+    }
+
+    public void render(UiRenderer ui, int windowW, int windowH,
+                       double mouseX, double mouseY, boolean refreshTelemetry,
+                       boolean suppressOverlays,
+                       SimulationState state, CameraController camera,
+                       BinaryMergerPhysics binary, TidalDisruptionSystem tde,
+                       GwReferenceData gwRef,
                        HardwareTelemetry telemetry) {
         hitBoxCount = 0;
         hoveredId = 0;
@@ -309,12 +347,10 @@ public final class HudOverlay {
 
         ui.begin(windowW, windowH);
 
-        if (state.showReticle && !state.wormholeMode && !state.plungeActive) {
+        if (state.showReticle && !state.plungeActive) {
             renderAstrophysicalReticle(ui, windowW, windowH, state, camera, binary);
         }
-        if (state.scientificDiagMode != SimulationState.DIAG_OFF) {
-            scientificVisualizer.render(ui, windowW, windowH, state, camera, binary, telemetry);
-        }
+        scientificVisualizer.render(ui, windowW, windowH, state, camera, binary, tde, gwRef, telemetry);
 
         boolean plungeBannerDrawn = false;
         if (state.hudMode == SimulationState.HUD_FULL) {
@@ -808,11 +844,11 @@ public final class HudOverlay {
 
             if (isBinary) {
                 sb.setLength(0);
-                sb.append("NORM. VISUAL h+ | |h_det|=");
-                appendSci1(sb, Math.abs(binary.detectorStrain));
-                ui.drawText(sb, gx + 6f, gy + 5f, 0.90f, 0.45f, 0.88f, 1.0f, 0.92f);
-                float midY = gy + 17f + (gh - 22f) * 0.5f;
-                float halfAmpPx = (gh - 24f) * 0.46f;
+                sb.append("NORM. WAVEFORM | SI h_det=");
+                appendSignedSci1(sb, binary.detectorStrain);
+                ui.drawText(sb, gx + 6f, gy + 4f, 0.84f, 0.45f, 0.88f, 1.0f, 0.94f);
+                float midY = gy + 20f + (gh - 30f) * 0.5f;
+                float halfAmpPx = (gh - 32f) * 0.44f;
                 ui.drawRect(gx + 4f, midY, gw - 8f, 1f, 0f, 1f, 1f, 1f, 0.16f);
 
                 float[] hist = binary.strainHistory();
@@ -832,6 +868,12 @@ public final class HudOverlay {
                     ui.drawLine(x0, y0, x1, y1, 1.75f,
                             0.24f + 0.76f * amp, 0.88f - 0.12f * amp, 1.00f - 0.62f * amp, 0.96f);
                 }
+                sb.setLength(0);
+                sb.append("SI h+=");
+                appendSignedSci1(sb, binary.physHPlus);
+                sb.append(" hx=");
+                appendSignedSci1(sb, binary.physHCross);
+                ui.drawText(sb, gx + 6f, gy + gh - 12f, 0.72f, 0.82f, 0.90f, 0.98f, 0.86f);
             } else {
                 ui.drawText("GPU(CYAN) CPU(GRN) | 16.6ms 6.9ms", gx + 6f, gy + 5f, 0.98f, 0.65f, 0.72f, 0.82f, 0.85f);
 
@@ -881,7 +923,7 @@ public final class HudOverlay {
         float rx = windowW - rw - 16f;
         float ry = 16f;
         boolean expanded = state.controlsExpanded && windowH >= 500;
-        float rh = expanded ? Math.min(state.binaryMode ? 492f : 456f, windowH - 68f) : 44f;
+        float rh = expanded ? Math.min(state.binaryMode ? 516f : 504f, windowH - 68f) : 44f;
 
         float accR = modeAccentR(state);
         float accG = modeAccentG(state);
@@ -915,22 +957,24 @@ public final class HudOverlay {
         }
 
         py += 19f;
-        // 4-Tab Segmented Bar: SCENE | PHYSICS | TDE LAB | OPTICS
+        // 5-Tab Segmented Bar: SCENE | PHYS | (GW DET / TDE) | OPTICS | LAYERS
         float tabGap = 4f;
-        float tabW = (innerW - tabGap * 3f) / 4f;
+        float tabW = (innerW - tabGap * 4f) / 5f;
         float tabH = 24f;
         drawConsoleTab(ui, mouseX, mouseY, px, py, tabW, tabH, "SCENE",
                 state.activeConsoleTab == SimulationState.TAB_SCENE, 0.95f, 0.78f, 0.48f, ACT_TAB_SCENE);
-        drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap), py, tabW, tabH, "PHYSICS",
+        drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap), py, tabW, tabH, "PHYS",
                 state.activeConsoleTab == SimulationState.TAB_PHYSICS, 0.36f, 0.86f, 1.00f, ACT_TAB_PHYSICS);
         drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap) * 2f, py, tabW, tabH,
-                state.binaryMode ? "GW DET" : "TDE LAB",
+                state.binaryMode ? "GW DET" : "TDE",
                 state.activeConsoleTab == SimulationState.TAB_TDE_LAB,
                 state.binaryMode ? 0.36f : 1.00f,
                 state.binaryMode ? 0.88f : 0.66f,
                 state.binaryMode ? 1.00f : 0.34f, ACT_TAB_TDE_LAB);
         drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap) * 3f, py, tabW, tabH, "OPTICS",
                 state.activeConsoleTab == SimulationState.TAB_OPTICS, 0.72f, 0.62f, 1.00f, ACT_TAB_OPTICS);
+        drawConsoleTab(ui, mouseX, mouseY, px + (tabW + tabGap) * 4f, py, tabW, tabH, "LAYERS",
+                state.activeConsoleTab == SimulationState.TAB_SCI_VIS, 0.28f, 0.94f, 0.84f, ACT_TAB_SCI_VIS);
         py += tabH + 8f;
 
         ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.12f);
@@ -945,6 +989,7 @@ public final class HudOverlay {
                     ? renderBinaryDetectorTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, binary)
                     : renderTdeLabTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, telemetry);
             case SimulationState.TAB_OPTICS -> py = renderOpticsTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state);
+            case SimulationState.TAB_SCI_VIS -> py = renderSciVisTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state);
             default -> py = renderSceneTab(ui, mouseX, mouseY, px, py, innerW, colW, rowH, state, camera);
         }
 
@@ -1150,6 +1195,11 @@ public final class HudOverlay {
             py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
                     "EHT 230GHz", state.ehtRadioPalette, ACT_EHT_RADIO,
                     px + colW + 6f, "[J] JETS", state.showJets, ACT_JETS);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    "DISK: " + state.kerrDiskVisLabel(), state.kerrDiskVisMode > 0, ACT_KERR_DISK_VIS_CYCLE,
+                    px + colW + 6f,
+                    state.ehtMagneticModel == SimulationState.EHT_MODEL_MAD ? "EHT: MAD" : "EHT: SANE",
+                    state.ehtPolarization, ACT_EHT_MODEL_TOGGLE);
 
             py += 4f;
             ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
@@ -1194,6 +1244,9 @@ public final class HudOverlay {
         py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 21f,
                 state.binaryDetector.label(), true, ACT_BIN_DETECTOR_CYCLE,
                 px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                "MODE: " + state.binGwModeLabel(), state.binGwModeFilter != SimulationState.BIN_MODE_ALL, ACT_BIN_MODE_CYCLE,
+                px + colW + 6f, "GW150914 REF", state.showGwReference, ACT_GW_REF_OVERLAY);
 
         py += 4f;
         ui.drawRect(px, py, innerW, 1f, 0f, 1f, 1f, 1f, 0.10f);
@@ -1328,6 +1381,9 @@ public final class HudOverlay {
         py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 21f,
                 "[F5] 64^3 HYDRO", state.tdeHydroEnabled, ACT_TDE_HYDRO_TOGGLE,
                 px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
+        py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                "COL: " + state.tdeColorLabel(), state.tdeParticleColorMode > 0, ACT_TDE_COLOR_CYCLE,
+                px + colW + 6f, "64^3: " + state.tdeHydroVisLabel(), state.tdeHydroVisMode > 0, ACT_TDE_HYDRO_VIS_CYCLE);
 
         py += 4f;
         // Live TDE Physics & GPU Counter Telemetry Card
@@ -1415,6 +1471,79 @@ public final class HudOverlay {
         return py;
     }
 
+    private float renderSciVisTab(UiRenderer ui, double mouseX, double mouseY,
+                                  float px, float py, float innerW, float colW, float rowH,
+                                  SimulationState state) {
+        String modeTag = state.binaryMode ? "BINARY EOB LAYERS"
+                : (state.wormholeMode ? "MORRIS-THORNE LAYERS" : "KERR / TDE / PLUNGE LAYERS");
+        ui.drawText(modeTag, px, py, 0.92f, 0.28f, 0.94f, 0.84f, 0.96f);
+        py += 14f;
+
+        if (state.binaryMode) {
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "ORBIT TRAILS", state.visBinTrajectory, ACT_VIS_BIN_TRAJ,
+                    px + colW + 6f, "HORIZONS+SPINS", state.visBinHorizonsSpins, ACT_VIS_BIN_HORIZONS);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "GW MODES/SPEC", state.visBinGwModes, ACT_VIS_BIN_MODES,
+                    px + colW + 6f, "DET & SI STRAIN", state.visBinDetector, ACT_VIS_BIN_DETECTOR);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "ENERGY / J BAL", state.visBinEnergy, ACT_VIS_BIN_ENERGY,
+                    px + colW + 6f, "3D GW WAVEFRONT", state.visBinPropagation, ACT_VIS_BIN_PROP);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "MODE: " + state.binGwModeLabel(), state.binGwModeFilter != SimulationState.BIN_MODE_ALL, ACT_BIN_MODE_CYCLE,
+                    px + colW + 6f, "GW150914 REF", state.showGwReference, ACT_GW_REF_OVERLAY);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG,
+                    px + colW + 6f, "DET: " + state.binaryDetector.label(), true, ACT_BIN_DETECTOR_CYCLE);
+        } else if (state.wormholeMode) {
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "EMBEDDING+RAYS", state.visWormholeEmbedding, ACT_VIS_WH_EMBED,
+                    px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, rowH,
+                    "[Q] RETICLE", state.showReticle, ACT_RETICLE,
+                    px + colW + 6f, "[T] FLY-THROUGH", state.autoOrbit, ACT_FLY_THROUGH);
+
+            py += 6f;
+            ui.drawGlassPanel(px, py, innerW, 64f, 6f, 0.04f, 0.05f, 0.09f, 0.86f, 0.96f, 0.56f, 0.96f, 0.36f);
+            ui.drawText("[E] EXACT MORRIS-THORNE DNEG GEOMETRY", px + 8f, py + 8f, 0.80f, 0.34f, 0.94f, 0.98f, 0.96f);
+            ui.drawText("g_tt = -1: ZERO GRAVITATIONAL REDSHIFT", px + 8f, py + 25f, 0.76f, 0.98f, 0.72f, 0.94f, 0.94f);
+            ui.drawText("NEC VIOLATION CONCENTRATED AT |l| <= a+Mw", px + 8f, py + 41f, 0.74f, 0.86f, 0.92f, 0.98f, 0.90f);
+            py += 70f;
+        } else {
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    "KERR GEOMETRY", state.visKerrGeometry, ACT_VIS_KERR_GEOM,
+                    px + colW + 6f, "FRAME DRAG FIELD", state.visKerrFrameDragging, ACT_VIS_KERR_DRAG);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    "DOPRI GEODESICS", state.visKerrGeodesics, ACT_VIS_KERR_GEO,
+                    px + colW + 6f, "EHT EVPA GLYPHS", state.visEhtGlyphs, ACT_VIS_EHT_GLYPHS);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    "DISK: " + state.kerrDiskVisLabel(), state.kerrDiskVisMode > 0, ACT_KERR_DISK_VIS_CYCLE,
+                    px + colW + 6f,
+                    state.ehtMagneticModel == SimulationState.EHT_MODEL_MAD ? "EHT: MAD MODEL" : "EHT: SANE MODEL",
+                    state.ehtPolarization, ACT_EHT_MODEL_TOGGLE);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    "TDE: " + state.tdeColorLabel(), state.tdeParticleColorMode > 0, ACT_TDE_COLOR_CYCLE,
+                    px + colW + 6f, "64^3: " + state.tdeHydroVisLabel(), state.tdeHydroVisMode > 0, ACT_TDE_HYDRO_VIS_CYCLE);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    state.tdeHydroSlicePlane == SimulationState.TDE_SLICE_XY ? "SLICE: XY (z=0)" : "SLICE: XZ (y=0)",
+                    state.tdeHydroVisMode > 0 && state.tdeHydroVisMode < SimulationState.TDE_HYDRO_VIS_VOLUME,
+                    ACT_TDE_SLICE_CYCLE,
+                    px + colW + 6f, "TDE ORB OVERLAY", state.visTdeOverlay, ACT_VIS_TDE_OVERLAY);
+            py = drawToggleRow(ui, mouseX, mouseY, px, py, colW, 20f,
+                    "PLUNGE DIAG", state.visPlungeDiag, ACT_VIS_PLUNGE_DIAG,
+                    px + colW + 6f, "[F3] SCI DIAG", state.scientificDiagMode != SimulationState.DIAG_OFF, ACT_SCIENTIFIC_DIAG);
+        }
+
+        py += 6f;
+        drawTogglePill(ui, mouseX, mouseY, px, py, innerW, 22f, "RESET VISUALIZATION LAYERS", false, ACT_RESET_VIS);
+        py += 29f;
+
+        ui.drawGlassPanel(px, py, innerW, 42f, 6f, 0.03f, 0.04f, 0.08f, 0.84f, 1f, 1f, 1f, 0.14f);
+        ui.drawText("PROVENANCE: [E] EXACT GR  [A] ANALYTIC/EOB", px + 8f, py + 7f, 0.72f, 0.38f, 0.94f, 0.96f, 0.94f);
+        ui.drawText("[F] NR FIT   [V] PROCEDURAL/PRESCRIBED MODEL", px + 8f, py + 23f, 0.72f, 0.98f, 0.78f, 0.42f, 0.92f);
+        return py + 46f;
+    }
+
     private float drawLogTimeScaleSlider(UiRenderer ui, double mouseX, double mouseY,
                                          float px, float py, float innerW, SimulationState state) {
         sb.setLength(0);
@@ -1441,7 +1570,7 @@ public final class HudOverlay {
         if (active) {
             ui.drawAccentBar(x + 8f, y + h - 3.5f, w - 16f, 2.2f, r, g, b, 0.96f);
         }
-        float scale = 0.94f;
+        float scale = (w < 70f) ? 0.84f : 0.94f;
         float textW = label.length() * 8f * scale;
         ui.drawText(label, x + (w - textW) * 0.5f, y + 7.2f, scale,
                 active ? 1.00f : 0.72f, active ? 0.99f : 0.78f, active ? 0.98f : 0.88f, 1.0f);
@@ -1744,6 +1873,28 @@ public final class HudOverlay {
             case ACT_TAB_PHYSICS -> "Tune spacetime metric, plasma physics, and time scale";
             case ACT_TAB_TDE_LAB -> "Launch 4 stellar archetypes with custom beta & inclination";
             case ACT_TAB_OPTICS -> "Configure TAA, Karis bloom, anamorphic flares, FOV & audio";
+            case ACT_TAB_SCI_VIS -> "Mode-specific physics visualization layers, colormaps & filters";
+            case ACT_RESET_VIS -> "Reset visualization layers & colormaps cleanly (keeps physics state)";
+            case ACT_GW_REF_OVERLAY -> "Overlay GWOSC/LIGO GW150914 reference strain on detector plot";
+            case ACT_BIN_MODE_CYCLE -> "Isolate GW spherical harmonic mode (2,2)/(2,1)/(3,3)/(4,4) or ALL";
+            case ACT_VIS_BIN_TRAJ -> "3D EOB inspiral paths, v vectors, L_orb hat & merger markers";
+            case ACT_VIS_BIN_HORIZONS -> "Individual Kerr component & post-merger remnant horizons/spins";
+            case ACT_VIS_BIN_MODES -> "Multipolar mode amplitudes, power bars & chirp spectrogram";
+            case ACT_VIS_BIN_DETECTOR -> "Antenna pattern |F+|/|Fx|, polarization ellipse & SI h+/hx/hdet";
+            case ACT_VIS_BIN_ENERGY -> "Initial/radiated/remaining binary E, J_orb & energy balance";
+            case ACT_VIS_BIN_PROP -> "3D orbital-plane multipolar GW wavefront & propagation vectors";
+            case ACT_KERR_DISK_VIS_CYCLE -> "Disk shader mode: Blackbody | Temp T(r) | Doppler g | Speed |v|/c";
+            case ACT_EHT_MODEL_TOGGLE -> "Toggle EHT accretion magnetic geometry: MAD vs SANE";
+            case ACT_VIS_KERR_GEOM -> "Exact Kerr-Schild oblate r+, r-, ergosphere, photon & ISCO rings";
+            case ACT_VIS_KERR_DRAG -> "ZAMO frame-dragging omega vector field & pro/retro ISCO speeds";
+            case ACT_VIS_KERR_GEO -> "7 DOPRI5(4) equatorial & off-equatorial Kerr null geodesics";
+            case ACT_VIS_EHT_GLYPHS -> "Projected EVPA k x B polarization ticks & Faraday disclosure";
+            case ACT_TDE_COLOR_CYCLE -> "TDE particles: Thermal | Bound/Unbound | Speed |v|/c | Temp map";
+            case ACT_TDE_HYDRO_VIS_CYCLE -> "Render 64^3 Hydro SSBO: Density/Pressure/Vel/Shock slice or 3D Vol";
+            case ACT_TDE_SLICE_CYCLE -> "Switch 64^3 Hydro slice plane between XZ (y=0) and XY (z=0)";
+            case ACT_VIS_TDE_OVERLAY -> "Tidal r_t, periapsis r_p, PW orbit, 64^3 bounds & debris curves";
+            case ACT_VIS_WH_EMBED -> "Wormhole Flamm/Dneg embedding z(r), throat rim & 6 DOPRI rays";
+            case ACT_VIS_PLUNGE_DIAG -> "Doran free-fall plunge r(tau), tau vs t_inf & tidal stretch plot";
             case ACT_MODE_KERR -> "Single rotating Kerr-Schild black hole with volumetric TDE";
             case ACT_BINARY -> "Superposed binary BH inspiral, merger & LIGO GW ripples";
             case ACT_WORMHOLE -> "Morris-Thorne / Interstellar traversable wormhole throat";
@@ -1833,9 +1984,11 @@ public final class HudOverlay {
         float tanHalfFov = (float) Math.tan(Math.toRadians(state.fovDeg));
         float camDist = (float) Math.max(2.0, Math.sqrt(
                 camera.posX * camera.posX + camera.posY * camera.posY + camera.posZ * camera.posZ));
-        float pxPerRg = (windowH * 0.5f) / Math.max(0.1f, camDist * tanHalfFov);
-
         // 1. Calibrated Gravitational Scale Bar (picks clean 2, 5, 10, or 20 r_g span)
+        double rScale = state.wormholeMode
+                ? MorrisThorneMetric.radius(camera.currentWormholeL(), state.wormholeRho, state.wormholeA, state.wormholeM)
+                : camDist;
+        float pxPerRg = (windowH * 0.5f) / Math.max(0.1f, (float) rScale * tanHalfFov);
         float rulerRg = 10.0f;
         if (pxPerRg * 10.0f > 220f) rulerRg = 5.0f;
         if (pxPerRg * 5.0f > 220f) rulerRg = 2.0f;
@@ -1850,11 +2003,37 @@ public final class HudOverlay {
         ui.drawLine(rx + rulerPx * 0.5f, ry - 3f, rx + rulerPx * 0.5f, ry + 3f, 1.2f, 0.45f, 0.90f, 1.00f, 0.55f);
 
         sb.setLength(0);
-        sb.append(Math.round(rulerRg)).append(" r_g (GM/c^2)");
+        sb.append(Math.round(rulerRg)).append(state.wormholeMode ? " M (EMBED LENGTH)" : " r_g (GM/c^2)");
         ui.drawText(sb, rx, ry - 16f, 0.92f, 0.72f, 0.92f, 1.00f, 0.88f);
 
         // 2. Projected Spacetime Brackets
-        if (state.binaryMode && binary != null && binary.mergeBlend < 0.85f) {
+        if (state.wormholeMode) {
+            double lCam = camera.currentWormholeL();
+            double sinCrit = MorrisThorneMetric.criticalThroatSinAngle(lCam, state.wormholeRho, state.wormholeA, state.wormholeM);
+            float dirSign = (lCam >= 0.0) ? -1.0f : 1.0f;
+            float tox = dirSign * camera.radialX;
+            float toy = dirSign * camera.radialY;
+            float toz = dirSign * camera.radialZ;
+            float zC = tox * camera.forwardX + toy * camera.forwardY + toz * camera.forwardZ;
+            if (zC > 0.20f && sinCrit < 0.99f) {
+                float xC = tox * camera.rightX + toy * camera.rightY + toz * camera.rightZ;
+                float yC = tox * camera.upX + toy * camera.upY + toz * camera.upZ;
+                float aspect = (float) windowW / Math.max(1, windowH);
+                float cx = ((xC / (zC * aspect * tanHalfFov)) * 0.5f + 0.5f) * windowW;
+                float cy = (0.5f - (yC / (zC * tanHalfFov)) * 0.5f) * windowH;
+                double tanCrit = sinCrit / Math.sqrt(Math.max(1e-6, 1.0 - sinCrit * sinCrit));
+                float rPx = Math.max(18f, Math.min(windowH * 0.44f, (float) ((tanCrit / Math.max(1e-4, tanHalfFov)) * (windowH * 0.5f))));
+                drawCornerBrackets(ui, cx, cy, rPx, 0.28f, 0.94f, 0.96f, 0.68f);
+                sb.setLength(0);
+                sb.append("THROAT rho=");
+                appendFixed2(sb, state.wormholeRho);
+                sb.append("M  l_cam=");
+                PlotWidgets.appendSigned2(sb, (float) lCam);
+                sb.append('M');
+                float tw = sb.length() * 8f * 0.86f;
+                ui.drawText(sb, cx - tw * 0.5f, cy - rPx - 15f, 0.86f, 0.36f, 0.94f, 0.98f, 0.90f);
+            }
+        } else if (state.binaryMode && binary != null && binary.mergeBlend < 0.85f) {
             boolean ok1 = projectWorldToScreen(binary.pos1X, binary.pos1Y, binary.pos1Z, windowW, windowH, tanHalfFov, camera);
             float x1 = projBuf[0], y1 = projBuf[1];
             boolean ok2 = projectWorldToScreen(binary.pos2X, binary.pos2Y, binary.pos2Z, windowW, windowH, tanHalfFov, camera);

@@ -82,6 +82,12 @@ public final class BlackHoleRenderer implements AutoCloseable {
     private boolean prevFreeFall;
     private int prevIntegratorMode;
     private int prevDiagMode;
+    private int prevKerrDiskVisMode;
+    private int prevEhtModel;
+    private int prevBinModeFilter;
+    private int prevTdeColorMode;
+    private int prevTdeHydroVisMode;
+    private int prevTdeSlicePlane;
     private float prevWormholeL;
     private boolean closed = false;
 
@@ -92,7 +98,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         final int uSpinA, uHorizonR, uIscoR, uDiskTempScale, uDiskDensity, uJetPower, uTanHalfFov;
         final int uCauchyFlash, uSpaghettify, uSingularityFade, uAccretionSurge;
         final int uDoppler, uLensing, uShowDisk, uShowJets, uFreeFall, uShowGrid;
-        final int uOrderVis, uEhtPolarization, uEhtRadio, uIntegTol, uDiagMode, uJitter, uFrameIndex;
+        final int uOrderVis, uEhtPolarization, uEhtRadio, uDiskVisMode, uEhtModel, uIntegTol, uDiagMode, uJitter, uFrameIndex;
 
         KerrUniforms(ShaderProgram prog, boolean isDopri) {
             uResolution = prog.uniformLocation("uResolution");
@@ -124,6 +130,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             uOrderVis = prog.uniformLocation("uOrderVis");
             uEhtPolarization = prog.uniformLocation("uEhtPolarization");
             uEhtRadio = prog.uniformLocation("uEhtRadio");
+            uDiskVisMode = prog.uniformLocation("uDiskVisMode");
+            uEhtModel = prog.uniformLocation("uEhtModel");
             uIntegTol = isDopri ? prog.uniformLocation("uIntegTol") : -1;
             uDiagMode = prog.uniformLocation("uDiagMode");
             uJitter = prog.uniformLocation("uJitter");
@@ -161,6 +169,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
         final int uGwPhase, uGwOmegaGeom, uStrainAmp, uRingdownEnv, uMergerPulse;
         final int uOrbE1, uOrbLHat, uOrbE3;
         final int uDiskTempScale, uDiskDensity, uDoppler, uLensing, uShowDisk, uShowGrid, uGwOverlay;
+        final int uModeAmp, uModePhase, uGwModeFilter, uGwVisScale, uDiskVisMode;
         final int uDiagMode, uIntegTol, uJitter, uFrameIndex;
 
         BinaryUniforms(ShaderProgram prog, boolean isDopri) {
@@ -208,6 +217,11 @@ public final class BlackHoleRenderer implements AutoCloseable {
             uShowDisk = prog.uniformLocation("uShowDisk");
             uShowGrid = prog.uniformLocation("uShowGrid");
             uGwOverlay = prog.uniformLocation("uGwOverlay");
+            uModeAmp = prog.uniformLocation("uModeAmp");
+            uModePhase = prog.uniformLocation("uModePhase");
+            uGwModeFilter = prog.uniformLocation("uGwModeFilter");
+            uGwVisScale = prog.uniformLocation("uGwVisScale");
+            uDiskVisMode = prog.uniformLocation("uDiskVisMode");
             uDiagMode = prog.uniformLocation("uDiagMode");
             uIntegTol = isDopri ? prog.uniformLocation("uIntegTol") : -1;
             uJitter = prog.uniformLocation("uJitter");
@@ -398,6 +412,7 @@ public final class BlackHoleRenderer implements AutoCloseable {
     public int tdePeakTempK() { return tdeSystem.peakTemperatureK(); }
     public int tdeSubsteps() { return tdeSystem.lastSubstepsPerFrame(); }
     public double tdeParticleStepsPerSec() { return tdeSystem.particleStepsPerSec(); }
+    public TidalDisruptionSystem tdeSystem() { return tdeSystem; }
 
     /** Executes Passes 1, 1B (TDE), 1C (TAA), 2 (Bloom), and 3 (Composite) to default framebuffer with zero heap allocations. */
     public void renderFrame(int width, int height, double wallDt, double simDt,
@@ -521,6 +536,13 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1i(bu.uShowDisk, state.showDisk ? 1 : 0);
             glUniform1i(bu.uShowGrid, state.showGrid ? 1 : 0);
             glUniform1i(bu.uGwOverlay, state.binaryGwOverlay ? 1 : 0);
+            glUniform4f(bu.uModeAmp, (float) binary.modeAmp22, (float) binary.modeAmp21,
+                    (float) binary.modeAmp33, (float) binary.modeAmp44);
+            glUniform4f(bu.uModePhase, (float) binary.modePhase22, (float) binary.modePhase21,
+                    (float) binary.modePhase33, (float) binary.modePhase44);
+            glUniform1i(bu.uGwModeFilter, state.binGwModeFilter);
+            glUniform1f(bu.uGwVisScale, 1.0f);
+            glUniform1i(bu.uDiskVisMode, state.kerrDiskVisMode);
             glUniform1i(bu.uDiagMode, shaderDiagMode);
             if (useDopriBin) {
                 glUniform1f(bu.uIntegTol, state.integratorRtol);
@@ -598,6 +620,8 @@ public final class BlackHoleRenderer implements AutoCloseable {
             glUniform1i(ku.uOrderVis, state.orderVisualizer ? 1 : 0);
             glUniform1i(ku.uEhtPolarization, state.ehtPolarization ? 1 : 0);
             glUniform1i(ku.uEhtRadio, state.ehtRadioPalette ? 1 : 0);
+            glUniform1i(ku.uDiskVisMode, state.kerrDiskVisMode);
+            glUniform1i(ku.uEhtModel, state.ehtMagneticModel);
             if (useDopri) {
                 glUniform1f(ku.uIntegTol, state.integratorRtol);
             }
@@ -655,6 +679,12 @@ public final class BlackHoleRenderer implements AutoCloseable {
                     || (curFreeFall != prevFreeFall)
                     || (state.integratorMode != prevIntegratorMode)
                     || (shaderDiagMode != prevDiagMode)
+                    || (state.kerrDiskVisMode != prevKerrDiskVisMode)
+                    || (state.ehtMagneticModel != prevEhtModel)
+                    || (state.binGwModeFilter != prevBinModeFilter)
+                    || (state.tdeParticleColorMode != prevTdeColorMode)
+                    || (state.tdeHydroVisMode != prevTdeHydroVisMode)
+                    || (state.tdeHydroSlicePlane != prevTdeSlicePlane)
                     || (camJumpSq > 6.25f)
                     || (fwdDot < 0.94f)
                     || (Math.abs(tanHalfFov - prevTanHalfFov) > 0.04f);
@@ -718,6 +748,12 @@ public final class BlackHoleRenderer implements AutoCloseable {
             prevFreeFall = curFreeFall;
             prevIntegratorMode = state.integratorMode;
             prevDiagMode = shaderDiagMode;
+            prevKerrDiskVisMode = state.kerrDiskVisMode;
+            prevEhtModel = state.ehtMagneticModel;
+            prevBinModeFilter = state.binGwModeFilter;
+            prevTdeColorMode = state.tdeParticleColorMode;
+            prevTdeHydroVisMode = state.tdeHydroVisMode;
+            prevTdeSlicePlane = state.tdeHydroSlicePlane;
         } else {
             taaHistoryValid = false;
             taaAccumCount = 0;

@@ -42,6 +42,37 @@ public final class MorrisThorneMetric {
     }
 
     /**
+     * Exact isometric embedding height {@code z(l) = int_0^l sqrt(1 - (dr/dl')^2) dl'}
+     * in Euclidean {@code (r, phi, z)} cylindrical embedding space (exact cylinder inside {@code |l| <= a}).
+     */
+    public static double embeddingZ(double l, double halfLengthA, double lensingWidthM) {
+        double absL = Math.abs(l);
+        if (absL <= halfLengthA) {
+            return l;
+        }
+        double z = halfLengthA;
+        double span = absL - halfLengthA;
+        final int n = 48;
+        double h = span / n;
+        double sum = 0.0;
+        for (int i = 0; i <= n; i++) {
+            double li = halfLengthA + i * h;
+            double dr = dRadiusDl(li, halfLengthA, lensingWidthM);
+            double integrand = Math.sqrt(Math.max(0.0, 1.0 - dr * dr));
+            double w = (i == 0 || i == n) ? 1.0 : ((i & 1) == 1 ? 4.0 : 2.0);
+            sum += w * integrand;
+        }
+        z += (h / 3.0) * sum;
+        return (l >= 0.0) ? z : -z;
+    }
+
+    /** Exact angular sine {@code sin(theta_crit) = min(1, rho / r(l_cam))} of rays entering the throat. */
+    public static double criticalThroatSinAngle(double lCam, double rho, double halfLengthA, double lensingWidthM) {
+        double rCam = radius(lCam, rho, halfLengthA, lensingWidthM);
+        return Math.max(0.0, Math.min(1.0, rho / Math.max(1e-6, rCam)));
+    }
+
+    /**
      * Exact null-geodesic ODE for state {@code [l, v_l, phi]} with conserved impact parameter
      * {@code H = r^2 dphi/dlambda}:
      * {@code dl/dlambda = v_l}, {@code dv_l/dlambda = (H^2 / r^3) dr/dl}, {@code dphi/dlambda = H / r^2}.

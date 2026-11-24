@@ -60,6 +60,11 @@ uniform int uShowDisk;
 uniform int uShowGrid;
 uniform int uGwOverlay;
 uniform int uDiagMode;
+uniform vec4 uModeAmp;         // (a22, a21, a33, a44) instantaneous mode amplitudes
+uniform vec4 uModePhase;       // (phi22, phi21, phi33, phi44) instantaneous mode phases
+uniform int uGwModeFilter;     // 0=ALL, 1=(2,2), 2=(2,1), 3=(3,3), 4=(4,4)
+uniform float uGwVisScale;     // Explicit spatial GW visualization scale factor
+uniform int uDiskVisMode;      // 0=Blackbody, 1=Temp(K), 2=Doppler g, 3=Velocity v/c
 #if USE_DOPRI54
 uniform float uIntegTol;
 #endif
@@ -484,27 +489,51 @@ vec3 intersectOrbitalPlaneHermite(vec3 x0, vec3 dx0, vec3 x1, vec3 dx1, float h,
 }
 
 vec3 applyQuadrupoleGwDeflection(vec3 dirWorld, float camDist) {
-    if (uStrainAmp < 0.002) {
+    float totModeAmp = uModeAmp.x + uModeAmp.y + uModeAmp.z + uModeAmp.w;
+    if (uStrainAmp < 0.001 && totModeAmp < 0.001) {
         return dirWorld;
     }
     vec3 orbDir = worldToOrb(dirWorld);
     float cosTh = clamp(orbDir.y, -1.0, 1.0);
-    float fPlus = 0.5 * (1.0 + cosTh * cosTh);
-    float fCross = cosTh;
+    float sinTh = sqrt(max(0.0, 1.0 - cosTh * cosTh));
+    float omc = 1.0 - cosTh;
+    float opc = 1.0 + cosTh;
 
     float phi = safeAtan2(orbDir.z, orbDir.x);
-    float kGw = clamp(uGwOmegaGeom * 1.45, 0.14, 0.92);
-    float retPhase = uGwPhase - camDist * kGw * 0.45 - 2.0 * phi + 3.2 * (1.0 - abs(cosTh));
+    float kOrb = clamp(0.5 * uGwOmegaGeom * 1.45, 0.07, 0.46);
+    float retBase = -camDist * kOrb * 0.45 + 2.4 * (1.0 - abs(cosTh));
 
-    float hPlus = uStrainAmp * fPlus * cos(retPhase);
-    float hCross = uStrainAmp * fCross * sin(retPhase);
+    float f22p = 0.2480 * (opc * opc + omc * omc);
+    float f22x = 0.2480 * (opc * opc - omc * omc);
+    float f21p = 0.3154 * sinTh * (opc + omc);
+    float f21x = 0.3154 * sinTh * (opc - omc);
+    float f33p = 0.2285 * sinTh * (opc * opc - omc * omc);
+    float f33x = 0.2285 * sinTh * (opc * opc + omc * omc);
+    float f44p = 0.2800 * sinTh * sinTh * (opc * opc + omc * omc);
+    float f44x = 0.2800 * sinTh * sinTh * (opc * opc - omc * omc);
 
+    float w22 = (uGwModeFilter == 0 || uGwModeFilter == 1) ? (uModeAmp.x * 3.8) : 0.0;
+    float w21 = (uGwModeFilter == 0 || uGwModeFilter == 2) ? (uModeAmp.y * 3.8) : 0.0;
+    float w33 = (uGwModeFilter == 0 || uGwModeFilter == 3) ? (uModeAmp.z * 3.8) : 0.0;
+    float w44 = (uGwModeFilter == 0 || uGwModeFilter == 4) ? (uModeAmp.w * 3.8) : 0.0;
+
+    float ph22 = uModePhase.x + 2.0 * (retBase - phi);
+    float ph21 = uModePhase.y + 1.0 * (retBase - phi);
+    float ph33 = uModePhase.z + 3.0 * (retBase - phi);
+    float ph44 = uModePhase.w + 4.0 * (retBase - phi);
+
+    float hPlus = w22 * f22p * cos(ph22) + w21 * f21p * cos(ph21)
+                + w33 * f33p * cos(ph33) + w44 * f44p * cos(ph44);
+    float hCross = w22 * f22x * sin(ph22) + w21 * f21x * sin(ph21)
+                 + w33 * f33x * sin(ph33) + w44 * f44x * sin(ph44);
+
+    float ampScale = 0.0110 * clamp(uGwVisScale, 0.25, 4.0) * smoothstep(0.0, 0.04, uStrainAmp + totModeAmp);
     vec3 ePhiOrb = safeNormalize(vec3(-orbDir.z, 0.0, orbDir.x), vec3(1.0, 0.0, 0.0));
     vec3 eThetaOrb = cross(ePhiOrb, orbDir);
     vec3 ePhi = orbToWorld(ePhiOrb);
     vec3 eTheta = orbToWorld(eThetaOrb);
 
-    return safeNormalize(dirWorld + (hPlus * 0.0115) * eTheta + (hCross * 0.0115) * ePhi, dirWorld);
+    return safeNormalize(dirWorld + (hPlus * ampScale) * eTheta + (hCross * ampScale) * ePhi, dirWorld);
 }
 
 vec3 sampleSkyWithGrid(vec3 dir, vec3 ddx, vec3 ddy) {
@@ -686,19 +715,20 @@ void evalBinaryPlasmaOrb(vec3 hitOrb, vec3 pos1Orb, vec3 pos2Orb, vec3 vel1Orb, 
         }
     }
 
-    if (uMergeBlend > 0.05 && r > rPlusRem * 1.12 && r < 6.5) {
-        float flashR = mix(2.3, 4.6, 1.0 - uRingdownEnv);
-        float ringEnv = exp(-pow((r - flashR) / 1.15, 2.0));
-        float fTurb = textureLod(uNoiseVol, vec3(hitOrb.x * 0.22, uTime * 0.12, hitOrb.z * 0.22), mipLod).r;
-        float fDens = ringEnv * (0.45 + 0.75 * fTurb) * uMergeBlend * (0.35 + 0.95 * uRingdownEnv) * uDiskDensity;
+    if (uMergeBlend > 0.05 && r > rPlusRem * 1.12 && r < 6.0) {
+        // Gentle inner-remnant viscous disk settling (no artificial merger explosion or shockwave)
+        float settleR = max(2.2, rPlusRem * 1.85);
+        float settleEnv = exp(-pow((r - settleR) / 1.35, 2.0));
+        float fTurb = textureLod(uNoiseVol, vec3(hitOrb.x * 0.20, uTime * 0.08, hitOrb.z * 0.20), mipLod).r;
+        float fDens = settleEnv * (0.42 + 0.55 * fTurb) * uMergeBlend * (0.35 + 0.55 * uRingdownEnv) * uDiskDensity;
         if (fDens > 0.002) {
             float omegaR = 1.0 / (r * sqrt(max(1.0, r)) + uRemnantMass * uRemnantSpin);
             vec3 vR = omegaR * vec3(-hitOrb.z, 0.0, hitOrb.x);
-            float tempR = (14500.0 * uDiskTempScale) * (0.85 + 0.55 * uRingdownEnv);
+            float tempR = (11800.0 * uDiskTempScale) * (0.85 + 0.30 * uRingdownEnv);
             float blendF = fDens / max(1e-4, outDensity + fDens);
             outVelOrb = mix(outVelOrb, vR, blendF);
             outTempK = mix(outTempK, tempR, blendF);
-            outShockBoost = max(outShockBoost, 1.0 + 0.85 * uMergerPulse);
+            outShockBoost = max(outShockBoost, 1.0 + 0.25 * uMergerPulse);
             outDensity += fDens;
         }
     }
@@ -706,26 +736,43 @@ void evalBinaryPlasmaOrb(vec3 hitOrb, vec3 pos1Orb, vec3 pos2Orb, vec3 vel1Orb, 
 
 vec3 evalGwPlaneOverlayOrb(vec3 hitOrb) {
     float r = length(hitOrb.xz);
-    float rMin = max(2.6, 1.05 * uSeparation);
+    float rMin = max(2.2, 1.02 * uSeparation);
     if (r < rMin || r > 38.0) {
         return vec3(0.0);
     }
     float phi = safeAtan2(hitOrb.z, hitOrb.x);
-    float kGw = clamp(uGwOmegaGeom * 1.55, 0.16, 0.96);
-    float wavePhase = uGwPhase - r * kGw - 2.0 * phi;
-    float wave = cos(wavePhase);
+    float kOrb = clamp(0.5 * uGwOmegaGeom * 1.55, 0.08, 0.48);
 
-    float fadeIn = smoothstep(rMin, rMin + 2.8, r);
+    // Physical multipolar mode contributions on the orbital plane (NO hardcoded m=2 or amplitude floor)
+    float w22 = (uGwModeFilter == 0 || uGwModeFilter == 1) ? 1.0 : 0.0;
+    float w21 = (uGwModeFilter == 0 || uGwModeFilter == 2) ? 1.0 : 0.0;
+    float w33 = (uGwModeFilter == 0 || uGwModeFilter == 3) ? 1.0 : 0.0;
+    float w44 = (uGwModeFilter == 0 || uGwModeFilter == 4) ? 1.0 : 0.0;
+
+    float a22 = uModeAmp.x * w22 * 0.6308;
+    float a21 = uModeAmp.y * w21 * 0.6308;
+    float a33 = uModeAmp.z * w33 * 0.4570;
+    float a44 = uModeAmp.w * w44 * 0.5600;
+
+    float modeSum = a22 * cos(uModePhase.x - r * (2.0 * kOrb) - 2.0 * phi)
+                  + a21 * cos(uModePhase.y - r * (1.0 * kOrb) - 1.0 * phi)
+                  + a33 * sin(uModePhase.z - r * (3.0 * kOrb) - 3.0 * phi)
+                  + a44 * cos(uModePhase.w - r * (4.0 * kOrb) - 4.0 * phi);
+
+    float fadeIn = smoothstep(rMin, rMin + 2.6, r);
     float fadeOut = smoothstep(38.0, 18.0, r) / sqrt(max(2.5, r * 0.30));
-    float amp = max(0.28, uStrainAmp) * fadeIn * fadeOut;
+    float visGain = clamp(uGwVisScale, 0.25, 4.0);
+    float waveRaw = (modeSum / 0.20) * visGain;
+    float waveNorm = clamp(waveRaw, -1.6, 1.6);
+    float envFade = fadeIn * fadeOut * smoothstep(0.0, 0.008, abs(modeSum));
 
-    float posCrest = smoothstep(0.76, 0.99, wave);
-    float negCrest = smoothstep(0.76, 0.99, -wave);
-    float isoLine = 1.0 - smoothstep(0.0, 0.075, abs(abs(wave) - 0.86));
+    float posCrest = smoothstep(0.32, 0.98, waveNorm);
+    float negCrest = smoothstep(0.32, 0.98, -waveNorm);
+    float isoLine = 1.0 - smoothstep(0.0, 0.08, abs(abs(waveNorm) - 0.55));
 
-    vec3 posCol = vec3(0.14, 0.82, 1.00) * (posCrest * 0.24 + isoLine * max(0.0, wave) * 0.52);
-    vec3 negCol = vec3(0.64, 0.26, 1.00) * (negCrest * 0.20 + isoLine * max(0.0, -wave) * 0.44);
-    return (posCol + negCol) * amp * 0.40;
+    vec3 posCol = vec3(0.14, 0.86, 1.00) * (posCrest * 0.30 + isoLine * max(0.0, waveNorm) * 0.46);
+    vec3 negCol = vec3(0.72, 0.28, 1.00) * (negCrest * 0.26 + isoLine * max(0.0, -waveNorm) * 0.40);
+    return (posCol + negCol) * envFade * 0.48;
 }
 
 void main() {
@@ -1008,6 +1055,20 @@ void main() {
 
                             float g3 = gFactor * gFactor * gFactor;
                             float intensityBoost = (g3 / (1.0 + 0.06 * g3)) * shockBoost;
+                            if (uDiskVisMode == 1) {
+                                emitCol = turboColormap(clamp((tempK - 1800.0) / 14000.0, 0.0, 1.0));
+                                intensityBoost = 1.1;
+                            } else if (uDiskVisMode == 2) {
+                                float gNorm = clamp((gFactor - 0.45) / 1.40, 0.0, 1.0);
+                                vec3 redC = vec3(0.95, 0.22, 0.14);
+                                vec3 whtC = vec3(0.92, 0.94, 0.98);
+                                vec3 bluC = vec3(0.18, 0.68, 1.00);
+                                emitCol = (gNorm < 0.5) ? mix(redC, whtC, gNorm * 2.0) : mix(whtC, bluC, (gNorm - 0.5) * 2.0);
+                                intensityBoost = 1.1;
+                            } else if (uDiskVisMode == 3) {
+                                emitCol = turboColormap(clamp(length(vPlasmaOrb) / 0.65, 0.0, 1.0));
+                                intensityBoost = 1.1;
+                            }
                             float emitSuppression = 1.0 - 0.70 * dust;
                             float sigmaT = max(1e-4, density * (0.64 + 1.20 * dust));
                             float tau = sigmaT * stepWeight;

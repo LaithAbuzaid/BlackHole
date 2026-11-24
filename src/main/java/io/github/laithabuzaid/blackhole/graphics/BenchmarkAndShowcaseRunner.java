@@ -8,9 +8,11 @@ import io.github.laithabuzaid.blackhole.telemetry.HardwareTelemetry;
 import io.github.laithabuzaid.blackhole.ui.HudOverlay;
 import io.github.laithabuzaid.blackhole.ui.UiRenderer;
 import io.github.laithabuzaid.blackhole.util.FramebufferCapture;
+import io.github.laithabuzaid.blackhole.util.GwReferenceData;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 
@@ -167,6 +169,15 @@ public final class BenchmarkAndShowcaseRunner {
                                           GpuTimerQueries gpuTimers, SimulationState state,
                                           CameraController camera, BinaryMergerPhysics binaryPhysics,
                                           HardwareTelemetry telemetry, HudOverlay hud) {
+        runShowcaseCapture(renderer, uiRenderer, gpuTimers, state, camera, binaryPhysics,
+                telemetry, hud, GwReferenceData.loadBundledGw150914());
+    }
+
+    /** Captures all 8 curated 1920x1080 showcase PNGs into {@code docs/media/}. */
+    public static void runShowcaseCapture(BlackHoleRenderer renderer, UiRenderer uiRenderer,
+                                          GpuTimerQueries gpuTimers, SimulationState state,
+                                          CameraController camera, BinaryMergerPhysics binaryPhysics,
+                                          HardwareTelemetry telemetry, HudOverlay hud, GwReferenceData gwRef) {
         int captureFbo = 0;
         int captureTex = 0;
         try {
@@ -291,7 +302,8 @@ public final class BenchmarkAndShowcaseRunner {
                 gpuTimers.beginUi();
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
                 glViewport(0, 0, TARGET_W, TARGET_H);
-                hud.render(uiRenderer, TARGET_W, TARGET_H, -10.0, -10.0, f >= 8, false, state, camera, binaryPhysics, telemetry);
+                hud.render(uiRenderer, TARGET_W, TARGET_H, -10.0, -10.0, f >= 8, false,
+                        state, camera, binaryPhysics, renderer.tdeSystem(), GwReferenceData.loadBundledGw150914(), telemetry);
                 gpuTimers.endUi();
                 glFinish();
                 float cpuMs = (System.nanoTime() - t0) * 1e-6f;
@@ -398,7 +410,8 @@ public final class BenchmarkAndShowcaseRunner {
                 gpuTimers.advanceFrame();
             }
             renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
-                    state, camera, binaryPhysics, telemetry, hud, Path.of("docs/media/scientific_diagnostics.png"));
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/scientific_diagnostics.png"));
 
             ShaderProgram.checkGlError("Showcase.finish");
             System.out.println("[Showcase] All 8 1920x1080 showcase PNGs saved successfully.");
@@ -409,6 +422,254 @@ public final class BenchmarkAndShowcaseRunner {
             if (captureTex != 0) glDeleteTextures(captureTex);
             if (captureFbo != 0) glDeleteFramebuffers(captureFbo);
         }
+    }
+
+    /** Captures 10 deterministic 1920x1080 scientific verification PNGs into {@code docs/media/after/}. */
+    public static void runVerificationCapture(BlackHoleRenderer renderer, UiRenderer uiRenderer,
+                                              GpuTimerQueries gpuTimers, SimulationState state,
+                                              CameraController camera, BinaryMergerPhysics binaryPhysics,
+                                              HardwareTelemetry telemetry, HudOverlay hud,
+                                              GwReferenceData gwRef) {
+        int captureFbo = 0;
+        int captureTex = 0;
+        try {
+            Files.createDirectories(Path.of("docs/media/after"));
+            System.out.println("[Verify] Rendering 10 deterministic 1920x1080 verification PNGs into docs/media/after/...");
+            int[] fboTex = createCaptureTarget(TARGET_W, TARGET_H);
+            captureFbo = fboTex[0];
+            captureTex = fboTex[1];
+
+            // 1. binary_sci_gw150914.png
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.binaryMode = true;
+            state.applyBinaryParameters(BinaryParameters.presetGw150914());
+            state.binaryParamsDirty = false;
+            state.binaryGwOverlay = true;
+            state.showGwReference = true;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.fovDeg = 24.5f;
+            binaryPhysics.reset(state.buildBinaryParameters());
+            binaryPhysics.advanceCurrentToSeparation(5.05);
+            camera.setShowcasePose(34.0, 0.42, 0.56, -0.05, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/binary_sci_gw150914.png"));
+
+            // 2. binary_sci_gw190412_ecc.png (asymmetric q=0.28 + eccentricity 0.18 + higher modes)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.binaryMode = true;
+            state.applyBinaryParameters(BinaryParameters.presetGw190412());
+            state.binaryEccentricity = 0.18f;
+            state.binaryInitialSep = 11.5f;
+            state.binaryParamsDirty = false;
+            state.binaryGwOverlay = true;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.fovDeg = 24.5f;
+            binaryPhysics.reset(state.buildBinaryParameters());
+            binaryPhysics.advanceCurrentToSeparation(5.80);
+            camera.setShowcasePose(34.0, 0.28, 0.62, -0.04, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/binary_sci_gw190412_ecc.png"));
+
+            // 3. binary_sci_ringdown.png (post-merger remnant + QNM decay)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.binaryMode = true;
+            state.applyBinaryParameters(BinaryParameters.presetGw150914());
+            state.binaryParamsDirty = false;
+            state.binaryGwOverlay = true;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.fovDeg = 24.0f;
+            binaryPhysics.reset(state.buildBinaryParameters());
+            int safety = 0;
+            while (binaryPhysics.phase() != BinaryMergerPhysics.Phase.RINGDOWN && safety++ < 6000) {
+                binaryPhysics.stepGeometric(0.5, false);
+            }
+            for (int k = 0; k < 14; k++) {
+                binaryPhysics.stepGeometric(0.5, false);
+            }
+            camera.setShowcasePose(30.0, 0.35, 0.52, -0.04, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/binary_sci_ringdown.png"));
+
+            // 4. kerr_sci_spinning.png (a*=0.98 oblate KS geometry + ZAMO drag + 7 DOPRI5(4) geodesics)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.spinParam = 0.98f;
+            state.integratorMode = SimulationState.INTEGRATOR_DOPRI54;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.diskDensity = 0.72f;
+            state.jetPower = 0.14f;
+            state.bloomStrength = 0.22f;
+            state.anamorphicEnabled = false;
+            state.fovDeg = 24.0f;
+            renderer.clearTdeStars(state.tdeSeed);
+            camera.setShowcasePose(27.5, 0.22, 0.24, 0.0, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/kerr_sci_spinning.png"));
+
+            // 5. kerr_sci_schwarzschild.png (a*=0.00 verification: ergosphere collapsed, ISCO+=ISCO-=6M)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.spinParam = 0.00f;
+            state.kerrSpinEnabled = false;
+            state.integratorMode = SimulationState.INTEGRATOR_DOPRI54;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.diskDensity = 0.72f;
+            state.jetPower = 0.10f;
+            state.bloomStrength = 0.22f;
+            state.anamorphicEnabled = false;
+            state.fovDeg = 24.0f;
+            renderer.clearTdeStars(state.tdeSeed);
+            camera.setShowcasePose(27.5, 0.22, 0.24, 0.0, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/kerr_sci_schwarzschild.png"));
+
+            // 6. kerr_eht_polarization_glyphs.png (EHT EVPA k x B ticks + MAD card + Faraday disclosure)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.spinParam = 0.94f;
+            state.ehtRadioPalette = true;
+            state.ehtPolarization = true;
+            state.visEhtGlyphs = true;
+            state.ehtMagneticModel = SimulationState.EHT_MODEL_MAD;
+            state.diskDensity = 1.15f;
+            state.jetPower = 0.20f;
+            state.bloomStrength = 0.30f;
+            state.exposure = 1.22f;
+            state.fovDeg = 25.0f;
+            renderer.clearTdeStars(state.tdeSeed);
+            camera.setShowcasePose(31.0, 0.35, 0.60, -0.05, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/kerr_eht_polarization_glyphs.png"));
+
+            // 7. kerr_disk_temp_map.png (Temperature colormap T(r) + calibrated colorbar)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.spinParam = 0.96f;
+            state.kerrDiskVisMode = SimulationState.DISK_VIS_TEMP;
+            state.diskDensity = 1.00f;
+            state.jetPower = 0.14f;
+            state.bloomStrength = 0.22f;
+            state.anamorphicEnabled = false;
+            state.fovDeg = 24.5f;
+            renderer.clearTdeStars(state.tdeSeed);
+            camera.setShowcasePose(30.0, 0.25, 0.44, -0.04, 0.0, 0.0, state);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/kerr_disk_temp_map.png"));
+
+            // 8. tde_sci_hydro_bound_unbound.png (Bound/Unbound coloring + 64^3 Hydro Density XZ slice + TDE lab)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.spinParam = 0.96f;
+            state.tdeHydroEnabled = true;
+            state.tdeArchetypeIndex = 2;
+            state.tdeBeta = 1.15f;
+            state.tdeInclinationDeg = -32.0f;
+            state.tdeParticleColorMode = SimulationState.TDE_COLOR_BOUND_UNBOUND;
+            state.tdeHydroVisMode = SimulationState.TDE_HYDRO_VIS_DENSITY;
+            state.tdeHydroSlicePlane = SimulationState.TDE_SLICE_XZ;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.diskDensity = 0.44f;
+            state.jetPower = 0.10f;
+            state.bloomStrength = 0.24f;
+            state.anamorphicEnabled = false;
+            state.fovDeg = 27.0f;
+            camera.setShowcasePose(37.5, -0.35, 0.52, -0.04, 0.0, 0.0, state);
+            renderer.clearTdeStars(state.tdeSeed);
+            renderer.spawnTdeStar(state);
+            renderer.stepTdeComputeOnly(680, 0.014, state);
+            // Step 16 frames with live hydro dt=0.012 so 64^3 HydroGridBuffer splat & history are populated
+            renderAndSaveTdeVerification(renderer, uiRenderer, gpuTimers, captureFbo,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/tde_sci_hydro_bound_unbound.png"));
+
+            // 9. wormhole_sci_embedding.png (Throat rim + Flamm/Dneg z(r) diagram + 6 DOPRI5(4) rays)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.wormholeMode = true;
+            state.wormholeRho = 2.65f;
+            state.wormholeA = 0.45f;
+            state.wormholeM = 1.25f;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.bloomStrength = 0.22f;
+            state.anamorphicEnabled = false;
+            state.fovDeg = 23.5f;
+            camera.setShowcaseWormholePose(11.5, 0.42, 0.06, 0.0);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/wormhole_sci_embedding.png"));
+
+            // 10. horizon_plunge_sci.png (Doran free-fall plunge r(tau), tau vs t_inf & tidal stretch)
+            resetForShot(state);
+            state.setHudMode(SimulationState.HUD_CLEAN);
+            state.spinParam = 0.90f;
+            state.freeFallMode = true;
+            state.plungeActive = true;
+            state.plungeZone = SimulationState.ZONE_PHOTON_SPHERE;
+            state.plungeProperTime = 11.8;
+            state.plungeCoordTime = 26.4;
+            state.plungeVelocityC = 0.87f;
+            state.plungeTidalGrad = 0.148f;
+            state.scientificDiagMode = SimulationState.DIAG_ANALYTICAL_OVERLAY;
+            state.diskDensity = 0.96f;
+            state.jetPower = 0.16f;
+            state.bloomStrength = 0.24f;
+            state.anamorphicEnabled = false;
+            state.fovDeg = 36.0f;
+            renderer.clearTdeStars(state.tdeSeed);
+            camera.setShowcasePose(2.38, 0.40, 0.14, -0.05, 0.42, -0.02, state);
+            camera.populateDeterministicPlungeHistory(state, 9.0);
+            renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, true,
+                    state, camera, binaryPhysics, telemetry, hud, gwRef,
+                    Path.of("docs/media/after/horizon_plunge_sci.png"));
+
+            ShaderProgram.checkGlError("Verify.finish");
+            System.out.println("[Verify] All 10 1920x1080 verification PNGs saved to docs/media/after/.");
+        } catch (IOException e) {
+            throw new RuntimeException("Failed writing verification PNGs", e);
+        } finally {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            if (captureTex != 0) glDeleteTextures(captureTex);
+            if (captureFbo != 0) glDeleteFramebuffers(captureFbo);
+        }
+    }
+
+    private static void renderAndSaveTdeVerification(BlackHoleRenderer renderer, UiRenderer uiRenderer,
+                                                     GpuTimerQueries gpuTimers, int captureFbo,
+                                                     SimulationState state, CameraController camera,
+                                                     BinaryMergerPhysics binaryPhysics, HardwareTelemetry telemetry,
+                                                     HudOverlay hud, GwReferenceData gwRef, Path outPath) throws IOException {
+        renderer.resetTaaHistory();
+        for (int s = 0; s < 16; s++) {
+            renderer.renderFrame(TARGET_W, TARGET_H, 0.012, 0.012, state, camera, binaryPhysics, gpuTimers, captureFbo);
+            telemetry.tdeActiveParticles = renderer.tdeActiveParticles();
+            telemetry.tdeBoundParticles = renderer.tdeBoundParticles();
+            telemetry.tdeUnboundParticles = renderer.tdeUnboundParticles();
+            telemetry.tdeSwallowedParticles = renderer.tdeSwallowedParticles();
+            telemetry.tdeHorizonSurge = renderer.tdeHorizonSurge();
+            telemetry.tdeMeanEnergy = renderer.tdeMeanEnergy();
+            telemetry.tdeMeanAngMomY = renderer.tdeMeanAngMomY();
+            telemetry.tdePeakTempK = renderer.tdePeakTempK();
+            gpuTimers.beginUi();
+            if (s == 15) {
+                glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
+                glViewport(0, 0, TARGET_W, TARGET_H);
+                hud.render(uiRenderer, TARGET_W, TARGET_H, -10.0, -10.0, true, false,
+                        state, camera, binaryPhysics, renderer.tdeSystem(), gwRef, telemetry);
+            }
+            gpuTimers.endUi();
+            gpuTimers.advanceFrame();
+        }
+        FramebufferCapture.saveCaptureFbo(captureFbo, TARGET_W, TARGET_H, outPath);
     }
 
     private static void resetForShot(SimulationState state) {
@@ -450,6 +711,15 @@ public final class BenchmarkAndShowcaseRunner {
                                               SimulationState state, CameraController camera,
                                               BinaryMergerPhysics binaryPhysics, HardwareTelemetry telemetry,
                                               HudOverlay hud, Path outPath) throws IOException {
+        renderAndSaveShowcase(renderer, uiRenderer, gpuTimers, captureFbo, withHud, state, camera,
+                binaryPhysics, telemetry, hud, GwReferenceData.loadBundledGw150914(), outPath);
+    }
+
+    private static void renderAndSaveShowcase(BlackHoleRenderer renderer, UiRenderer uiRenderer,
+                                              GpuTimerQueries gpuTimers, int captureFbo, boolean withHud,
+                                              SimulationState state, CameraController camera,
+                                              BinaryMergerPhysics binaryPhysics, HardwareTelemetry telemetry,
+                                              HudOverlay hud, GwReferenceData gwRef, Path outPath) throws IOException {
         renderer.resetTaaHistory();
         for (int s = 0; s < 16; s++) {
             renderer.renderFrame(TARGET_W, TARGET_H, 0.0, 0.0, state, camera, binaryPhysics, gpuTimers, captureFbo);
@@ -458,7 +728,7 @@ public final class BenchmarkAndShowcaseRunner {
                 glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
                 glViewport(0, 0, TARGET_W, TARGET_H);
                 hud.render(uiRenderer, TARGET_W, TARGET_H, -10.0, -10.0, true, false,
-                        state, camera, binaryPhysics, telemetry);
+                        state, camera, binaryPhysics, renderer.tdeSystem(), gwRef, telemetry);
             }
             gpuTimers.endUi();
             gpuTimers.advanceFrame();
